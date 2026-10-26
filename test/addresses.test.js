@@ -69,6 +69,8 @@ async function setup(b) {
     const moved = T(await p.textContent("#main"));
     ok("old home shows Budgie has moved", /Budgie has moved/.test(T(await p.textContent("#top"))) && /budgie-money\.github\.io/.test(moved), moved.slice(0, 200));
     ok("old home shows no money", !/£/.test(moved));
+    await p.evaluate(() => window.BudgieApp.render()); await p.waitForTimeout(200);
+    ok("old home stays the moved screen when it redraws (after a sync while moving)", /Budgie has moved/.test(T(await p.textContent("#top"))) && !/£/.test(T(await p.textContent("#main"))) && !(await p.$("nav button")));
     await p.click('[data-a="moveme"]');
     await p.waitForURL(/budgie-money\.github\.io/, {timeout: 15000});
     await p.waitForFunction(() => /Hi /.test(document.querySelector("#top").textContent), null, {timeout: 15000});

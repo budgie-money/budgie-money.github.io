@@ -27,11 +27,16 @@ var STARLING_OK_ = ["account-list:read", "balance:read", "transaction:read", "ac
 var BANK_MAX_STATES_ = 10, BANK_SCOPE_CHECK_ = 86400000, BANK_HISTORY_WINDOW_ = 5 * 60000, BANK_PENDING_DROP_DAYS_ = 7;
 var BANK_DAY_ = 86400000, BANK_STATE_LIFE_ = 10 * 60000, BANK_FIRST_WINDOW_ = 20 * 60000, BANK_RECENT_DAYS_ = 35, BANK_WIDE_DAYS_ = 89;
 var BANK_NAMES_ = {monzo: "Monzo", starling: "Starling"};
+// Apps Script stops a run after 6 minutes. A first read of years of history stops reading after this long (from the
+// start of the run), saves what it has and carries on from there a minute later, so nothing read is lost
+var BANK_READ_BUDGET_ = 3.5 * 60000, BANK_MAX_PAGES_ = 300, BANK_T0_ = 0;
+function bankStart_() { BANK_T0_ = Date.now(); }
 
 // ---------- the only way out to a bank ----------
 function bankHttp_(method, url, opts) {
   method = String(method || "get").toLowerCase(); opts = opts || {};
-  var m = String(url).match(/^https:\/\/([^\/?#:@]+)(\/[^?#]*)?/), host = m ? m[1] : "";
+  // the whole address is checked: just a host (no port, no user@ part, no #), then a path and a query
+  var m = String(url).match(/^https:\/\/([a-z0-9.-]+)(\/[^?#@\\\s]*)?(\?[^#\s]*)?$/), host = m ? m[1] : "";
   if (!BANK_HOSTS_[host]) throw bankErr_("other", "Budgie only talks to Monzo and Starling");
   var bare = "https://" + host + (m[2] || "");
   if (method !== "get" && !(method === "post" && BANK_POST_OK_.indexOf(bare) >= 0)) throw bankErr_("other", "Budgie only reads from your bank");
@@ -41,6 +46,12 @@ function bankHttp_(method, url, opts) {
   try { json = text ? JSON.parse(text) : {}; } catch (e) { json = null; }
   var headers = {}; try { headers = r.getHeaders() || {}; } catch (e) {}
   return {code: code, json: json, headers: headers};
+}
+// Retry-After in seconds or as a date; anything else is ignored, and it's never more than a day
+function bankRetryAfter_(h) {
+  h = h || {}; var v = String(h["Retry-After"] || h["retry-after"] || "").trim(), n = 0;
+  if (/^\d+$/.test(v)) n = +v; else if (v && !isNaN(Date.parse(v))) n = (Date.parse(v) - Date.now()) / 1000;
+  return isFinite(n) ? Math.min(86400, Math.max(0, Math.round(n))) : 0;
 }
 function bankErr_(kind, message, extra) { var e = new Error(message); e.bank = kind; if (extra) for (var k in extra) e[k] = extra[k]; return e; }
 function qs_(q) {
@@ -53,15 +64,16 @@ function bankCheck_(r, provider) {
   if (r.code >= 200 && r.code < 300 && r.json) return r.json;
   var name = BANK_NAMES_[provider] || "The bank";
   if (r.code === 401 || r.code === 403) throw bankErr_("reconnect", name + " needs reconnecting", {status: r.code});
-  if (r.code === 429) { var ra = +((r.headers || {})["Retry-After"] || (r.headers || {})["retry-after"] || 0); throw bankErr_("backoff", name + " asked Budgie to slow down", {retryAfter: ra}); }
+  if (r.code === 429) throw bankErr_("backoff", name + " asked Budgie to slow down", {retryAfter: bankRetryAfter_(r.headers)});
   if (r.code === 404) throw bankErr_("missing", name + " couldn't find that", {status: 404});
   throw bankErr_("other", name + " had a problem (" + r.code + ")", {status: r.code});
 }
 
 // ---------- secrets (the owner's User Properties) ----------
 // Tokens, client secrets and sign-in states are the owner's own: the web app and the triggers run as the owner,
-// so they can read them, but an editor of the sheet looking in Project Settings can't. The status (no secrets) is
-// kept with the script's properties.
+// so they can read them, and they never show in Project Settings. That is not a wall against editors: anyone who
+// can edit the sheet can edit this script, and code they add would run as the owner. So the sheet is shared with
+// nobody (see BANK-NOTES.md, "Who can see what"). The status (no secrets) is kept with the script's properties.
 var BANK_SECRET_RE_ = /^BANK_(TOKEN|TOKEN_NEXT|CLIENT|OAUTH)_/;
 function bankProps_(k) { return BANK_SECRET_RE_.test(String(k || "")) ? PropertiesService.getUserProperties() : PropertiesService.getScriptProperties(); }
 function bankGet_(k) { var v = bankProps_(k).getProperty(k); if (!v) return null; try { return JSON.parse(v); } catch (e) { return null; } }
@@ -98,12 +110,23 @@ function bankScrub_(p, msg) {
   return msg.replace(/Bearer\s+\S+/gi, "Bearer •••").replace(/(code|token|secret|refresh_token|access_token|client_secret)=[^&\s]+/gi, "$1=•••").slice(0, 300);
 }
 function bankRandom_() { return (Utilities.getUuid() + Utilities.getUuid()).replace(/[^A-Za-z0-9]/g, ""); }
+// Which connection a token belongs to. A disconnect leaves that connection's id behind (BANK_GONE_<person>, no
+// secret in it) before it deletes anything, and a refreshed or approved token is checked against it after it's
+// saved, so a disconnect always wins, without relying on the lock (LockService doesn't say whether a web app's
+// user lock is the same one the triggers get).
+function bankConnId_(tok) { return tok ? String(tok.conn || ("legacy-" + (tok.issuedAt || 0))) : ""; }
+function bankGone_(p, tok) {
+  var id = bankConnId_(tok);
+  if (!id || bankGet_(bankKey_("GONE", p)) !== id) return false;
+  ["TOKEN", "TOKEN_NEXT"].forEach(function (k) { if (bankConnId_(bankGet_(bankKey_(k, p))) === id) bankDel_(bankKey_(k, p)); });
+  return true;
+}
 
 // ---------- requests from the app ----------
 // every action works only on the caller's own bank: there is no "person" parameter
 function bankAction_(me, b) {
   try {
-    bankMoveSecrets_();
+    bankStart_(); bankMoveSecrets_();
     switch (b.action) {
       case "bank.status": return {ok: true, bank: bankStatusFor_(me)};
       case "bank.monzo.setClient": return monzoSetClient_(me, b);
@@ -111,7 +134,7 @@ function bankAction_(me, b) {
       case "bank.starling.setToken": return starlingSetToken_(me, b);
       case "bank.map": return bankMap_(me, b);
       case "bank.syncNow": return bankSyncNow_(me);
-      case "bank.disconnect": return bankDisconnect_(me);
+      case "bank.disconnect": return bankDisconnectLocked_(me);
       default: return {ok: false, error: "Unknown bank action"};
     }
   } catch (e) {
@@ -171,37 +194,53 @@ function bankCallback_(q) {
     return HtmlService.createHtmlOutput('<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><title>Budgie</title>' +
       '<div style="font:17px/1.5 system-ui,sans-serif;max-width:28em;margin:48px auto;padding:0 20px">' + msg + "</div>").setTitle("Budgie");
   };
+  bankStart_();
+  var lock = bankLock_();
+  if (!lock.tryLock(30000)) return page("<p>Budgie is busy reading your bank. Wait a minute, then open this page again (reload it).</p>");
+  var p;
+  try {
   bankMoveSecrets_();
   var state = String(q.state || ""), key = "BANK_OAUTH_" + state.replace(/[^A-Za-z0-9]/g, ""), st = /^[A-Za-z0-9]{64}$/.test(state) ? bankGet_(key) : null;
   if (st) bankDel_(key);   // a state works once
   if (!st || st.state !== state || !(st.exp > Date.now())) return page("<p>That sign-in link has expired or didn't come from Budgie, so nothing was connected.</p><p>Start again from the Bank screen in Budgie.</p>");
-  var p = st.person;
+  p = st.person;
   if (q.error || !q.code) return page("<p>Monzo wasn't connected. You can close this tab and try again from Budgie.</p>");
   var cl = bankGet_(bankKey_("CLIENT", p)); if (!cl) return page("<p>Monzo wasn't connected. Add your client details in Budgie first.</p>");
   // a connection that still works isn't replaced (one that needs reconnecting is)
-  if (bankGet_(bankKey_("TOKEN", p)) && !bankStatus_(p).needsReconnect) return page("<p>Monzo is already connected. To connect it again, disconnect it in Budgie first.</p>");
+  var old = bankGet_(bankKey_("TOKEN", p));
+  if (old && !bankStatus_(p).needsReconnect) return page("<p>Monzo is already connected. To connect it again, disconnect it in Budgie first.</p>");
   var r = bankHttp_("post", MONZO_API_ + "/oauth2/token", {form: {grant_type: "authorization_code", client_id: cl.id, client_secret: cl.secret, redirect_uri: bankRedirect_(), code: String(q.code)}});
   if (r.code !== 200 || !r.json || !r.json.access_token) {
     var s0 = bankStatus_(p); s0.lastError = "Monzo didn't accept the sign-in. Try again from Budgie."; bankSaveStatus_(p, s0);
     return page("<p>Monzo didn't connect. You can close this tab and try again from Budgie.</p>");
   }
+  // reconnecting has to be the same Monzo account as before (a different person's account is turned away)
+  var userId = String(r.json.user_id || "");
+  if (old && old.userId && userId && old.userId !== userId) {
+    try { bankHttp_("post", MONZO_API_ + "/oauth2/logout", {headers: {Authorization: "Bearer " + r.json.access_token}}); } catch (e) {}
+    bankNotify_(p, "someone tried to reconnect Monzo with a different Monzo account, and Budgie turned it away");
+    return page("<p>That's a different Monzo account from the one Budgie was connected to, so nothing changed.</p><p>To switch accounts, disconnect Monzo in Budgie first.</p>");
+  }
   var now = Date.now();
-  bankSet_(bankKey_("TOKEN", p), {provider: "monzo", access: r.json.access_token, refresh: r.json.refresh_token || "", expiresAt: now + (+r.json.expires_in || 21600) * 1000, issuedAt: now, approvedAt: 0});
+  bankSet_(bankKey_("TOKEN", p), {provider: "monzo", conn: bankRandom_().slice(0, 32), access: r.json.access_token, refresh: r.json.refresh_token || "", expiresAt: now + (+r.json.expires_in || 21600) * 1000, issuedAt: now, approvedAt: 0, userId: userId});
   var s = {provider: "monzo", waiting: true, firstUntil: now + BANK_FIRST_WINDOW_, fullDone: false, accounts: [], lastSync: 0, lastError: ""};
+  // payments still waiting for you to check whether they were a shop your partner logged keep waiting
+  var s9 = bankStatus_(p); if (old && s9.pending) s.pending = s9.pending;
   bankSaveStatus_(p, s);
   bankNotify_(p, "Monzo was connected");
   bankDel_(bankKey_("TOKEN_NEXT", p));
+  } finally { lock.releaseLock(); }
   // Monzo only shares data once it's approved in the Monzo app, and only gives full history in the first few
   // minutes, so try now and then every minute until it works
   try { bankRun_(p); } catch (e) {}
-  if (bankStatus_(p).waiting) bankEnsureMinuteTrigger_();
+  if (bankStatus_(p).waiting || bankStatus_(p).cursor) bankEnsureMinuteTrigger_();
   return page("<p><b>Budgie is connected to Monzo. You can close this tab.</b></p><p>If the Monzo app asks, approve Budgie there, then Budgie brings in your payments within a minute.</p>");
 }
 function monzoAccess_(p) {
   var tok = bankGet_(bankKey_("TOKEN", p)), next = bankGet_(bankKey_("TOKEN_NEXT", p));
   // a refreshed token that couldn't be saved in its usual place last time
-  if (next && tok && next.provider === "monzo" && (next.refreshedAt || 0) > (tok.refreshedAt || 0)) { tok = next; try { bankSet_(bankKey_("TOKEN", p), tok); bankDel_(bankKey_("TOKEN_NEXT", p)); } catch (e) {} }
-  if (!tok || tok.provider !== "monzo") throw bankErr_("reconnect", "Monzo isn't connected");
+  if (next && tok && next.provider === "monzo" && bankConnId_(next) === bankConnId_(tok) && (next.refreshedAt || 0) > (tok.refreshedAt || 0)) { tok = next; try { bankSet_(bankKey_("TOKEN", p), tok); bankDel_(bankKey_("TOKEN_NEXT", p)); } catch (e) {} }
+  if (!tok || tok.provider !== "monzo" || bankGone_(p, tok)) throw bankErr_("reconnect", "Monzo isn't connected");
   if (!(tok.expiresAt > Date.now() + 60000)) tok = monzoRefresh_(p, tok);
   return tok;
 }
@@ -210,14 +249,26 @@ function monzoRefresh_(p, tok) {
   if (!cl || !tok.refresh) throw bankErr_("reconnect", "Monzo needs reconnecting");
   var r = bankHttp_("post", MONZO_API_ + "/oauth2/token", {form: {grant_type: "refresh_token", client_id: cl.id, client_secret: cl.secret, refresh_token: tok.refresh}});
   if (r.code === 429) bankCheck_(r, "monzo");
-  if (r.code !== 200 || !r.json || !r.json.access_token) throw bankErr_("reconnect", "Monzo needs reconnecting");
+  // Monzo having a bad moment isn't a broken connection: the refresh token still works, so the next poll tries again
+  if (!(r.code >= 200 && r.code < 500)) throw bankErr_("other", "Monzo had a problem (" + r.code + "). Budgie tries again soon.");
+  if (r.code !== 200 || !r.json || !r.json.access_token) {
+    // another read refreshed it a moment ago (each refresh token works once): use the token it saved
+    var cur = bankGet_(bankKey_("TOKEN", p));
+    if (cur && cur.provider === "monzo" && cur.refresh && cur.refresh !== tok.refresh && cur.expiresAt > Date.now() + 60000) return cur;
+    throw bankErr_("reconnect", "Monzo needs reconnecting");
+  }
   var fresh = {}; Object.keys(tok).forEach(function (k) { fresh[k] = tok[k]; });
   fresh.access = r.json.access_token; fresh.refresh = r.json.refresh_token || tok.refresh; fresh.expiresAt = Date.now() + (+r.json.expires_in || 21600) * 1000; fresh.refreshedAt = Date.now();
+  // disconnected (or connected again) while this was on its way: end the new session at Monzo and keep nothing
+  var endIt = function () { try { bankHttp_("post", MONZO_API_ + "/oauth2/logout", {headers: {Authorization: "Bearer " + fresh.access}}); } catch (e) {} return bankErr_("reconnect", "Monzo was disconnected"); };
+  if (!bankGet_(bankKey_("CLIENT", p)) || bankConnId_(bankGet_(bankKey_("TOKEN", p))) !== bankConnId_(tok) || bankGone_(p, tok)) throw endIt();
   // the old refresh token no longer works, so the new one is saved straight away (tried a few times; the old record
   // stays until the new one is in, and if it can't be, the new one waits in TOKEN_NEXT)
   var saved = false;
   for (var i = 0; i < 3 && !saved; i++) { try { bankSet_(bankKey_("TOKEN", p), fresh); saved = (bankGet_(bankKey_("TOKEN", p)) || {}).refresh === fresh.refresh; } catch (e) { Utilities.sleep && Utilities.sleep(200); } }
   if (!saved) { try { bankSet_(bankKey_("TOKEN_NEXT", p), fresh); } catch (e) {} }
+  // a disconnect that landed while it was being saved
+  if (bankGone_(p, fresh)) throw endIt();
   return fresh;
 }
 function monzoGet_(p, path, query) {
@@ -232,23 +283,41 @@ function bankMinor_(v) { return Math.round(+v || 0) / 100; }
 function bankDate_(iso) { var d = new Date(iso); return isNaN(d.getTime()) ? "" : Utilities.formatDate(d, tz_(), "yyyy-MM-dd"); }
 // how far back to read: everything (first import), 89 days (after a pot or Space is mapped), or the last 35 days
 function bankSince_(full, wide) { return full ? null : new Date(Date.now() - (wide ? BANK_WIDE_DAYS_ : BANK_RECENT_DAYS_) * BANK_DAY_); }
-function monzoRead_(p, full, wide) {
-  var out = {provider: "monzo", accounts: [], txns: []};
-  var accounts = (monzoGet_(p, "/accounts").accounts || []).filter(function (a) { return a && a.id && !a.closed; });
+// A first (full) read can stop part-way and carry on next time from where it got to (cursor: account id -> the last
+// payment id read, or "start" for an account not read yet; accounts not in it were read to the end). If Monzo stops
+// sharing older payments part-way (its 5 minutes are up), what was read is kept (out.cut) rather than thrown away.
+function monzoRead_(p, full, wide, cursor, deadline) {
+  var out = {provider: "monzo", accounts: [], txns: [], cursor: null, cut: false}, resuming = !!cursor, stopped = false;
+  // only your own current account: a joint account (your partner's card spending too) or Flex stays out
+  var accounts = (monzoGet_(p, "/accounts", {account_type: "uk_retail"}).accounts || []).filter(function (a) { return a && a.id && !a.closed && (!a.type || a.type === "uk_retail"); });
   accounts.forEach(function (a) {
     var kind = /flex|loan|credit/i.test(String(a.type || "")) ? "credit" : "main";
     var bal = monzoGet_(p, "/balance", {account_id: a.id});
-    out.accounts.push({extId: a.id, name: a.description && !/^user_/.test(a.description) ? a.description : (kind === "credit" ? "Monzo Flex" : "Monzo current account"), kind: kind, balance: bankMinor_(bal.balance)});
+    out.accounts.push({extId: a.id, name: a.description && !/^user_/.test(a.description) ? a.description : (kind === "credit" ? "Monzo Flex" : "Monzo current account"), kind: kind, balance: bal && bal.balance !== undefined && bal.balance !== null ? bankMinor_(bal.balance) : null});
     var pots = [];
     if (kind === "main") { try { pots = monzoGet_(p, "/pots", {current_account_id: a.id}).pots || []; } catch (e) { if (e.bank !== "missing") throw e; } }
-    pots.forEach(function (x) { if (x && x.id && !x.deleted) out.accounts.push({extId: x.id, name: x.name || "Pot", kind: "pot", balance: bankMinor_(x.balance)}); });
+    pots.forEach(function (x) { if (x && x.id && !x.deleted) out.accounts.push({extId: x.id, name: x.name || "Pot", kind: "pot", balance: x.balance !== undefined && x.balance !== null ? bankMinor_(x.balance) : null}); });
     var q = {account_id: a.id, limit: 100, "expand[]": "merchant"};
-    var since = bankSince_(full, wide); if (since) q.since = since.toISOString();
-    for (var page = 0; page < 300; page++) {
-      var list = monzoGet_(p, "/transactions", q).transactions || [];
+    // an account a first read already went through to the end only needs its last 35 days
+    var whole = full && !(resuming && cursor[a.id] === undefined);
+    var since = bankSince_(whole, wide); if (since) q.since = since.toISOString();
+    if (whole && resuming && cursor[a.id] !== "start") q.since = cursor[a.id];
+    // out of time before this account: it starts here next time
+    if (whole && (stopped || out.cut)) { (out.cursor = out.cursor || {})[a.id] = q.since && /^tx_/.test(q.since) ? q.since : "start"; return; }
+    for (var page = 0; ; page++) {
+      var list;
+      try { list = monzoGet_(p, "/transactions", q).transactions || []; }
+      catch (e) {
+        // Monzo stopped sharing older payments part-way through: keep what was read
+        if (whole && e && e.bank === "reconnect" && (page > 0 || /^tx_/.test(String(q.since || "")))) { out.cut = true; break; }
+        throw e;
+      }
       list.forEach(function (t) { var n = monzoTxn_(t, a.id); if (n) out.txns.push(n); });
       if (list.length < 100) break;
       q.since = list[list.length - 1].id;   // Monzo pages by "since the last id"
+      // out of time (or pages) for this run: carry on from here next time
+      if (whole && (page + 1 >= BANK_MAX_PAGES_ || (deadline && Date.now() > deadline))) { stopped = true; (out.cursor = out.cursor || {})[a.id] = q.since; break; }
+      if (!whole && page + 1 >= BANK_MAX_PAGES_) break;
     }
   });
   return out;
@@ -272,7 +341,7 @@ function starlingSetToken_(me, b) {
   var tok = bankGet_(bankKey_("TOKEN", me)); if (tok) return {ok: false, error: "Disconnect " + BANK_NAMES_[tok.provider] + " first."};
   var chk = starlingScopes_(token);
   if (!chk.ok) return {ok: false, error: chk.error};
-  bankSet_(bankKey_("TOKEN", me), {provider: "starling", access: token, scopes: chk.scopes, issuedAt: Date.now()});
+  bankSet_(bankKey_("TOKEN", me), {provider: "starling", conn: bankRandom_().slice(0, 32), access: token, scopes: chk.scopes, issuedAt: Date.now()});
   bankSaveStatus_(me, {provider: "starling", accounts: [], lastSync: 0, lastError: "", fullDone: false, scopeCheckedAt: Date.now()});
   bankNotify_(me, "Starling was connected");
   // the token is fine and kept; if the first read fails, the next one (every 15 minutes, or Sync now) tries again
@@ -306,20 +375,20 @@ function starlingRead_(p, full, wide) {
     var uid = a.accountUid, bal = starlingGet_(p, "/api/v2/accounts/" + encodeURIComponent(uid) + "/balance") || {};
     var money = function (x) { return x && x.minorUnits !== undefined ? bankMinor_(x.minorUnits) : null; };
     var b = money(bal.effectiveBalance); if (b === null) b = money(bal.clearedBalance); if (b === null) b = money(bal.amount);
-    out.accounts.push({extId: uid, name: a.name || (a.accountType === "PRIMARY" ? "Starling account" : "Starling " + String(a.accountType || "account").toLowerCase()), kind: "main", balance: b || 0});
+    out.accounts.push({extId: uid, name: a.name || (a.accountType === "PRIMARY" ? "Starling account" : "Starling " + String(a.accountType || "account").toLowerCase()), kind: "main", balance: b});
     var spaces = {}, cats = [a.defaultCategory], catExt = {};
     var goals = starlingGet_(p, "/api/v2/account/" + encodeURIComponent(uid) + "/savings-goals", null, true);
     ((goals && (goals.savingsGoalList || goals.savingsGoals)) || []).forEach(function (g) {
       var id = g.savingsGoalUid || g.uid; if (!id || /RESTORING|DELETED/i.test(String(g.state || ""))) return;
-      spaces[id] = true; out.accounts.push({extId: id, name: g.name || "Space", kind: "space", balance: money(g.totalSaved) || 0});
+      spaces[id] = true; out.accounts.push({extId: id, name: g.name || "Space", kind: "space", balance: money(g.totalSaved)});
     });
     var sp = starlingGet_(p, "/api/v2/account/" + encodeURIComponent(uid) + "/spaces", null, true);
     ((sp && sp.spendingSpaces) || []).forEach(function (s) {
       var id = s.spaceUid || s.categoryUid; if (!id || spaces[id]) return;
-      spaces[id] = true; out.accounts.push({extId: id, name: s.name || "Space", kind: "space", balance: money(s.balance) || 0}); cats.push(s.categoryUid || id);
+      spaces[id] = true; out.accounts.push({extId: id, name: s.name || "Space", kind: "space", balance: money(s.balance)}); cats.push(s.categoryUid || id);
       catExt[s.categoryUid || id] = id;
     });
-    ((sp && sp.savingsGoals) || []).forEach(function (g) { var id = g.savingsGoalUid || g.uid; if (id && !spaces[id]) { spaces[id] = true; out.accounts.push({extId: id, name: g.name || "Space", kind: "space", balance: money(g.totalSaved) || 0}); } });
+    ((sp && sp.savingsGoals) || []).forEach(function (g) { var id = g.savingsGoalUid || g.uid; if (id && !spaces[id]) { spaces[id] = true; out.accounts.push({extId: id, name: g.name || "Space", kind: "space", balance: money(g.totalSaved)}); } });
     // the feed, in 90-day windows (all of it the first time, the last two weeks after that)
     var from = full ? new Date(a.createdAt && !isNaN(new Date(a.createdAt)) ? a.createdAt : now.getTime() - 3 * 365 * BANK_DAY_) : bankSince_(false, wide);
     cats.forEach(function (cat, ci) {
@@ -358,21 +427,38 @@ function bankMap_(me, b) {
   var lock = LockService.getScriptLock(); lock.waitLock(25000);
   try { applyOne_(me, {op: "put", table: "settings", row: {id: me + ":bank.map." + extId, person: me, key: "bank.map." + extId, value: acc}}, Date.now(), me); SpreadsheetApp.flush(); }
   finally { lock.releaseLock(); }
-  // the next read goes back further, so moves to a pot you've just mapped come in
-  var s2 = bankStatus_(me); s2.wideNext = true; bankSaveStatus_(me, s2);
+  // the next read goes back further, so moves to a pot you've just mapped come in: bankRun_ sees the mapping row is
+  // newer than its last wide read (the status isn't changed here, so this can't undo a read finishing meanwhile)
   return {ok: true};
 }
 
 // ---------- running an import ----------
+// at most one "Check now" every 30 seconds each: every read uses the owner's daily allowance of requests, which the
+// 15-minute reads of both of you share (kept in the script's cache, so it never rewrites the status)
+function bankTooSoon_(me, what, gap) {
+  var cache = null, last = 0, now = Date.now();
+  try { cache = CacheService.getScriptCache(); last = +(cache.get("bank" + what + ":" + me) || 0); } catch (e) { cache = null; }
+  if (last && now - last < gap && now >= last) return true;
+  try { if (cache) cache.put("bank" + what + ":" + me, String(now), Math.ceil(gap / 1000) + 30); } catch (e) {}
+  return false;
+}
 function bankSyncNow_(me) {
   var tok = bankGet_(bankKey_("TOKEN", me)); if (!tok) return {ok: false, error: "No bank is connected."};
+  if (bankTooSoon_(me, "sync", 30000)) return {ok: false, error: "Budgie checked a moment ago. Try again in half a minute."};
   var res = bankRun_(me);
   return res.ok ? {ok: true, added: res.added, updated: res.updated} : {ok: false, error: res.error};
 }
 // reads the bank and writes what's new; never throws (problems go into the status)
 // how far back to read is decided here, inside the lock, from the status (everything until the first full read worked)
+// one lock for everything that reads or changes a bank connection (reading, signing in, disconnecting)
+// It's the owner's user lock: the web app runs as the owner and so do the triggers, so phone requests and the
+// 15-minute poll share it. (A document lock isn't available to a web app, so it can't be used here.)
+// Google doesn't document whether "the current user" of a web app run as the owner is the owner, so nothing that
+// matters for safety relies on it: a disconnect wins anyway (bankGone_), and two refreshes at once don't break the
+// connection (monzoRefresh_). Rows are only ever written under the script lock (bankApply_).
+function bankLock_() { return LockService.getUserLock(); }
 function bankRun_(p) {
-  var lock = (LockService.getDocumentLock && LockService.getDocumentLock()) || LockService.getUserLock(), s;
+  var lock = bankLock_(), s;
   if (!lock.tryLock(30000)) return {ok: false, error: "The bank is already being read. Try again in a minute."};
   try {
     var tok = bankGet_(bankKey_("TOKEN", p)); if (!tok) return {ok: false, error: "No bank is connected."};
@@ -388,23 +474,38 @@ function bankRun_(p) {
         bankDisconnect_(p, why); return {ok: false, error: why};
       }
     }
-    var full = !s.fullDone, wide = !!s.wideNext, note = "", data;
-    var read = function (f, w) { return tok.provider === "monzo" ? monzoRead_(p, f, w) : starlingRead_(p, f, w); };
+    // a pot or Space mapped since the last wide read: read further back this time
+    var started = Date.now(), mappedAt = 0;
+    readTable_("settings").rows.forEach(function (r) { if (r.person === p && /^bank\.map\./.test(String(r.key)) && +r.updated > mappedAt) mappedAt = +r.updated; });
+    var full = !s.fullDone, wide = !!s.wideNext || mappedAt > (+s.wideAt || 0), note = "", data;
+    var cursor = full && s.cursor && typeof s.cursor === "object" ? s.cursor : null, deadline = (BANK_T0_ || started) + BANK_READ_BUDGET_;
+    var read = function (f, w) { return tok.provider === "monzo" ? monzoRead_(p, f, w, f ? cursor : null, f ? deadline : 0) : starlingRead_(p, f, w); };
+    var lastOf = function (d) { return d.txns.reduce(function (m, t) { return t.date > m ? t.date : m; }, cursor ? String(s.historyTo || "") : ""); };
+    var cutNote = function (d) { var last = lastOf(d); return "Monzo stopped sharing older payments part-way through, so Budgie has them " + (last ? "up to " + last + " " : "") + "and the last 90 days"; };
     try { data = read(full, wide); }
     catch (e) {
       // Monzo only gives the whole history in the first minutes after approval; later, the last 90 days
       var since = tok.approvedAt || tok.issuedAt || 0;
       if (!(full && tok.provider === "monzo" && e && e.bank === "reconnect" && since && Date.now() > since + BANK_HISTORY_WINDOW_)) throw e;
-      data = read(false, true); note = "Monzo only lets Budgie read the last 90 days now";
+      data = read(false, true); note = cursor ? cutNote({txns: []}) : "Monzo only lets Budgie read the last 90 days now";
     }
-    var windowFrom = full && !note ? "" : bankDate_(bankSince_(false, wide || !!note).toISOString());
+    // the older history Monzo did share is kept, with the last 90 days on top
+    if (data.cut) {
+      var recent = read(false, true), have = {};
+      recent.txns.forEach(function (t) { have[t.id] = true; });
+      note = cutNote(data); data = {provider: data.provider, accounts: recent.accounts, txns: data.txns.filter(function (t) { return !have[t.id]; }).concat(recent.txns)};
+    }
+    var more = full && !note && data.cursor && Object.keys(data.cursor).length ? data.cursor : null;
+    // a read that stopped part-way can't tell which pending payments have gone, so none are dropped this time
+    var windowFrom = more ? "9999-12-31" : full && !note ? "" : bankDate_(bankSince_(false, wide || !!note).toISOString());
     var res = bankApply_(p, data, windowFrom);
     s = bankStatus_(p);
     s.provider = tok.provider; s.accounts = data.accounts; s.lastSync = Date.now(); s.lastError = ""; s.needsReconnect = false; s.backoffUntil = 0; s.backoffN = 0;
-    if (full) s.fullDone = true;
-    if (wide) s.wideNext = false;
+    if (more) { s.cursor = more; s.historyTo = lastOf(data); s.note = "Still bringing in your history"; bankEnsureMinuteTrigger_(); }
+    else if (full) { s.fullDone = true; delete s.cursor; delete s.historyTo; if (s.note === "Still bringing in your history") s.note = ""; }
+    if ((wide || full) && !more) { s.wideNext = false; s.wideAt = started; }
     if (note) s.note = note;
-    if (s.waiting) { s.waiting = false; tok = bankGet_(bankKey_("TOKEN", p)); if (tok && !tok.approvedAt) { tok.approvedAt = Date.now(); bankSet_(bankKey_("TOKEN", p), tok); } }
+    if (s.waiting) { s.waiting = false; tok = bankGet_(bankKey_("TOKEN", p)); if (tok && !tok.approvedAt) { tok.approvedAt = Date.now(); bankSet_(bankKey_("TOKEN", p), tok); bankGone_(p, tok); } }
     bankSaveStatus_(p, s);
     return {ok: true, added: res.added, updated: res.updated};
   } catch (e) {
@@ -471,7 +572,16 @@ function bankApply_(p, data, windowFrom) {
     var near = function (a, b) { return Math.abs(a - b) <= 0.0105; };
     var update = function (t, id, fields) { updates.push({t: t, row: Object.assign({id: id}, fields)}); };
     var create = function (t, row) { newRows[t].push(row); };
-    var st0 = bankStatus_(p), pending = st0.pending || {}, seen = {};
+    var st0 = bankStatus_(p), pending = st0.pending || {}, seen = {}, partnerId = partnerOf_(p);
+    // rows a payment could be the same as, by date, worked out once (a first import can be thousands of payments
+    // against thousands of rows). Only ever your own rows: reading your bank never looks at, links or changes
+    // anything your partner wrote, so nothing they log can tell them about your payments.
+    var candDays = {};
+    rawTx.forEach(function (r, i) {
+      if (r.bankId || bankTrue_(r.deleted) || /^bk-/.test(String(r.id)) || r.person !== p) return;
+      var day = D.parseDate(r.date); if (!day) return;
+      (candDays[day] = candDays[day] || []).push({r: r, i: i, pk: r.source === "peckish", a: +r.amount || 0});
+    });
 
     // a planned payday move this matches (to the same place, same amount, within 7 days after payday)
     // the plan can have moved on a little since payday (a bill came in higher), so if nothing matches to the penny,
@@ -498,7 +608,9 @@ function bankApply_(p, data, windowFrom) {
       create("moves", {id: id, date: /^pay:/.test(key) ? D.moveDate(key, t.date) : t.date, person: p, from: from, to: to, amount: amount, key: key, note: note || "", review: !!review});
     };
     // a bill, a regular payment to your partner, or a payment you've already logged between you two
+    var partnerWords = bankMerchantKey_((db.byId[partnerId] || {}).name).split(" ").filter(function (w) { return w.length > 2; });
     var plannedOut = function (t, needName) {
+      var toPartner = partnerWords.length && bankMerchantKey_(t.name).split(" ").some(function (w) { return partnerWords.indexOf(w) >= 0; });
       var a = t.amount, win = function (item) { return D.occurrences(db, item, D.addDays(t.date, -3), D.addDays(t.date, 4)); }, hit = null;
       db.bills.forEach(function (b) {
         if (hit || b.person !== p) return;
@@ -511,7 +623,9 @@ function bankApply_(p, data, windowFrom) {
       });
       if (!hit && needName) return null;
       if (!hit) db.transfers.forEach(function (tr) { if (!hit && tr.from === p) win(tr).forEach(function (o) { if (!hit && !usedOcc[o.key] && near(a, o.amount)) hit = {kind: "transfer", occ: o}; }); });
-      if (!hit) db.settlements.forEach(function (s) { if (!hit && s.from === p && !usedOcc["set:" + s.id] && near(a, +s.amount) && Math.abs(D.diff(s.date, t.date)) <= 2) hit = {kind: "settlement", occ: {key: "set:" + s.id}}; });
+      // a payment between you two logged by your partner only counts if the bank names them (else a made-up one could
+      // hide one of your payments)
+      if (!hit) db.settlements.forEach(function (s) { if (!hit && s.from === p && !usedOcc["set:" + s.id] && near(a, +s.amount) && Math.abs(D.diff(s.date, t.date)) <= 2 && (/^(|sheet)$/.test(String(s.by || "")) || s.by === p || toPartner)) hit = {kind: "settlement", occ: {key: "set:" + s.id}}; });
       return hit;
     };
     var payIn = function (t) {
@@ -547,7 +661,8 @@ function bankApply_(p, data, windowFrom) {
         return;
       }
       if (!t.amount) return;
-      if (t.pending) pending[t.id] = {date: t.date}; else delete pending[t.id];
+      // only recent holds are watched (a later read only looks back 35 days, and the status has to stay small)
+      if (t.pending && D.diff(t.date, today) < BANK_RECENT_DAYS_) pending[t.id] = {date: t.date}; else delete pending[t.id];
       var ext = t.acc;
       // a move between the account and a pot or Space
       if (t.pot) {
@@ -598,32 +713,31 @@ function bankApply_(p, data, windowFrom) {
       }
       // the same payment logged by hand (to the penny, within 2 days) or by Peckish (a shop's estimate: within 15% or
       // £5, within 3 days, best if the shop's name matches): link it instead of adding it twice
-      var dupe = null, words = bankMerchantKey_(t.name).split(" ").filter(function (w) { return w.length > 2; });
-      rawTx.forEach(function (r) {
-        if (r.bankId || used[r.id] || bankTrue_(r.deleted) || /^bk-/.test(r.id) || !(t.amount > 0)) return;
-        var pk = r.source === "peckish", a = +r.amount || 0, dd = Math.abs(D.diff(D.parseDate(r.date), t.date));
-        // a shop split half in Peckish can be linked to whichever of you paid it
-        if (r.person !== p && !(pk && r.split && partnerOf_(p) === r.person && D.shareOf(db, r.split, p, 100, r.person) === 50)) return;
-        if (pk ? (dd > 3 || Math.abs(a - t.amount) > Math.max(5, t.amount * 0.15)) : (dd > 2 || !near(a, t.amount))) return;
-        var nameHit = words.some(function (w) { return bankMerchantKey_(r.note).split(" ").indexOf(w) >= 0; });
+      var eid = "bk-" + provider + "-" + t.id, dupe = null, words = bankMerchantKey_(t.name).split(" ").filter(function (w) { return w.length > 2; });
+      if (t.amount > 0) for (var off = -3; off <= 3; off++) (candDays[D.addDays(t.date, off)] || []).forEach(function (c) {
+        var r = c.r, a = c.a, dd = Math.abs(off); if (used[r.id] || r.bankId) return;
+        if (c.pk ? (dd > 3 || Math.abs(a - t.amount) > Math.max(5, t.amount * 0.15)) : (dd > 2 || !near(a, t.amount))) return;
+        if (!c.noteWords) c.noteWords = bankMerchantKey_(r.note).split(" ");
+        var nameHit = words.some(function (w) { return c.noteWords.indexOf(w) >= 0; });
         var score = (nameHit ? 0 : 10) + dd + Math.abs(a - t.amount) / 100;
-        if (!dupe || score < dupe.score) dupe = {r: r, score: score};
+        if (!dupe || score < dupe.score || (score === dupe.score && c.i < dupe.i)) dupe = {r: r, score: score, i: c.i};
       });
       if (dupe) {
         used[dupe.r.id] = true; byBank[t.id] = dupe.r;
-        var link = {bankId: t.id, review: false};
+        // the payer's own hand-logged payment is already checked; a Peckish shop still asks them
+        var link = {bankId: t.id, review: dupe.r.source === "peckish"};
         if (!near(+dupe.r.amount, t.amount)) link.amount = t.amount;
-        if (dupe.r.person !== p) { link.person = p; link.account = acc; }
         update("transactions", dupe.r.id, link); return;
       }
       var g = bankGuess_(db, p, t.name, t.category, t.date);
-      create("transactions", {id: "bk-" + provider + "-" + t.id, date: t.date, person: p, amount: t.amount, budget: g.budget, account: acc, split: "", splitHint: g.splitHint || "", note: t.name, source: provider, bankId: t.id,
-        review: t.date >= st});   // payments from before you started Budgie are history, nothing to check
+      var row = {id: eid, date: t.date, person: p, amount: t.amount, budget: g.budget, account: acc, split: "", splitHint: g.splitHint || "", note: t.name, source: provider, bankId: t.id,
+        review: t.date >= st};   // payments from before you started Budgie are history, nothing to check
+      create("transactions", row);
     });
 
     // one balance per mapped account per day
     data.accounts.forEach(function (a) {
-      var acc = accOf(a.extId, false); if (!acc) return;
+      var acc = accOf(a.extId, false); if (!acc || a.balance === null || a.balance === undefined || isNaN(+a.balance)) return;   // no balance given: nothing saved, never £0
       var id = "bk-" + a.extId + "-" + today, ex = byId_("valuations", id), amount = a.kind === "credit" ? -Math.abs(a.balance) : a.balance;
       if (ex && (byId_("accounts", ex.account) || {}).owner !== p) { Logger.log("Bank feed skipped valuations " + id + ": it isn't " + p + "'s."); return; }
       if (ex) { if (!near(+ex.amount, amount) || ex.account !== acc) update("valuations", id, {amount: amount, account: acc}); }
@@ -639,7 +753,8 @@ function bankApply_(p, data, windowFrom) {
       if (row && /^bk-/.test(row.id) && !bankTrue_(row.deleted)) update("transactions", row.id, {deleted: true});
       delete pending[id];
     });
-    var s1 = bankStatus_(p); s1.pending = pending; bankSaveStatus_(p, s1);
+    Object.keys(pending).forEach(function (id) { if (!pending[id] || !pending[id].date || D.diff(pending[id].date, today) >= BANK_RECENT_DAYS_) delete pending[id]; });
+    var s1 = bankStatus_(p); s1.pending = pending; delete s1.peers; bankSaveStatus_(p, s1);
 
     // every row on its own: one that can't be written (its id is taken) is skipped and logged, and the rest go on
     var now = Date.now(), added = 0, updated = 0;
@@ -676,9 +791,25 @@ function bankAppend_(p, t, rows, now) {
 
 // ---------- disconnecting ----------
 // why: shown in the status afterwards (when Budgie disconnected it itself)
+// from the phone: waits for any read or sign-in in progress, so a token refreshed at that moment can't come back
+function bankDisconnectLocked_(me, why) {
+  var lock = bankLock_();
+  if (!lock.tryLock(30000)) return {ok: false, error: "The bank is being read right now. Try again in a minute."};
+  try { return bankDisconnect_(me, why); } finally { lock.releaseLock(); }
+}
+// Monzo: ends the session at Monzo too. An expired token is refreshed first, so the log-out really happens.
+function monzoLogout_(me, tok) {
+  var out = function (t) { try { return bankHttp_("post", MONZO_API_ + "/oauth2/logout", {headers: {Authorization: "Bearer " + t.access}}).code; } catch (e) { return 0; } };
+  var code = tok.access ? out(tok) : 401;
+  if (code === 401 || code === 403) { try { var fresh = monzoRefresh_(me, tok); code = out(fresh); } catch (e) {} }
+  return code >= 200 && code < 300;
+}
+// call with the bank lock held (bankDisconnectLocked_), or from inside bankRun_
 function bankDisconnect_(me, why) {
   var tok = bankGet_(bankKey_("TOKEN", me)), had = !!tok || !!bankGet_(bankKey_("CLIENT", me));
-  if (tok && tok.provider === "monzo" && tok.access) { try { bankHttp_("post", MONZO_API_ + "/oauth2/logout", {headers: {Authorization: "Bearer " + tok.access}}); } catch (e) {} }
+  // first, so a token refreshed at this moment is dropped as soon as it's saved (bankGone_)
+  var conn = bankConnId_(tok || bankGet_(bankKey_("TOKEN_NEXT", me))); if (conn) bankSet_(bankKey_("GONE", me), conn);
+  if (tok && tok.provider === "monzo") { var gone = monzoLogout_(me, tok); if (!gone) Logger.log("Monzo log-out didn't go through; Budgie has forgotten its key. To be sure, delete the client in the Monzo developer portal."); }
   bankDel_(bankKey_("TOKEN", me)); bankDel_(bankKey_("TOKEN_NEXT", me)); bankDel_(bankKey_("CLIENT", me));
   bankStates_().forEach(function (x) { if (!x.v || x.v.person === me) bankDel_(x.k); });
   bankSaveStatus_(me, {provider: "", accounts: [], lastSync: 0, lastError: why || ""});
@@ -689,22 +820,25 @@ function bankDisconnect_(me, why) {
 // ---------- polling (no webhooks) ----------
 function bankPeople_() { return readTable_("people").rows.map(function (r) { return r.id; }).filter(function (id) { return id && bankGet_(bankKey_("TOKEN", id)); }); }
 function bankPoll() {
-  CACHE_ = {}; bankMoveSecrets_();
+  CACHE_ = {}; bankStart_(); bankMoveSecrets_();
   bankPeople_().forEach(function (p) {
     var s = bankStatus_(p);
     if (s.needsReconnect || (s.backoffUntil && s.backoffUntil > Date.now())) return;
+    if (Date.now() - BANK_T0_ > BANK_READ_BUDGET_ / 2) return;   // the next poll reads the rest, well inside the 6 minutes
     try { bankRun_(p); } catch (e) {}
   });
 }
-// runs every minute only while a new Monzo connection waits to be approved, then removes itself
+// runs every minute only while a new Monzo connection waits to be approved, or a first read of your history has
+// more to bring in, then removes itself
 function bankPendingImports() {
-  CACHE_ = {}; bankMoveSecrets_();
+  CACHE_ = {}; bankStart_(); bankMoveSecrets_();
   var waiting = 0;
   bankPeople_().forEach(function (p) {
-    var s = bankStatus_(p); if (!s.waiting) return;
-    if (!(s.firstUntil > Date.now())) { s.waiting = false; s.needsReconnect = true; s.lastError = "Budgie wasn't approved in the Monzo app in time. Reconnect and approve it there."; bankSaveStatus_(p, s); return; }
+    var s = bankStatus_(p), more = s.cursor && !s.fullDone && !s.needsReconnect; if (!s.waiting && !more) return;
+    if (s.waiting && !(s.firstUntil > Date.now())) { s.waiting = false; s.needsReconnect = true; s.lastError = "Budgie wasn't approved in the Monzo app in time. Reconnect and approve it there."; bankSaveStatus_(p, s); return; }
+    if (Date.now() - BANK_T0_ > BANK_READ_BUDGET_ / 2) { waiting++; return; }   // the next minute
     bankRun_(p);
-    if (bankStatus_(p).waiting) waiting++;
+    var s2 = bankStatus_(p); if (s2.waiting || (s2.cursor && !s2.fullDone && !s2.needsReconnect)) waiting++;
   });
   if (!waiting) ScriptApp.getProjectTriggers().forEach(function (t) { if (t.getHandlerFunction() === "bankPendingImports") ScriptApp.deleteTrigger(t); });
 }

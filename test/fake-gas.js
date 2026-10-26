@@ -4,14 +4,15 @@ function chain() { const o = new Proxy(function () {}, {get: (t, k) => k === "th
 function makeEnv() {
   const sheets = {}, props = {}, logs = [];
   function Sheet(name) {
-    const s = {name, cells: []};
+    const s = {name, cells: [], protections: []};
     const range = (r, c, nr = 1, nc = 1) => {
       const g = {
         getValues: () => Array.from({length: nr}, (_, i) => Array.from({length: nc}, (_, j) => ((s.cells[r - 1 + i] || [])[c - 1 + j]) ?? "")),
         setValues: (v) => { v.forEach((row, i) => row.forEach((x, j) => { (s.cells[r - 1 + i] = s.cells[r - 1 + i] || [])[c - 1 + j] = parseIn(x); })); return g; },
         setValue: (x) => { (s.cells[r - 1] = s.cells[r - 1] || [])[c - 1] = parseIn(x); return g; },
         setFontWeight: () => g, setBackground: () => g, setNote: () => g, setFontSize: () => g, setNumberFormat: () => g, setFontColor: () => g,
-        protect: () => ({setWarningOnly: () => {}})
+        // like Sheets: every protect() adds another protected range to the sheet
+        protect: () => { const pr = {desc: "", setDescription: (d) => { pr.desc = d; return pr; }, getDescription: () => pr.desc, setWarningOnly: () => pr, remove: () => { s.protections.splice(s.protections.indexOf(pr), 1); }}; s.protections.push(pr); return pr; }
       };
       return g;
     };
@@ -20,6 +21,7 @@ function makeEnv() {
       getDataRange: () => { const w = Math.max(1, ...s.cells.map(r => (r || []).length)); return range(1, 1, Math.max(1, s.cells.length), w); },
       getLastColumn: () => Math.max(0, ...s.cells.map(r => (r || []).length)), getLastRow: () => s.cells.length,
       appendRow: (row) => { s.cells.push(row.map(parseIn)); },
+      getProtections: () => s.protections.slice(),
       setFrozenRows: () => {}, setFrozenColumns: () => {}, setColumnWidth: () => {}, clear: () => { s.cells = []; }, _s: s
     };
     return api;
@@ -37,7 +39,7 @@ function makeEnv() {
   };
   const ctx = {
     console, Date, JSON, Math, Object, Array, String, Number, RegExp, Error,
-    SpreadsheetApp: {getActiveSpreadsheet: () => ss, openById: () => ss, flush: () => {}},
+    SpreadsheetApp: {getActiveSpreadsheet: () => ss, openById: () => ss, flush: () => {}, ProtectionType: {RANGE: "RANGE", SHEET: "SHEET"}},
     PropertiesService: {getScriptProperties: () => propStore(props), getUserProperties: () => propStore(userProps)},
     LockService: {getScriptLock: () => ({waitLock: () => {}, releaseLock: () => {}})},
     ContentService: {createTextOutput: (t) => ({setMimeType: () => ({text: t, json: () => JSON.parse(t)})}), MimeType: {JSON: "json"}},

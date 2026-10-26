@@ -9,10 +9,21 @@ The code is `apps-script/BankFeeds.gs`. Its tests are `test/bank.test.js`, which
 3. Run `installBankTrigger` once. Allow the new permissions Google asks for: connecting to external services, and sending email as you (for the notices below).
    - It reads the banks every 15 minutes.
    - `installTriggers` and the price trigger leave it alone.
-4. **Where the secrets live.** Bank tokens, the Monzo client secret and sign-in states are kept in the **owner's User Properties**, not the script's properties, so editors of the sheet can't see them in Project Settings.
+4. **Where the secrets live.** Bank tokens, the Monzo client secret and sign-in states are kept in the **owner's User Properties**, not the script's properties, so they never show in Project Settings.
+   - This only hides them from view. Anyone who can edit the sheet can edit its script, and code they add runs as the owner. So **share the sheet with nobody**; each of you uses Budgie through your own key.
    - Anything an older version kept in Script Properties moves over the first time the bank feed runs.
    - Budgie keys stay in Script Properties.
 5. **Notices.** Whenever bank details are added, changed or removed, the sheet's owner gets a short email (nothing secret in it). If it wasn't you, run `newKey("<person>")` and reconnect.
+
+## Who can see what
+- **Budgie itself can't move money.** Every bank request goes through one helper that only allows reading (GET) from Monzo and Starling, plus Monzo's sign-in and log-out. It never follows redirects.
+- **Monzo's key isn't read-only at Monzo.** Monzo's developer API has no read-only option. Anyone who stole Ethan's Monzo key could move money between his current account and his pots (not to anyone else), add webhooks or annotate payments. Turn on Monzo's added security for savings pots so they can't be emptied through the API.
+- **Starling's token is read-only at Starling.** Budgie refuses any token with more than the read boxes, and checks again every day.
+- **The sheet's owner (Ethan) can see everything in the sheet**, including Sophie's payments and her Starling token, whatever she shares in the app. Sharing settings keep things private between your phones, not from the owner.
+- **Nobody else can**: not someone who finds the web app's address, not your partner's Budgie key, not Peckish or Caledonite. Bank actions are always about the caller's own bank.
+  - **Reading your bank only ever looks at your own rows.** Nothing your partner logs (in Budgie or Peckish) is matched, linked or changed by it, so nothing they write can tell them anything about your payments. If you both log the same shared shop, the one that isn't the payer's can simply be removed.
+- **Check now** works at most every 30 seconds each, because every read uses the owner's daily allowance of Google requests, which both of you share.
+- **When you stop using it**: disconnect in Budgie, then delete the OAuth client in the Monzo developer portal and revoke the Starling token in Starling's portal.
 
 ## Ethan: Monzo
 1. Open https://developers.monzo.com and sign in with the email on your Monzo account. Approve the sign-in in the Monzo app.
@@ -45,7 +56,7 @@ The code is `apps-script/BankFeeds.gs`. Its tests are `test/bank.test.js`, which
   - Payments dated before your Budgie start date are history, so they get `review: false`.
   - A payment matching one already logged is linked instead of added:
     - logged by hand: the same amount within 1p, within 2 days;
-    - posted by Peckish: within 15% or £5 (whichever is bigger), within 3 days, best if the shop's name matches. A Peckish shop split half can be linked to whichever of you paid it, and its amount becomes the bank's.
+    - posted by Peckish: within 15% or £5 (whichever is bigger), within 3 days, best if the shop's name matches. Your own Peckish shop is linked and its amount becomes the bank's.
   - A rule learned from a correction sets the budget, but its split is only stored as `splitHint`. The split itself stays empty until you confirm the payment.
   - A pending payment that goes to £0, or that disappears from the feed and is more than a week old, is removed.
   - Rows the bank wrote or linked: phones can only change `budget`, `split`, `note` and `review`. A phone can dismiss one, but not bring it back.
@@ -58,7 +69,7 @@ The code is `apps-script/BankFeeds.gs`. Its tests are `test/bank.test.js`, which
   - A Moneybox payment that doesn't match goes to the LISA (if it equals the LISA saving) or the ISA, with `review: true`.
 - **Balances:** one `valuations` row per mapped account per day.
 - **How far back each read goes:**
-  - everything, the first time
+  - everything, the first time (over more than one run if it's long)
   - the last 35 days, every 15 minutes
   - 89 days, on the read after you map a pot
 
@@ -66,13 +77,14 @@ The code is `apps-script/BankFeeds.gs`. Its tests are `test/bank.test.js`, which
 These were built from the docs. Starling's reference pages need JavaScript and couldn't be read here, so its shapes come from client libraries.
 
 **Monzo**
-- `/accounts` `type` values. Is a Flex or joint account listed, and as what?
+- Budgie asks for `account_type=uk_retail` only, so a joint account (with your partner's card spending) or Flex is left out. Check your current account is the one listed.
 - How pot moves look in the account's feed. Budgie expects `metadata.pot_id` (or a `description` of `pot_…`), with a negative amount into the pot.
 - How a direct debit paid from a **bills pot** shows up. It might be read as a move, not a bill.
 - `expand[]=merchant` gives `merchant.name`, and faster payments have `counterparty.name`.
 - A pending payment keeps the same `id` when it settles.
 - Paging with `since=<last id>` and `limit=100` returns the whole history.
 - When the 5-minute full-history window starts: at sign-in or at approval. Budgie tries the full import from the moment you sign in. If a full read is refused more than 5 minutes after approval, it reads the last 89 days instead and notes "Monzo only lets Budgie read the last 90 days now".
+- A first read of a long history stops reading after 3½ minutes of a run (Apps Script stops any run at 6), saves what it has, and carries on from the last payment a minute later. If Monzo stops sharing older payments part-way (on a page, or when carrying on), what was read is kept, the last 89 days are read too, and the note says how far the history got. Whether Monzo lets a read carry on from a payment's id after its 5 minutes is unknown: if not, the gap between the two is lost, so approve straight away.
 - Before approval, `/accounts` returns 403. Rate limits return 429, maybe with `Retry-After`.
 
 **Starling**
@@ -84,6 +96,7 @@ These were built from the docs. Starling's reference pages need JavaScript and c
 - `effectiveBalance` is used for the balance. Status values used: PENDING, SETTLED, DECLINED, REVERSED, UPCOMING.
 
 **Both**
+- Apps Script doesn't document whether a web app run as the owner gets the owner's **user lock** (the one the triggers use). Budgie doesn't rely on it for safety: a disconnect always wins over a refresh happening at the same moment, two refreshes at once don't break the connection, and rows are only written under the script lock.
 - Dates are London dates, so a 23:30 payment on a summer night counts on that day.
 - Moneybox payments are spotted by "Moneybox" in the name.
 

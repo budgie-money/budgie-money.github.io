@@ -1,7 +1,9 @@
 // Clicks through every screen in demo mode and with the test backend. Run with the test server up.
 const { chromium, devices } = require("playwright");
+const PORT = process.env.PORT || 8790;
 const links = require("./.links.json"), OUT = "/tmp/claude-0/-home-claude/6647f075-e63a-5e5e-a642-61d34bf7d70e/scratchpad/shots/";
 const T = s => (s || "").replace(/\s+/g, " ").trim();
+const fails = [], check = (name, cond, extra) => { if (cond) console.log("ok", name); else fails.push(name + (extra !== undefined ? " :: " + JSON.stringify(extra).slice(0, 300) : "")); };
 (async () => {
   const browser = await chromium.launch();
   const errs = [];
@@ -29,7 +31,7 @@ const T = s => (s || "").replace(/\s+/g, " ").trim();
 
   // 1. Show and tell
   let page = await newPage("2026-10-26");
-  await page.goto("http://localhost:8790/"); await page.waitForSelector("main");
+  await page.goto("http://localhost:" + PORT + "/"); await page.waitForSelector("main");
   await shot(page, "01-connect");
   await page.click('[data-a="demo"][data-v="on"]'); await page.waitForTimeout(150);
   await shot(page, "02-demo-today", true);
@@ -62,11 +64,11 @@ const T = s => (s || "").replace(/\s+/g, " ").trim();
   await page.fill("#addAmt", "35");
   await page.click('[data-a="addsave"]'); await page.waitForTimeout(1200);
   console.log("after log:", T(await page.textContent("#toast")), "|", T(await page.textContent("main")).slice(0, 400));
-  const tx = await (await page.request.get("http://localhost:8790/dump?transactions")).json();
+  const tx = await (await page.request.get("http://localhost:" + PORT + "/dump?transactions")).json();
   console.log("saved to sheet:", tx.map(r => r.amount + " " + r.budget + " " + r.account));
   // tick the fuel move
   if (await page.$('input[data-c="tick"]')) { await page.click('input[data-c="tick"]', {noWaitAfter: true}).catch(() => {}); await page.waitForTimeout(1200); }
-  const mv = await (await page.request.get("http://localhost:8790/dump?moves")).json(); console.log("moves in sheet:", mv.map(r => r.from + ">" + r.to + " " + r.amount + " " + r.key));
+  const mv = await (await page.request.get("http://localhost:" + PORT + "/dump?moves")).json(); console.log("moves in sheet:", mv.map(r => r.from + ">" + r.to + " " + r.amount + " " + r.key));
   // payday: change the pay
   await page.click('nav [data-v="more"]'); await page.click('main [data-v="payday"]'); await shot(page, "21-payday", true);
   await page.click('[data-a="payedit"]'); await page.fill("#payAmt", "2900"); await page.click('[data-a="paysave"]'); await page.waitForTimeout(1200);
@@ -74,18 +76,66 @@ const T = s => (s || "").replace(/\s+/g, " ").trim();
   // change the phone bill from 20 to 24 from today
   await page.click('nav [data-v="more"]'); await page.click('main [data-v="bills"]'); await page.click('[data-a="edit"][data-v="bills:e-phone"]');
   await page.fill('[data-f="amount"]', "24"); await page.click('[data-a="editsave"]'); await page.waitForTimeout(100); await page.click('[data-a="amtwhen"][data-v="today"]'); await page.waitForTimeout(1200);
-  const am = await (await page.request.get("http://localhost:8790/dump?amounts")).json(); console.log("amounts:", am.map(r => r.item + " " + r.amount + " from " + r.start));
-  const phone = (await (await page.request.get("http://localhost:8790/dump?bills")).json()).find(r => r.id === "e-phone"); console.log("phone base amount still", phone.amount);
+  const am = await (await page.request.get("http://localhost:" + PORT + "/dump?amounts")).json(); console.log("amounts:", am.map(r => r.item + " " + r.amount + " from " + r.start));
+  const phone = (await (await page.request.get("http://localhost:" + PORT + "/dump?bills")).json()).find(r => r.id === "e-phone"); console.log("phone base amount still", phone.amount);
   // Coming up: mark one as didn't happen
   await page.click('nav [data-v="today"]'); const occ = await page.$('.swipe .face'); if (occ) { await occ.click(); await page.waitForTimeout(100); await shot(page, "22-occ-sheet"); await page.click('[data-a="occdo"][data-v^="skip"]'); await page.waitForTimeout(1200); }
-  const ex = await (await page.request.get("http://localhost:8790/dump?exceptions")).json(); console.log("exceptions:", ex.map(r => r.item + " " + r.action + " " + r.date));
+  const ex = await (await page.request.get("http://localhost:" + PORT + "/dump?exceptions")).json(); console.log("exceptions:", ex.map(r => r.item + " " + r.action + " " + r.date));
   await page.click('nav [data-v="partner"]'); await shot(page, "23-ethan-partner", true);
   console.log("partner:", T(await page.textContent("main")).slice(0, 500));
   // new bill through the editor
   await page.click('nav [data-v="more"]'); await page.click('main [data-v="bills"]'); await page.click('[data-a="new"][data-v="bills"]');
   await page.fill('[data-f="name"]', "Netflix"); await page.fill('[data-f="amount"]', "5.99"); await page.selectOption('[data-f="category"]', "subscription"); await page.selectOption('[data-f="on"]', "22");
   await shot(page, "24-new-bill", true); await page.click('[data-a="editsave"]'); await page.waitForTimeout(1200);
-  const nb = (await (await page.request.get("http://localhost:8790/dump?bills")).json()).find(r => r.name === "Netflix"); console.log("new bill:", nb && [nb.amount, nb.unit, nb.on, nb.start, nb.person, nb.category]);
+  const nb = (await (await page.request.get("http://localhost:" + PORT + "/dump?bills")).json()).find(r => r.name === "Netflix"); console.log("new bill:", nb && [nb.amount, nb.unit, nb.on, nb.start, nb.person, nb.category]);
+  check("a new bill keeps the day you picked", nb && String(nb.on) === "22" && nb.unit === "month", nb);
+  // "How often" brings up the right questions, and a yearly bill follows its start date, not a day picked for monthly
+  await page.click('nav [data-v="more"]'); await page.click('main [data-v="bills"]'); await page.click('[data-a="new"][data-v="bills"]');
+  await page.fill('[data-f="name"]', "Car tax"); await page.fill('[data-f="amount"]', "190"); await page.selectOption('[data-f="on"]', "9");
+  await page.selectOption('[data-f="how"]', "week"); await page.waitForTimeout(100);
+  check("every few weeks asks how many weeks", !!(await page.$('[data-f="every"]')) && !(await page.$('[data-f="on"]')));
+  await page.selectOption('[data-f="how"]', "dates"); await page.waitForTimeout(100);
+  check("on set dates asks for the dates", !!(await page.$('textarea[data-f="dates"]')));
+  await page.selectOption('[data-f="how"]', "year"); await page.waitForTimeout(100);
+  check("what was typed is kept when the form changes", (await page.inputValue('[data-f="name"]')) === "Car tax");
+  await page.fill('[data-f="start"]', "2027-03-14"); await page.click('[data-a="editsave"]'); await page.waitForTimeout(1200);
+  const ct = (await (await page.request.get("http://localhost:" + PORT + "/dump?bills")).json()).find(r => r.name === "Car tax");
+  check("a yearly bill is on its start date", ct && ct.unit === "year" && !ct.on && ct.start === "2027-03-14", ct);
+  // a new monthly bill's day follows its start date until you pick one
+  await page.click('[data-a="new"][data-v="bills"]'); await page.fill('[data-f="name"]', "Window cleaner"); await page.fill('[data-f="amount"]', "12");
+  await page.fill('[data-f="start"]', "2026-11-17"); await page.waitForTimeout(100);
+  check("the day follows the start date", (await page.inputValue('[data-f="on"]')) === "17");
+  await page.context().close();
+
+  // 2b. a week after payday with the pots still to sort: Payday still shows this payday, and it can be ticked
+  page = await newPage("2026-11-09");
+  await page.goto(links.ethan); await page.waitForFunction(() => /Hi Ethan/.test(document.querySelector("#top").textContent), null, {timeout: 8000});
+  check("Today still asks to sort the pay", /Sort your pay into pots/.test(T(await page.textContent("main"))));
+  await page.click('nav [data-v="more"]'); await page.click('main [data-v="payday"]');
+  const pdText = T(await page.textContent("main")), ticks = await page.$$eval('input[data-c="paytick"]', els => els.map(e => e.disabled));
+  check("Payday shows the payday still to sort", /^Payday: Thu 29 Oct/.test(pdText) && ticks.length > 0 && ticks.every(x => !x), {pdText: pdText.slice(0, 80), ticks});
+  // stopping a budget mid-month keeps it for this pay period (its money was sorted on payday)
+  await page.click('nav [data-v="more"]'); await page.click('main [data-a="go"][data-v="settings"]'); await page.click('main [data-a="go"][data-v="list:budgets"]');
+  await page.click('[data-a="edit"][data-v="budgets:e-fun"]'); check("a budget says when it stops", /Stop after this pay period/.test(T(await page.textContent("main"))));
+  await page.click('[data-a="editstop"]'); await page.waitForTimeout(1200);
+  const fun = (await (await page.request.get("http://localhost:" + PORT + "/dump?budgets")).json()).find(r => r.id === "e-fun");
+  await page.click('nav [data-v="today"]');
+  check("a stopped budget ends with this pay period, and is still on Today", fun && fun.end === "2026-11-25" && /Fun/.test(T(await page.textContent(".grid2"))), fun);
+  await page.context().close();
+  // Coming up: a loan repayment can't be swiped to "didn't happen"; tapping it asks if it's been paid
+  page = await newPage("2026-12-20");
+  await page.goto(links.ethan); await page.waitForFunction(() => /Hi Ethan/.test(document.querySelector("#top").textContent), null, {timeout: 8000});
+  const loanRow = await page.$('.swipe:has(.face[data-v="loan:sofa:2026-12-28"])');
+  check("a loan repayment is in Coming up without swipe buttons", loanRow && !(await loanRow.$(".acts")));
+  if (loanRow) { await page.click('.face[data-v="loan:sofa:2026-12-28"]'); await page.waitForTimeout(100); check("and tapping it asks if it's been paid", /It's been paid to me/.test(T(await page.textContent("#sheets")))); }
+  await page.context().close();
+  // Christmas pay comes early (moved to 24 Dec) after a pay rise: changing it starts from the new pay
+  const kE = JSON.parse(Buffer.from(links.ethan.split("#connect=")[1], "base64url").toString()).k;
+  page = await newPage("2026-12-26");
+  await page.request.post("http://localhost:" + PORT + "/exec", {data: JSON.stringify({key: kE, ops: [{op: "put", table: "amounts", row: {id: "amt-rise", item: "e-pay", start: "2026-12-01", amount: 2600}}]})});
+  await page.goto(links.ethan); await page.waitForFunction(() => /Hi Ethan/.test(document.querySelector("#top").textContent), null, {timeout: 8000});
+  await page.click('nav [data-v="more"]'); await page.click('main [data-v="payday"]'); await page.click('[data-a="payedit"]'); await page.waitForTimeout(100);
+  check("a moved payday's amount starts from the pay rise", (await page.inputValue("#payAmt")) === "2600", await page.inputValue("#payAmt"));
   await page.context().close();
 
   // 3. Sophie sees the split, not Ethan's private payment
@@ -101,9 +151,101 @@ const T = s => (s || "").replace(/\s+/g, " ").trim();
   console.log("offline header:", T(await page.textContent("#top")));
   await page.context().setOffline(false); await page.evaluate(() => window.BudgieApp.sync(false)); await page.waitForTimeout(1500);
   console.log("back online header:", T(await page.textContent("#top")));
-  const tx2 = await (await page.request.get("http://localhost:8790/dump?transactions")).json(); console.log("sophie's offline payment reached the sheet:", tx2.some(r => r.person === "sophie" && +r.amount === 4));
+  const tx2 = await (await page.request.get("http://localhost:" + PORT + "/dump?transactions")).json(); console.log("sophie's offline payment reached the sheet:", tx2.some(r => r.person === "sophie" && +r.amount === 4));
+  check("an offline payment reaches the sheet", tx2.some(r => r.person === "sophie" && +r.amount === 4));
+  // a sync that never gets an answer gives up, and the next one goes through
+  let held = null; await page.route("**/exec", r => { held = r; });
+  await page.evaluate(() => { window.BudgieApp.sync(false); }); await page.waitForTimeout(300);
+  const stuck = await page.evaluate(() => window.BudgieApp.S.syncing);
+  await page.clock.fastForward(91000); await page.waitForTimeout(300);
+  check("a sync with no answer stops after a while and says so", stuck && !(await page.evaluate(() => window.BudgieApp.S.syncing)) && /took too long/.test(await page.evaluate(() => window.BudgieApp.S.lastError)));
+  await page.unroute("**/exec"); if (held) await held.abort().catch(() => {});
+  await page.evaluate(() => window.BudgieApp.sync(false)); await page.waitForTimeout(1500);
+  check("and the next sync works", await page.evaluate(() => !window.BudgieApp.S.lastError && !window.BudgieApp.S.syncing));
+  await page.context().close();
+
+  // 4. review fixes
+  // the fingerprint lock still asks when Show and tell was left on (so turning it off can't get round the lock)
+  page = await newPage("2026-11-02");
+  await page.addInitScript(() => { if (!sessionStorage.getItem("seeded")) { sessionStorage.setItem("seeded", "1"); localStorage.setItem("budgie.lock", JSON.stringify({id: "AAAA", at: 1})); localStorage.setItem("budgie.prefs", JSON.stringify({demo: true})); } });
+  await page.goto(links.ethan); await page.waitForTimeout(1500);
+  check("Show and tell left on: Budgie is still locked", !!(await page.$("#lock")) && !/£/.test(T(await page.textContent("main"))) && !(await page.$("nav button")), T(await page.textContent("main")).slice(0, 80));
+  await page.context().close();
+  // a change the sheet couldn't save for a passing reason stays on the phone and goes up next time
+  page = await newPage("2026-11-02");
+  await page.goto(links.ethan); await page.waitForFunction(() => /Hi Ethan/.test(document.querySelector("#top").textContent), null, {timeout: 8000});
+  let hiccup = true;
+  await page.route("**/exec", async r => {
+    const body = JSON.parse(r.request().postData() || "{}");
+    if (!hiccup || !(body.ops || []).length) return r.continue();
+    hiccup = false; const op = body.ops[0]; body.ops = [];
+    const res = await r.fetch({postData: JSON.stringify(body)}), j = await res.json();
+    j.rejected = [{i: 0, table: op.table, id: op.row ? op.row.id : op.id, error: "Service Spreadsheets timed out while accessing document", retry: true}];
+    return r.fulfill({response: res, body: JSON.stringify(j)});
+  });
+  await page.click('nav [data-v="add"]'); await page.fill("#addAmt", "7.77"); await page.click('[data-a="addsave"]'); await page.waitForTimeout(1500);
+  check("a hiccup keeps the payment waiting on the phone", await page.evaluate(() => window.BudgieApp.S.data.queue.length === 1) && !/turned down/.test(T(await page.textContent("#toast"))));
+  await page.evaluate(() => window.BudgieApp.sync(false)); await page.waitForTimeout(1500);
+  const tx7 = await (await page.request.get("http://localhost:" + PORT + "/dump?transactions")).json();
+  check("and it reaches the sheet on the next sync", tx7.some(r => r.person === "ethan" && +r.amount === 7.77) && await page.evaluate(() => window.BudgieApp.S.data.queue.length === 0));
+  await page.unroute("**/exec");
+  // pennies: an amount typed with too many decimals is saved to the penny
+  await page.click('nav [data-v="more"]'); await page.click('main [data-v="bills"]'); await page.click('[data-a="new"][data-v="bills"]');
+  await page.fill('[data-f="name"]', "Climbing wall"); await page.fill('[data-f="amount"]', "12.345"); await page.click('[data-a="editsave"]'); await page.waitForTimeout(1200);
+  const gym = (await (await page.request.get("http://localhost:" + PORT + "/dump?bills")).json()).find(r => r.name === "Climbing wall");
+  check("a typed amount is kept to the penny", gym && +gym.amount === 12.35, gym && gym.amount);
+  // a new link for the same person and sheet (a new key) keeps what's still waiting; someone else's doesn't take it
+  await page.route("**/exec", r => r.abort());
+  await page.click('nav [data-v="add"]'); await page.fill("#addAmt", "8.88"); await page.click('[data-a="addsave"]'); await page.waitForTimeout(800);
+  check("(8.88 is waiting on the phone)", await page.evaluate(() => window.BudgieApp.S.data.queue.length === 1));
+  await page.goto("about:blank"); await page.unroute("**/exec");
+  const rk = await (await page.request.get("http://localhost:" + PORT + "/rekey?who=ethan")).json();
+  await page.goto("about:blank"); await page.goto(rk.link); await page.waitForFunction(() => /Hi Ethan/.test(document.querySelector("#top").textContent), null, {timeout: 8000}); await page.waitForTimeout(1500);
+  const tx8 = await (await page.request.get("http://localhost:" + PORT + "/dump?transactions")).json();
+  check("a new key for the same person keeps the change made offline", tx8.some(r => r.person === "ethan" && +r.amount === 8.88), tx8.filter(r => r.person === "ethan").map(r => r.amount));
+  await page.route("**/exec", r => r.abort());
+  await page.click('nav [data-v="add"]'); await page.fill("#addAmt", "9.99"); await page.click('[data-a="addsave"]'); await page.waitForTimeout(800);
+  check("(9.99 is waiting on the phone)", await page.evaluate(() => window.BudgieApp.S.data.queue.length === 1));
+  await page.goto("about:blank"); await page.unroute("**/exec");
+  await page.goto("about:blank"); await page.goto(links.sophie); await page.waitForFunction(() => /Hi Sophie/.test(document.querySelector("#top").textContent), null, {timeout: 8000}); await page.waitForTimeout(1500);
+  const tx9 = await (await page.request.get("http://localhost:" + PORT + "/dump?transactions")).json();
+  check("someone else's link doesn't send Ethan's change as them, and says so", !tx9.some(r => +r.amount === 9.99) && /1 change made as Ethan weren't sent/.test(T(await page.textContent("#toast"))), T(await page.textContent("#toast")));
+  await page.evaluate(() => { window.BudgieApp.S.data.carry = {me: "x", name: "X", queue: [{op: "put", table: "transactions", row: {id: "t-c"}}]}; window.BudgieApp.go("sync"); });
+  await page.click('[data-a="disconnect"]'); await page.waitForTimeout(100);
+  check("Disconnect counts changes still carried over from an old link", /1 change hasn't reached your Google Sheet/.test(T(await page.textContent("#sheets"))));
+  await page.request.get("http://localhost:" + PORT + "/rekey?who=ethan&k=" + rk.old);
+  await page.context().close();
+
+  // 5. review fixes (1.4.3)
+  page = await newPage("2026-11-02");
+  await page.goto(links.ethan); await page.waitForFunction(() => /Hi Ethan/.test(document.querySelector("#top").textContent), null, {timeout: 8000});
+  // a loan is paid from the lender's account: the borrower isn't asked for one, and one picked before switching is dropped
+  await page.evaluate(() => window.BudgieApp.go("debts")); await page.click('[data-a="new"][data-v="loans"]'); await page.waitForTimeout(100);
+  const accIn = !!(await page.$('[data-f="account"]'));
+  await page.fill('[data-f="name"]', "Bike"); await page.fill('[data-f="amount"]', "50"); await page.selectOption('[data-f="account"]', "e-food");
+  await page.selectOption('[data-f="direction"]', "out"); await page.waitForTimeout(100);
+  const accOut = !!(await page.$('[data-f="account"]')), keptName = await page.inputValue('[data-f="name"]');
+  await page.click('[data-a="editsave"]'); await page.waitForTimeout(1500);
+  const bike = (await (await page.request.get("http://localhost:" + PORT + "/dump?loans")).json()).find(r => r.name === "Bike");
+  check("a loan you lent asks which account it came from; one you owe doesn't", accIn && !accOut && keptName === "Bike", {accIn, accOut, keptName});
+  check("a loan you owe is saved without your account (it's the lender's to say)", bike && bike.lender === "sophie" && bike.borrower === "ethan" && !bike.account, bike);
+  // a Full refresh tapped while a sync is on its way isn't lost: it runs once that one is done
+  let heldR = null, fulls = 0;
+  await page.route("**/exec", r => { const b = JSON.parse(r.request().postData() || "{}"); if (b.full) fulls++; if (!heldR && !b.action) { heldR = r; return; } return r.continue(); });
+  await page.evaluate(() => { window.BudgieApp.sync(false); }); await page.waitForTimeout(200);
+  await page.evaluate(() => { window.BudgieApp.sync(true); }); await page.waitForTimeout(200);
+  const before = fulls; await heldR.continue(); await page.waitForTimeout(1500);
+  check("a Full refresh asked for during a sync still happens", before === 0 && fulls === 1, {before, fulls});
+  await page.unroute("**/exec");
+  // whole pounds below zero read like pennies do: -£9,000, not £-9,000
+  await page.evaluate(() => window.BudgieApp.go("pots")); await page.click('[data-a="potcheck"][data-v="e-main"]'); await page.fill("#potBal", "-20000"); await page.click('[data-a="potsave"]'); await page.waitForTimeout(300);
+  await page.evaluate(() => window.BudgieApp.go("networth")); await page.waitForTimeout(200);
+  const nwText = T(await page.textContent("main"));
+  check("a negative net worth shows as -£…", /-£\d/.test(nwText) && !/£-/.test(nwText), nwText.slice(0, 160));
   await page.context().close();
 
   console.log(errs.length ? "ERRORS:\n" + errs.join("\n") : "No errors");
+  console.log(fails.length ? "FAIL\n  " + fails.join("\n  ") : "All checks passed");
+  process.exitCode = fails.length ? 1 : 0;
   await browser.close();
 })();

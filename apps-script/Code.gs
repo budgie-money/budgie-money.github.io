@@ -28,7 +28,7 @@ var SCHEMA = {
   people: ["id", "name", "bank", "potWord", "partner", "colour"],
   accounts: ["id", "owner", "name", "kind", "purpose", "fallback", "order"],
   income: ["id", "person", "name", "amount", "account", "isPay", "unit", "every", "on", "shift", "start", "end", "dates", "notes"],
-  bills: ["id", "person", "name", "category", "amount", "account", "split", "variable", "unit", "every", "on", "shift", "start", "end", "dates", "notes"],
+  bills: ["id", "person", "name", "category", "amount", "account", "split", "variable", "setAside", "unit", "every", "on", "shift", "start", "end", "dates", "notes"],
   budgets: ["id", "person", "name", "amount", "mode", "account", "carry", "start", "end", "notes"],
   splits: ["id", "name", "shares", "notes"],
   transfers: ["id", "from", "to", "name", "amount", "fromAccount", "toAccount", "purpose", "unit", "every", "on", "shift", "start", "end", "dates", "notes"],
@@ -283,6 +283,13 @@ function owner_(t, r) {
     default: return null; // splits, prices, meta: shared
   }
 }
+// who may change a row: its owners, except that a regular payment (and a change to one of its dates) is only the
+// payer's to change, as in the app; the one it's paid to sees it but can't move or stop it
+function writers_(t, r) {
+  if (t === "transfers") return [r.from];
+  if (t === "amounts" || t === "exceptions") { var it = findItem_(r.item); if (it && it.t === "transfers") return [it.row.from]; }
+  return owner_(t, r);
+}
 function byId_(t, id) { return index_(t)[id] || null; }
 var ITEM_TABS_ = ["income", "bills", "budgets", "transfers", "loans"];
 function findItem_(id) {
@@ -308,25 +315,44 @@ function canSee_(me, t, r, sharing) {
 }
 
 // ---------- writing ----------
-// each change is saved or refused on its own, so one refused change never holds up the rest
+// each change is saved or refused on its own, so one refused change never holds up the rest.
+// A change Budgie turns down on purpose (refuse_) is gone for good; anything else (the sheet being busy, a
+// Google hiccup) comes back with retry: true, so the phone keeps it and sends it again
+function refuse_(msg) { var e = new Error(msg); e.refused = true; return e; }
+// After a hiccup the rest of the batch isn't tried (notTried), so changes still reach the sheet in the order they
+// were made: a later change to the same row can't be saved before an earlier one and then be undone by it.
 function applyOps_(me, ops, app) {
-  var now = Date.now(), applied = [], rejected = [];
+  var now = Date.now(), applied = [], rejected = [], halted = false;
   ops.forEach(function (op, i) {
     var t = op && op.table, id = op && (op.id || (op.row && op.row.id));
+    if (halted) { rejected.push({i: i, table: t || "", id: id || "", error: "Waiting for an earlier change", retry: true, notTried: true}); return; }
     try { applyOne_(me, op || {}, now, "", {app: app || ""}); applied.push({table: t, id: id || (op && op.row && t === "settings" && op.row.person && op.row.key ? op.row.person + ":" + op.row.key : id)}); }
-    catch (e) { rejected.push({i: i, table: t || "", id: id || "", error: String(e && e.message || e)}); }
+    catch (e) { var again = !(e && e.refused); rejected.push({i: i, table: t || "", id: id || "", error: String(e && e.message || e), retry: again}); if (again) halted = true; }
   });
   return {applied: applied, rejected: rejected};
 }
 // text that a sheet would read as a formula (or would lose a leading apostrophe from) is stored as plain text.
 // Leading spaces and control characters are looked past, so " =HYPERLINK(…)" is caught too.
 // Numbers, true/false, dates and ids are left as they are.
+// Text a sheet would quietly turn into something else ("1/2" a date, "2:30" a time, "50%" or "\u00a312" a number,
+// "5 Nov" a date) is kept as typed too. Anything that isn't plain text, a number, true/false or a date (a list, say)
+// is written as its text.
+var CELL_MON_ = "(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\\.?";
+var CELL_CONVERTS_ = [
+  /^\s*[-+]?\s*[\u00a3$\u20ac]?\s*[-+]?(\d[\d,]*\.?\d*|\.\d+)\s*%?\s*$/,                       // 1,234  \u00a312  50%
+  /^\s*\d{1,4}\s*[\/.\-]\s*\d{1,2}(\s*[\/.\-]\s*\d{1,4})?(\s+\d{1,2}:\d{2}.*)?\s*$/,   // 1/2  12-10-26
+  /^\s*\d{1,2}(:\d{2}){1,2}(\.\d+)?\s*([ap]\.?m\.?)?\s*$/i, /^\s*\d{1,2}\s*[ap]\.?m\.?\s*$/i,   // 2:30  9pm
+  new RegExp("^\\s*([a-z]+,?\\s+)?\\d{1,2}(st|nd|rd|th)?\\s+" + CELL_MON_ + "(,?\\s+\\d{2,4})?\\s*$", "i"),   // 5 Nov, Thu 29 Oct
+  new RegExp("^\\s*([a-z]+,?\\s+)?" + CELL_MON_ + "\\s+\\d{1,4}(st|nd|rd|th)?(,?\\s+\\d{2,4})?\\s*$", "i")     // Nov 5, March 2027
+];
 function cell_(v) {
   if (v === undefined || v === null) return "";
-  if (typeof v !== "string") return v;
-  if (/^[-+]?(\d+\.?\d*|\.\d+)(e[-+]?\d+)?$/i.test(v)) return v;
+  if (v instanceof Date || typeof v === "number" || typeof v === "boolean") return v;
+  if (typeof v !== "string") { try { v = JSON.stringify(v); } catch (e) { v = String(v); } if (typeof v !== "string") v = ""; }
+  if (/^[-+]?(\d+\.?\d*|\.\d+)(e[-+]?\d+)?$/i.test(v) || /^\d{4}-\d{2}-\d{2}$/.test(v)) return v;
   var t = v.replace(/^[\s\u0000-\u001f\u007f-\u009f\u00a0\u1680\u180e\u2000-\u200f\u2028-\u202f\u205f-\u206f\u3000\ufeff]+/, "");
-  return /^[=+\-@']/.test(t) ? "'" + v : v;
+  if (/^[=+\-@']/.test(t)) return "'" + v;
+  return CELL_CONVERTS_.some(function (re) { return re.test(v); }) ? "'" + v : v;
 }
 // what only the server may change on a row the bank wrote or linked (a phone that's behind can't undo it)
 var BANK_OWNED_ = ["amount", "date", "bankId", "deleted", "account", "from", "to", "person", "source", "key"];
@@ -340,23 +366,26 @@ function exceptionIdOk_(id, item) {
 function applyOne_(me, op, now, by, opts) {
   opts = opts || {};
   var t = op.table, sys = !!opts.sys, app = opts.app || "";
-  if (!SCHEMA[t]) throw new Error("Unknown table " + t);
-  if (SERVER_ONLY[t]) throw new Error("The sheet fills in " + t + " itself");
+  if (!SCHEMA[t]) throw refuse_("Unknown table " + t);
+  if (SERVER_ONLY[t]) throw refuse_("The sheet fills in " + t + " itself");
   if (app) appAllowed_(app, me, t, op);
   var src = op.row || op.fields || {};
-  var id = op.id || src.id || (t === "settings" && op.op !== "delete" && src.person && src.key ? src.person + ":" + src.key : ""); if (!id) throw new Error("Missing id");
+  var id = op.id || src.id || (t === "settings" && op.op !== "delete" && src.person && src.key ? src.person + ":" + src.key : ""); if (!id) throw refuse_("Missing id");
   id = String(id);
+  // a cell holds at most 50,000 characters: anything longer is turned down now, rather than failing like a
+  // hiccup and holding up everything after it
+  if (!sys) for (var lk in src) if (typeof src[lk] === "string" && src[lk].length > 45000) throw refuse_("That's too long to save (" + lk + ")");
   var tab = readTable_(t), sh = tab.sheet || ensureTab_(ss_(), t);
   var existing = byId_(t, id);
   var row = existing ? strip_(existing) : {};
   // a new row can't take an id that belongs to someone else's kind of row
   if (!existing && !sys) {
-    if (/^bk-/.test(id)) throw new Error("That id is kept for the bank feed");
-    if (/^t-pk-/.test(id) && app !== "peckish") throw new Error("That id is kept for Peckish");
-    if (t === "settings" && (String(src.person) !== String(me) || id !== me + ":" + src.key)) throw new Error("A setting's id is your name and its key");
-    if (t === "exceptions" && !exceptionIdOk_(id, src.item)) throw new Error("A change to one date needs an id like x-<item>-<date>");
+    if (/^bk-/.test(id)) throw refuse_("That id is kept for the bank feed");
+    if (/^t-pk-/.test(id) && app !== "peckish") throw refuse_("That id is kept for Peckish");
+    if (t === "settings" && (String(src.person) !== String(me) || id !== me + ":" + src.key)) throw refuse_("A setting's id is your name and its key");
+    if (t === "exceptions" && !exceptionIdOk_(id, src.item)) throw refuse_("A change to one date needs an id like x-<item>-<date>");
   }
-  if (existing && t === "settings" && !sys && src.key !== undefined && String(src.key) !== String(existing.key)) throw new Error("A setting's key can't change");
+  if (existing && t === "settings" && !sys && src.key !== undefined && String(src.key) !== String(existing.key)) throw refuse_("A setting's key can't change");
   var bankRow = !sys && isBankRow_(t, existing);
   if (op.op === "delete") { if (!existing) return; row.deleted = true; }
   else {
@@ -372,7 +401,7 @@ function applyOne_(me, op, now, by, opts) {
   if (app && existing && existing.bankId && (op.op === "delete" || toBoolCell_(row.deleted))) {
     // the bank has matched this shop to a real payment: Peckish taking it off only unlinks it from Peckish, and the
     // payment stays in Budgie for its person to check, so a real payment can't vanish
-    if (existing.person !== me || existing.source !== app) throw new Error(NOT_ALLOWED_);
+    if (existing.person !== me || existing.source !== app) throw refuse_(NOT_ALLOWED_);
     row = strip_(existing); row.source = ""; row.review = true; row.deleted = false;
     row.note = String(existing.note || "").replace(/ \(Peckish\)$/, "") + " (taken off in Peckish)";
   } else if (app) appRowOk_(app, me, t, row, existing);
@@ -383,14 +412,29 @@ function applyOne_(me, op, now, by, opts) {
   }
   // people are set up in the sheet; you can change your own name or colour, never who your partner is
   if (t === "people") {
-    if (!existing) throw new Error("People are added in the sheet");
-    if (op.op === "delete") throw new Error("You can't delete a person");
-    if (String(row.partner || "") !== String(existing.partner || "")) throw new Error("Partners are set in the sheet");
+    if (!existing) throw refuse_("People are added in the sheet");
+    if (op.op === "delete") throw refuse_("You can't delete a person");
+    if (String(row.partner || "") !== String(existing.partner || "")) throw refuse_("Partners are set in the sheet");
+  }
+  // a payment comes out of your own account, and a pot move is between your own accounts (blank is fine).
+  // The same goes for everything else that names an account: it's the account of the person on that side, so
+  // nobody's row can take money out of (or put it into) the other's accounts on their phone.
+  // Taking a row off is always allowed, so an old row can still go. The bank feed's own writes aren't checked here.
+  var sides = ACCOUNT_SIDES_[t];
+  if (!sys && sides && op.op !== "delete" && !toBoolCell_(row.deleted)) {
+    Object.keys(sides).forEach(function (k) {
+      var v = row[k]; if (v === undefined || v === null || v === "") return;
+      var acc = byId_("accounts", String(v)), whose = String(row[sides[k]] || "");
+      var name = (byId_("people", whose) || {}).name || whose || "they";
+      if (!acc || acc.owner !== whose) throw refuse_(whose === String(me) ? "That isn't one of your accounts (" + k + ")" : "That account isn't " + name + "'s (" + k + ")");
+      // and only they can say which of their accounts money came out of (a row the other one made keeps what it had)
+      if ((ACCOUNT_OUT_[t] || {})[k] && whose !== String(me) && !(existing && String(existing[k] === undefined || existing[k] === null ? "" : existing[k]) === String(v))) throw refuse_("Only " + name + " can say which of their accounts it came from (" + k + ")");
+    });
   }
   if (!sys) {
-    var who = owner_(t, row);
-    if (who !== null && who.indexOf(me) < 0) throw new Error("You can't change that (" + t + ")");
-    if (existing) { var ow = owner_(t, existing); if (ow !== null && ow.indexOf(me) < 0) throw new Error("You can't change that (" + t + ")"); }
+    var who = writers_(t, row);
+    if (who !== null && who.indexOf(me) < 0) throw refuse_("You can't change that (" + t + ")");
+    if (existing) { var ow = writers_(t, existing); if (ow !== null && ow.indexOf(me) < 0) throw refuse_("You can't change that (" + t + ")"); }
   }
   row.updated = now; row.by = by || me;
   var head = tab.head.length ? tab.head : SCHEMA[t].concat(COMMON);
@@ -409,6 +453,16 @@ function applyOne_(me, op, now, by, opts) {
   }
 }
 
+// which person each account column belongs to: a payment, pot move, bill, income or budget uses its person's own
+// accounts; a regular payment or a payment between you goes from the payer's account to the other's; a loan is paid
+// from the lender's
+var ACCOUNT_SIDES_ = {
+  transactions: {account: "person"}, moves: {from: "person", to: "person"},
+  bills: {account: "person"}, income: {account: "person"}, budgets: {account: "person"},
+  transfers: {fromAccount: "from", toAccount: "to"}, settlements: {fromAccount: "from", toAccount: "to"}, loans: {account: "lender"}
+};
+// the accounts money comes out of, on rows either of you can write
+var ACCOUNT_OUT_ = {settlements: {fromAccount: true}, loans: {account: true}};
 function toBoolCell_(v) { return v === true || /^(true|yes|1)$/i.test(String(v === undefined || v === null ? "" : v)); }
 
 // ---------- what another app's key may do ----------
@@ -435,7 +489,7 @@ function appCalendar_(me, snap) {
   var today = Utilities.formatDate(new Date(), tz_(), "yyyy-MM-dd"), db = Budgie.load(sync_(me, "", true, snap).rows, today), days = {};
   (Budgie.coming(db, me, Budgie.addDays(today, -14), 120) || []).forEach(function (c) {
     if (!c || !c.date) return;
-    var isPay = /payday/i.test(c.name || "") || c.table === "income";
+    var isPay = c.table === "income";   // (a bill called "Payday loan" is still a bill)
     if (!isPay && c.table !== "bills") return;
     (days[c.date] = days[c.date] || []).push({name: isPay ? (c.name || "Payday") : String(c.name), sub: isPay ? (c.amount ? calMoney_(c.amount) : "") : c.amount ? "Bill, " + calMoney_(c.amount) : "Bill", pay: isPay, amount: c.amount || 0});
   });
@@ -448,32 +502,32 @@ function appCalendar_(me, snap) {
   return {ok: true, person: me, name: (Budgie.person(db, me) || {}).name || me, days: days, fun: fun, synced: snap.at};
 }
 function appAllowed_(app, me, t, op) {
-  var rule = APP_RULES_[app]; if (!rule || !rule.write[t]) throw new Error(NOT_ALLOWED_);
+  var rule = APP_RULES_[app]; if (!rule || !rule.write[t]) throw refuse_(NOT_ALLOWED_);
   var id = String(op.id || (op.row && op.row.id) || "");
-  if (!/^t-pk-[A-Za-z0-9_-]+$/.test(id)) throw new Error(NOT_ALLOWED_);
+  if (!/^t-pk-[A-Za-z0-9_-]+$/.test(id)) throw refuse_(NOT_ALLOWED_);
 }
 // what a Peckish food shop may hold: its person's own food budget, their own account (or none), split half each or not
 // at all, and nothing a phone or the bank sets (no review flags, no bank link)
 var APP_FIELDS_ = {peckish: ["id", "date", "person", "amount", "budget", "account", "split", "note", "source", "deleted"]};
 function appRowOk_(app, me, t, row, existing) {
-  if (existing && (existing.person !== me || existing.source !== app)) throw new Error(NOT_ALLOWED_);
-  if (row.person !== me || row.source !== app) throw new Error(NOT_ALLOWED_);
+  if (existing && (existing.person !== me || existing.source !== app)) throw refuse_(NOT_ALLOWED_);
+  if (row.person !== me || row.source !== app) throw refuse_(NOT_ALLOWED_);
   var rule = APP_RULES_[app], fields = APP_FIELDS_[app] || [];
   var blank = function (v) { return v === "" || v === undefined || v === null; };
   // anything outside its fields must stay exactly as it was (or blank on a new shop)
   for (var k in row) {
     if (k === "updated" || k === "by" || fields.indexOf(k) >= 0) continue;
     var was = existing ? existing[k] : undefined;
-    if (!(was === row[k] || (blank(row[k]) && blank(was)))) throw new Error(NOT_ALLOWED_ + " (" + k + ")");
+    if (!(was === row[k] || (blank(row[k]) && blank(was)))) throw refuse_(NOT_ALLOWED_ + " (" + k + ")");
   }
   if (toBoolCell_(row.deleted)) return;   // taking its own shop off again is always fine
   var bud = byId_("budgets", row.budget);
-  if (!bud || bud.person !== me || toBoolCell_(bud.deleted) || !rule.food.test(String(bud.name || ""))) throw new Error(NOT_ALLOWED_ + " (only your food budget)");
-  if (row.account !== undefined && row.account !== "") { var acc = byId_("accounts", row.account); if (!acc || acc.owner !== me) throw new Error(NOT_ALLOWED_ + " (only your own account)"); }
-  if (row.split !== undefined && row.split !== "" && String(row.split).toLowerCase() !== "half") throw new Error(NOT_ALLOWED_ + " (split half each or not at all)");
+  if (!bud || bud.person !== me || toBoolCell_(bud.deleted) || !rule.food.test(String(bud.name || ""))) throw refuse_(NOT_ALLOWED_ + " (only your food budget)");
+  if (row.account !== undefined && row.account !== "") { var acc = byId_("accounts", row.account); if (!acc || acc.owner !== me) throw refuse_(NOT_ALLOWED_ + " (only your own account)"); }
+  if (row.split !== undefined && row.split !== "" && String(row.split).toLowerCase() !== "half") throw refuse_(NOT_ALLOWED_ + " (split half each or not at all)");
   var amt = +row.amount;
   var day = String(row.date || "").slice(0, 10), today = Utilities.formatDate(new Date(), tz_(), "yyyy-MM-dd");
-  if (!(amt > 0 && amt <= 2000) || !/^\d{4}-\d{2}-\d{2}$/.test(day) || day < Budgie.addDays(today, -400) || day > Budgie.addDays(today, 31)) throw new Error(NOT_ALLOWED_ + " (amount or date)");
+  if (!(amt > 0 && amt <= 2000) || !/^\d{4}-\d{2}-\d{2}$/.test(day) || day < Budgie.addDays(today, -400) || day > Budgie.addDays(today, 31)) throw refuse_(NOT_ALLOWED_ + " (amount or date)");
 }
 function appSync_(me, app, since, full, snap) {
   // always the whole (small) picture, never changes since last time: a row that stops being a food shop, or stops
@@ -514,7 +568,8 @@ function appSync_(me, app, since, full, snap) {
 // a copy of every tab, and the time it was taken (before reading, so nothing written after it is missed)
 function snapshot_() { var at = Date.now(); return {at: at, tables: allTables_()}; }
 // tables where one row can stop being visible on its own (a split taken off, a budget moved off a LISA)
-var HIDE_ROWS_ = {transactions: true, bills: true, budgets: true, income: true, moves: true, amounts: true, exceptions: true};
+// (a joint goal made just one person's, a balance moved off a LISA)
+var HIDE_ROWS_ = {transactions: true, bills: true, budgets: true, income: true, moves: true, amounts: true, exceptions: true, goals: true, valuations: true};
 // what someone shares, as their partner sees it
 function sharingOf_(p) { var s = {}; readTable_("settings").rows.forEach(function (r) { if (r.person === p && /^share\./.test(r.key)) s[r.key.slice(6)] = /^(true|yes|on|1)$/i.test(String(r.value)); }); return s; }
 function partnerOf_(p) {
@@ -528,9 +583,12 @@ function hiddenLog_() { try { return JSON.parse(PropertiesService.getScriptPrope
 function noteHidden_(t, before, after) {
   var owners = owner_(t, before) || [], now = Date.now(), add = [];
   readTable_("people").rows.forEach(function (q) {
-    if (!q.id || owners.indexOf(q.id) >= 0) return;
-    var o = owners.filter(function (x) { return partnerOf_(q.id) === x; })[0]; if (!o) return;
-    var sh = sharingOf_(o);
+    if (!q.id) return;
+    // the partner of someone the row belonged to (with what that person shares), or someone it belonged to
+    // who it no longer does (a joint goal made just one person's)
+    var o = owners.filter(function (x) { return x !== q.id && partnerOf_(q.id) === x; })[0];
+    if (!o && owners.indexOf(q.id) < 0) return;
+    var sh = o ? sharingOf_(o) : {};
     if (canSee_(q.id, t, before, sh) && !canSee_(q.id, t, after, sh)) {
       add.push({t: t, i: before.id, q: q.id, a: now});
       // the changes to a bill or budget go with it
@@ -539,7 +597,8 @@ function noteHidden_(t, before, after) {
   });
   if (!add.length) return;
   var props = PropertiesService.getScriptProperties(), log = hiddenLog_().concat(add), cut = now - 60 * 86400000, dropped = 0;
-  log = log.filter(function (e) { if (e.a > cut) return true; return false; });
+  // an entry dropped for its age counts as dropped too, so a phone that last synced before it fetches everything
+  log = log.filter(function (e) { if (e.a > cut) return true; dropped = Math.max(dropped, e.a); return false; });
   while (log.length > 60 || JSON.stringify(log).length > 8000) { dropped = Math.max(dropped, log[0].a); log.shift(); }
   props.setProperty("HIDDEN_ROWS", JSON.stringify(log));
   if (dropped) props.setProperty("HIDDEN_ROWS_DROPPED", String(Math.max(dropped, +props.getProperty("HIDDEN_ROWS_DROPPED") || 0)));
@@ -580,6 +639,15 @@ function sync_(me, since, full, snap) {
       rows[e.t].push({id: e.i, deleted: true});
     });
   }
+  // a bill, pay or budget that has just become visible (a split added, say) brings its price changes and one-off
+  // changes with it, even though they didn't change themselves, so both phones work it out the same
+  if (!full) {
+    var items = {}; ["bills", "income", "budgets"].forEach(function (t) { rows[t].forEach(function (r) { if (!r.deleted && !r.hidden && r.id) items[r.id] = true; }); });
+    ["amounts", "exceptions"].forEach(function (k) {
+      var have = {}; rows[k].forEach(function (x) { have[x.id] = true; });
+      tables[k].forEach(function (x) { if (items[x.item] && !have[x.id] && canSee_(me, k, x, sharing)) rows[k].push(x); });
+    });
+  }
   // the partner's budgets you can't see, cut down to what matching needs
   var sent = {}; rows.budgets.forEach(function (r) { if (!r.deleted) sent[r.id] = true; });
   rows.budgets = rows.budgets.filter(function (r) { return !(r.deleted && needStub[r.id]); });
@@ -614,6 +682,9 @@ function onEdit(e) {
     for (var r = r0; r <= r1; r++) { times.push([now]); who.push(["sheet"]); }
     sh.getRange(r0, uc, times.length, 1).setValues(times);
     if (bc && !(e.range.getColumn() <= bc && e.range.getLastColumn() >= bc)) sh.getRange(r0, bc, who.length, 1).setValues(who);
+    // a typed change can make a row private (a split taken off, say) without Budgie seeing what it was before,
+    // so every phone fetches everything once on its next sync, and drops what it can't see now
+    if (HIDE_ROWS_[t]) PropertiesService.getScriptProperties().setProperty("HIDDEN_ROWS_DROPPED", String(now));
   } catch (x) {}
 }
 
@@ -648,13 +719,17 @@ function refreshBudgetTabs() {
     });
     out.push([""].concat(list.map(function () { return ""; })), ["Short of money"].concat(views.map(function (v) { return v.plan.shortfall || ""; })));
     out.push(["", "Updated " + Utilities.formatDate(new Date(), tz_(), "d MMM yyyy HH:mm")].concat(list.slice(1).map(function () { return ""; })));
+    // names come from both phones: one that looks like a formula (=IMPORTXML…) is written as text, as in the data tabs
+    out = out.map(function (r) { return r.map(cell_); });
     sh.clear(); sh.getRange(1, 1, out.length, out[0].length).setValues(out);
     sh.getRange(1, 1).setFontWeight("bold").setFontSize(13); sh.getRange(2, 1, 1, out[0].length).setFontWeight("bold");
     sh.getRange(3, 2, out.length - 2, out[0].length - 1).setNumberFormat("£#,##0.00;-£#,##0.00;-");
     sh.getRange(3, 2, 2, out[0].length - 1).setNumberFormat("@");
     out.forEach(function (r, i) { if (/^(Money in|Bills|Spending|Savings|Top-ups)$/.test(r[0]) || /^Total /.test(r[0])) sh.getRange(i + 1, 1, 1, r.length).setFontWeight("bold"); if (/^   spent/.test(r[0])) sh.getRange(i + 1, 1, 1, r.length).setFontColor("#566273"); });
     sh.setColumnWidth(1, 260); sh.setFrozenColumns(1); sh.setFrozenRows(2);
-    sh.getRange(1, 1, out.length, out[0].length).protect().setWarningOnly(true);
+    // one warning over the tab, not a new one every refresh (they'd pile up by the thousand)
+    try { sh.getProtections(SpreadsheetApp.ProtectionType.RANGE).forEach(function (pr) { if (pr.getDescription() === "Budgie") pr.remove(); }); } catch (x) {}
+    sh.getRange(1, 1, out.length, out[0].length).protect().setDescription("Budgie").setWarningOnly(true);
   });
 }
 // replaces only its own trigger, so the daily fund prices trigger (Prices.gs) keeps running

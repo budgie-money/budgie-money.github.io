@@ -6,7 +6,7 @@
   else root.Budgie = factory();
 })(this, function () {
   "use strict";
-  var VERSION = "1.4.0";
+  var VERSION = "1.4.3";
 
   // ---------- dates ----------
   function D(s) { var p = String(s).split("-"); return new Date(Date.UTC(+p[0], +p[1] - 1, +p[2])); }
@@ -26,9 +26,11 @@
     if (x === null || x === undefined || x === "") return "";
     if (x instanceof Date) return S(new Date(Date.UTC(x.getFullYear(), x.getMonth(), x.getDate())));
     var s = String(x).trim();
-    if (isIso(s)) return s;
-    var m = s.match(/^(\d{1,2})[\/.](\d{1,2})[\/.](\d{4})$/); if (m) return ymd(+m[3], +m[2] - 1, +m[1]);
-    m = s.match(/^(?:[a-z]+,?\s+)?(\d{1,2})(?:st|nd|rd|th)?\s+([a-z]{3})[a-z]*\.?\s+(\d{4})$/i); if (m && MON[m[2].toLowerCase()] !== undefined) return ymd(+m[3], MON[m[2].toLowerCase()], +m[1]);
+    // a day that isn't in its month (31/02/2027, or 2027-02-30 typed into the sheet) isn't a date
+    var ok = function (y, mo, d) { return mo >= 0 && mo < 12 && d >= 1 && d <= daysIn(y, mo) ? ymd(y, mo, d) : ""; };
+    if (isIso(s)) return ok(+s.slice(0, 4), +s.slice(5, 7) - 1, +s.slice(8, 10));
+    var m = s.match(/^(\d{1,2})[\/.](\d{1,2})[\/.](\d{4})$/); if (m) return ok(+m[3], +m[2] - 1, +m[1]);
+    m = s.match(/^(?:[a-z]+,?\s+)?(\d{1,2})(?:st|nd|rd|th)?\s+([a-z]{3})[a-z]*\.?\s+(\d{4})$/i); if (m && MON[m[2].toLowerCase()] !== undefined) return ok(+m[3], MON[m[2].toLowerCase()], +m[1]);
     return "";
   }
 
@@ -173,8 +175,8 @@
     var payTick = {};
     db.moves.forEach(function (m) { if (!/^pay:/.test(m.key || "")) return; var k = m.person + "|" + m.key, c = payTick[k]; if (!c || (+m.updated || 0) >= (+c.updated || 0)) payTick[k] = m; });
     db.moves.forEach(function (m) { if (/^pay:/.test(m.key || "") && payTick[m.person + "|" + m.key] !== m) m.dup = true; });
-    db.moveKeys = {};
-    db.moves.forEach(function (m) { if (m.key && !m.dup) db.moveKeys[m.key] = (db.moveKeys[m.key] || 0) + (+m.amount || 0) + 1e-9; });
+    db.moveKeys = {}; db.moveKeysBy = {};
+    db.moves.forEach(function (m) { if (m.key && !m.dup) { db.moveKeys[m.key] = (db.moveKeys[m.key] || 0) + (+m.amount || 0) + 1e-9; var pk = m.person + "|" + m.key; db.moveKeysBy[pk] = (db.moveKeysBy[pk] || 0) + (+m.amount || 0) + 1e-9; } });
     // a LISA payment copied from the provider's statement that is the same money as a move ticked in Budgie
     // (same account and amount, within 5 days) only counts once
     db.moves.forEach(function (m) {
@@ -213,7 +215,8 @@
   function startOf(db, p) { return setting(db, p, "start", "2026-10-26"); }
   // the day a ticked move should be dated: payday moves belong to their payday, everything else to the day you tick it
   function moveDate(key, today) { var m = String(key || "").match(/^pay:(\d{4}-\d{2}-\d{2}):/); return m && m[1] <= today ? m[1] : today; }
-  var round = function (n) { return Math.round((+n || 0) * 100) / 100; };
+  // to the penny, halves away from zero, without the float slips (1.005 is £1.01, and -0.005 is -£0.01)
+  var round = function (n) { n = +n || 0; var a = Math.round(Math.abs(n) * 100 + 1e-7) / 100; return n < 0 && a ? -a : a; };
 
   // ---------- splits ----------
   // "ethan:2, sophie:1" (parts) or "sophie=400" (fixed amount; anyone else shares the rest)
@@ -422,7 +425,8 @@
       var fb = fallbackOf(db, p), pvT = fb ? prevPeriod(db, p, per) : null, top = 0;
       if (pvT && pvT.start < from && pvT.next > st) {
         reimbursements(db, p, pvT, addDays(pvT.next, -1)).forEach(function (g) { if (g.kind === "over" && g.from === fb) top += g.amount; });
-        if (pvT.pay && !pvT.opening) top += db.moveKeys["pay:" + pvT.start + ":cover"] || 0;
+        // (by person: you can both be paid on the same day, and the key doesn't say whose pay it was)
+        if (pvT.pay && !pvT.opening) top += db.moveKeysBy[p + "|pay:" + pvT.start + ":cover"] || 0;
       }
       top = round(top);
       if (top > 0.004) lines.push({kind: "topup", name: "Top up " + accName(db, fb), amount: top, account: fb, id: "topup"});
@@ -687,7 +691,8 @@
           plan("fill:" + f.account + ":" + f.date, src, f.account, need, "Move " + money(need) + " from " + accName(db, src) + " to " + accName(db, f.account), f.what + " on " + nice(f.date) + " needs it.", {fill: true});
           run[src] = round(run[src] - need); run[f.account] = 0;
         } else if (!src) {
-          items.push({key: "short:" + f.account + ":" + f.date, type: "warn", amount: need, what: accName(db, f.account) + " will be " + money(need) + " short", why: f.what + " on " + nice(f.date) + ", and there isn't enough spare money to cover it yet."});
+          // "Got it" saves a move with this key: the warning stays away (a new date or pot makes a new one)
+          if (!db.moveKeys["short:" + f.account + ":" + f.date]) items.push({key: "short:" + f.account + ":" + f.date, type: "warn", amount: need, what: accName(db, f.account) + " will be " + money(need) + " short", why: f.what + " on " + nice(f.date) + ", and there isn't enough spare money to cover it yet."});
           run[f.account] = 0;
         }
       }
@@ -937,6 +942,11 @@
       if (/^lisa:bonus/.test(k)) bons.push({date: m.date, amount: a});
       else if (!m.dup && (/^lisa:in/.test(k) || /^pay:\d{4}-\d{2}-\d{2}:/.test(k) || /^bank:/.test(k))) pays.push({date: m.date, amount: a});
     });
+    // money paid straight in on a schedule (family topping it up) earns the bonus too, as the balance counts it
+    db.income.forEach(function (i) {
+      if (i.account !== accId) return;
+      occurrences(db, i, startOf(db, i.person), addDays(date, 1)).forEach(function (o) { if (o.amount > 0) pays.push({date: o.date, amount: o.amount}); });
+    });
     var byDate = function (x, y) { return x.date < y.date ? -1 : x.date > y.date ? 1 : 0; };
     pays.sort(byDate); bons.sort(byDate);
     // what's been paid in each tax year so far (money paid before Budgie's history counts towards the £4,000)
@@ -1092,7 +1102,9 @@
   // ---------- partner summary (what the other person sees) ----------
   function summary(db, p, date) {
     var t = today(db, p, date), share = function (k, d) { var v = setting(db, p, "share." + k, d); return v === true || /^(true|yes|on|1)$/i.test(String(v)); };
-    var out = {person: p, name: person(db, p).name, status: t.status, nextPay: t.nextPay, period: t.period};
+    var out = {person: p, name: person(db, p).name, nextPay: t.nextPay, period: t.period};
+    // "on track" or "over budget" says how the money's going, so it's only there when some of it is shared
+    if (share("totals", true) || share("cats", true)) out.status = t.status;
     if (share("totals", true)) { out.safe = t.safe; out.saved = t.plan.totals.save; }
     if (share("cats", true)) out.tiles = t.tiles.map(function (x) { return {name: x.name, spent: x.spent, amount: x.amount, pct: x.pct, paceMark: x.paceMark, mode: x.mode}; });
     if (share("goals", true)) out.goals = goals(db, p, date).filter(function (g) { return String((db.byId[g.id] || {}).owners || "").split(/[,\s]+/).length < 2; });
