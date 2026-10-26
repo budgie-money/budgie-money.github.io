@@ -25,7 +25,22 @@ var EXTRAS_TRIGGERS_ = [
 
 // ---------- setup ----------
 /** Run once: adds the three triggers if they aren't there yet. Other triggers are left alone. */
+// Google lets you approve a script's permissions one by one, so Mail or Drive can be listed but never approved.
+// This asks for them (the editor then shows Google's approval screen) before anything relies on them.
+var EXTRAS_SCOPES_ = ["https://www.googleapis.com/auth/script.send_mail", "https://www.googleapis.com/auth/drive"];
+function extrasScopesMissing_() {
+  try {
+    var info = ScriptApp.getAuthorizationInfo(ScriptApp.AuthMode.FULL, EXTRAS_SCOPES_);
+    return info.getAuthorizationStatus() === ScriptApp.AuthorizationStatus.REQUIRED ? (info.getAuthorizedScopes ? EXTRAS_SCOPES_.filter(function (x) { return info.getAuthorizedScopes().indexOf(x) < 0; }) : EXTRAS_SCOPES_) : [];
+  } catch (e) { return []; }
+}
 function installExtras() {
+  if (extrasScopesMissing_().length && ScriptApp.requireScopes) {
+    // stops here with Google's approval screen; tick every box, then run installExtras again
+    ScriptApp.requireScopes(ScriptApp.AuthMode.FULL, EXTRAS_SCOPES_);
+  }
+  var missing = extrasScopesMissing_();
+  if (missing.length) Logger.log("Not approved yet: " + missing.join(", ") + ". Run installExtras again and tick every box on Google's screen, or the email and backup can't run.");
   var have = {};
   ScriptApp.getProjectTriggers().forEach(function (t) { have[t.getHandlerFunction()] = true; });
   EXTRAS_TRIGGERS_.forEach(function (x) {
