@@ -6,12 +6,21 @@
  *   1. In the sheet: Extensions > Apps Script. Paste this into Code.gs and engine.js into a file called Engine.gs. Save.
  *   2. Run "setup". Allow access when Google asks. It makes every tab and a key for each person.
  *   3. Deploy > New deployment > Web app. Execute as: Me. Who has access: Anyone. Deploy and copy the URL.
- *   4. Paste the URL into WEB_APP_URL below, save, run "connectLinks". Open each link on that person's phone.
+ *   4. Add a Script Property WEB_APP_URL with that URL (Project Settings > Script Properties), run "connectLinks".
+ *      Open each link on that person's phone.
  *
  * Keys live only in this script's properties. Run "newKey" with a name to change someone's key.
  * Other apps (Peckish) get their own narrower key: run appLink("ethan", "peckish") and open the link it logs.
  */
-var WEB_APP_URL = "";
+var WEB_APP_URL = "";   // leave blank: the Script Property WEB_APP_URL is used, so pasting new code never loses it
+// the web app's own address (ending /exec): for connect links, linked apps and the bank's sign-in page
+function webAppUrl_() {
+  var url = WEB_APP_URL;
+  if (!url) { try { url = PropertiesService.getScriptProperties().getProperty("WEB_APP_URL") || ""; } catch (e) { url = ""; } }
+  if (!url) { try { url = ScriptApp.getService().getUrl() || ""; } catch (e) { url = ""; } }
+  return String(url).trim();
+}
+var NO_URL_ = "Add a Script Property WEB_APP_URL (Project Settings > Script Properties) with your Web app URL, ending /exec (Deploy > Manage deployments), and run again.";
 var APP_URL = "https://budgie-money.github.io/";
 var SCHEMA_VERSION = 1;
 var COMMON = ["deleted", "updated", "by"];
@@ -61,11 +70,11 @@ function setup() {
   setMeta_("schemaVersion", SCHEMA_VERSION);
   var blank = ss.getSheetByName("Sheet1"); if (blank && blank.getLastRow() === 0 && ss.getSheets().length > 1) ss.deleteSheet(blank);
   Logger.log("Tabs ready. People with keys: " + readTable_("people").rows.map(function (p) { return p.id; }).join(", "));
-  Logger.log("Next: Deploy > New deployment > Web app (Execute as: Me, Who has access: Anyone), paste the URL into WEB_APP_URL, run connectLinks.");
+  Logger.log("Next: Deploy > New deployment > Web app (Execute as: Me, Who has access: Anyone), add it as the Script Property WEB_APP_URL, run connectLinks.");
 }
 function connectLinks() {
-  var url = WEB_APP_URL || ScriptApp.getService().getUrl() || "";
-  if (!/\/exec$/.test(url)) throw new Error("Paste your Web app URL (ending /exec) into WEB_APP_URL at the top, save, and run again.");
+  var url = webAppUrl_();
+  if (!/\/exec$/.test(url)) throw new Error(NO_URL_);
   var props = PropertiesService.getScriptProperties();
   readTable_("people").rows.forEach(function (p) {
     var k = props.getProperty("KEY_" + p.id); if (!k) return;
@@ -95,8 +104,8 @@ function appCheckArgs_(personId, app) {
   if (!readTable_("people").rows.some(function (p) { return p.id === personId; })) throw new Error("No person called " + personId + " in the people tab.");
 }
 function appWebUrl_() {
-  var url = WEB_APP_URL || ScriptApp.getService().getUrl() || "";
-  if (!/\/exec$/.test(url)) throw new Error("Paste your Web app URL (ending /exec) into WEB_APP_URL at the top, save, and run again.");
+  var url = webAppUrl_();
+  if (!/\/exec$/.test(url)) throw new Error(NO_URL_);
   return url;
 }
 function appLinkFor_(app, k) { return APPS_[app].url + "#connect=" + Utilities.base64EncodeWebSafe(JSON.stringify({u: appWebUrl_(), k: k})); }

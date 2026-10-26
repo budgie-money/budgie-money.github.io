@@ -239,6 +239,11 @@ const phone = (F, k) => { const P = {T: {}, since: 0}; P.sync = (ops) => { const
   ok("S1b: appLink logs a connect link", m && m[1] === "https://alertrobot.github.io/es-kitchen/" && cfg.u === "https://script.google.com/macros/s/TEST/exec" && /^app_peckish_[0-9a-f]{64}$/.test(cfg.k) && env.logs.some(l => l === "Ethan (Peckish): " + link), link);
   ok("S1b: the key lives with the script's properties", env.props.APPKEY_ethan_peckish === cfg.k);
   ok("S1b: running it again gives the same key", c.appLink("ethan", "peckish") === link);
+  { const was = c.WEB_APP_URL; c.WEB_APP_URL = ""; env.props.WEB_APP_URL = "https://script.google.com/macros/s/PROP/exec";
+    ok("the web app address can live in a Script Property", JSON.parse(Buffer.from(c.appLink("ethan", "peckish").split("#connect=")[1], "base64url").toString()).u === env.props.WEB_APP_URL && c.webAppUrl_() === env.props.WEB_APP_URL);
+    delete env.props.WEB_APP_URL; const gs = c.ScriptApp.getService; c.ScriptApp.getService = () => ({getUrl: () => null});   // what the real editor gave
+    ok("and without one, connectLinks says exactly what to add", (() => { try { c.connectLinks(); return false; } catch (e) { return /Script Property WEB_APP_URL/.test(e.message); } })());
+    c.ScriptApp.getService = gs; c.WEB_APP_URL = was; }
   const kP = cfg.k;
   ok("S1b: ping says which app", JSON.stringify(call({key: kP, action: "ping"})) === JSON.stringify({ok: true, person: "ethan", app: "peckish", keyType: "app"}));
   const ps = call({key: kP, full: true});

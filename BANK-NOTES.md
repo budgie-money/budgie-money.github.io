@@ -18,7 +18,7 @@ The code is `apps-script/BankFeeds.gs`. Its tests are `test/bank.test.js`, which
 1. Open https://developers.monzo.com and sign in with the email on your Monzo account. Approve the sign-in in the Monzo app.
 2. Go to **Clients > New OAuth Client** and fill it in:
    - **Name:** Budgie
-   - **Redirect URLs:** the sheet's web app address, ending in `/exec`. It's the same address as in `WEB_APP_URL` or the connect links, e.g. `https://script.google.com/macros/s/…/exec`. It must match exactly.
+   - **Redirect URLs:** the sheet's web app address, ending in `/exec`. It's the same address as the Script Property `WEB_APP_URL` and the connect links, e.g. `https://script.google.com/macros/s/…/exec`. It must match exactly.
    - **Confidentiality:** **Confidential.** Only confidential clients get refresh tokens.
 3. Save. Copy the **Client ID** (`oauth2client_…`) and **Client secret** into Budgie's Bank screen. The secret is kept only in the owner's User Properties.
    - The details can't be changed while Monzo is connected. Disconnect first.

@@ -135,7 +135,7 @@ function bankStatusFor_(p) {
 function bankTrue_(v) { return v === true || /^(true|yes|1)$/i.test(String(v === undefined || v === null ? "" : v)); }
 
 // ---------- Monzo: sign in ----------
-function bankRedirect_() { return WEB_APP_URL || ScriptApp.getService().getUrl() || ""; }
+function bankRedirect_() { return webAppUrl_(); }
 function monzoSetClient_(me, b) {
   var id = String(b.clientId || "").trim(), secret = String(b.clientSecret || "").trim();
   if (!/^oauth2client_[A-Za-z0-9]+$/.test(id)) return {ok: false, error: "That client ID doesn't look right. It starts with oauth2client_."};
