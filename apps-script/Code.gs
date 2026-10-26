@@ -57,6 +57,7 @@ function setup() {
   Object.keys(SCHEMA).forEach(function (t) { ensureTab_(ss, t); });
   var props = PropertiesService.getScriptProperties();
   readTable_("people").rows.forEach(function (p) { if (!props.getProperty("KEY_" + p.id)) props.setProperty("KEY_" + p.id, makeKey_()); });
+  keysChanged_();
   setMeta_("schemaVersion", SCHEMA_VERSION);
   var blank = ss.getSheetByName("Sheet1"); if (blank && blank.getLastRow() === 0 && ss.getSheets().length > 1) ss.deleteSheet(blank);
   Logger.log("Tabs ready. People with keys: " + readTable_("people").rows.map(function (p) { return p.id; }).join(", "));
@@ -77,7 +78,9 @@ function newKey(personId, app) {
   if (app) return newAppKey(personId, app);
   var props = PropertiesService.getScriptProperties(), old = props.getProperty("KEY_" + personId);
   props.setProperty("KEY_" + personId, makeKey_()); forgetKey_(old);
-  Logger.log("New key made for " + personId + ". Run connectLinks and reconnect that phone.");
+  // a new Budgie key (a lost phone, say) also cuts off that person's linked apps; link them again from the app
+  Object.keys(APPS_).forEach(function (a) { var ak = props.getProperty(appKeyName_(personId, a)); if (ak) { props.deleteProperty(appKeyName_(personId, a)); forgetKey_(ak); } });
+  Logger.log("New key made for " + personId + " (their linked apps are unlinked too). Run connectLinks and reconnect that phone.");
 }
 function makeKey_() { return (Utilities.getUuid() + Utilities.getUuid()).replace(/-/g, "").toLowerCase(); }
 
@@ -102,7 +105,7 @@ function appLink(personId, app) {
   appCheckArgs_(personId, app);
   appWebUrl_();
   var props = PropertiesService.getScriptProperties(), k = props.getProperty(appKeyName_(personId, app));
-  if (!k) { k = makeAppKey_(app); props.setProperty(appKeyName_(personId, app), k); }
+  if (!k) { k = makeAppKey_(app); props.setProperty(appKeyName_(personId, app), k); keysChanged_(); }
   var who = (readTable_("people").rows.filter(function (p) { return p.id === personId; })[0] || {}).name || personId;
   var link = appLinkFor_(app, k);
   Logger.log(who + " (" + APPS_[app].name + "): " + link);
@@ -203,23 +206,36 @@ function json_(o) { return ContentService.createTextOutput(JSON.stringify(o)).se
 var KEY_RE_ = /^[0-9a-f]{64}$/, APPKEY_RE_ = /^app_[a-z]+_[0-9a-f]{64}$/;
 function keyHash_(k) { try { return Utilities.base64EncodeWebSafe(Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, String(k))); } catch (e) { return String(k); } }
 function keyCache_() { try { return typeof CacheService !== "undefined" ? CacheService.getScriptCache() : null; } catch (e) { return null; } }
-function forgetKey_(k) { if (!k) return; try { var c = keyCache_(); if (c && c.remove) c.remove("who:" + keyHash_(k)); } catch (e) {} }
+// Every key's owner is kept in the cache as one list (by the key's hash, never the key), so a key that isn't on it,
+// made up or old, is turned away without reading the properties again. The list is read again at most once a minute
+// when a key isn't found, and straight away after any key changes.
+function forgetKey_(k) { try { var c = keyCache_(); if (c && c.remove) c.remove("keys:all"); } catch (e) {} }
+function keysChanged_() { forgetKey_("all"); }
+function keyList_(force) {
+  var cache = keyCache_(), hit = null;
+  if (!force) { try { hit = cache ? cache.get("keys:all") : null; } catch (e) { hit = null; } if (hit) { try { return JSON.parse(hit); } catch (e) {} } }
+  var all = PropertiesService.getScriptProperties().getProperties(), list = {at: Date.now(), who: {}};
+  for (var name in all) {
+    var k = String(all[name]), m = name.match(/^KEY_(.+)$/), who = null;
+    if (m && KEY_RE_.test(k)) who = {person: m[1], app: ""};
+    else if ((m = name.match(/^APPKEY_(.+)_([a-z]+)$/)) && APPKEY_RE_.test(k) && APPS_[m[2]]) who = {person: m[1], app: m[2]};
+    if (who) list.who[keyHash_(k)] = who;
+  }
+  try { if (cache) cache.put("keys:all", JSON.stringify(list), 600); } catch (e) {}
+  return list;
+}
 function whoIs_(k) {
   if (!k) throw new Error("No app key");
   k = String(k);
   if (!KEY_RE_.test(k) && !APPKEY_RE_.test(k)) throw new Error("Wrong app key");
-  var cache = keyCache_(), ck = "who:" + keyHash_(k), hit = null;
-  try { hit = cache ? cache.get(ck) : null; } catch (e) { hit = null; }
-  if (hit) { var c = JSON.parse(hit); if (!c) throw new Error("Wrong app key"); return c; }
-  var all = PropertiesService.getScriptProperties().getProperties(), who = null;
-  for (var name in all) {
-    if (all[name] !== k) continue;
-    var m = name.match(/^KEY_(.+)$/); if (m && KEY_RE_.test(k)) { who = {person: m[1], app: ""}; break; }
-    m = name.match(/^APPKEY_(.+)_([a-z]+)$/); if (m && APPKEY_RE_.test(k) && APPS_[m[2]]) { who = {person: m[1], app: m[2]}; break; }
-  }
-  try { if (cache) cache.put(ck, JSON.stringify(who), 600); } catch (e) {}
+  var h = keyHash_(k), list = keyList_(false), who = list.who[h];
+  if (!who && Date.now() - (+list.at || 0) > 60000) who = keyList_(true).who[h];
   if (!who) throw new Error("Wrong app key");
-  return who;
+  // the list only says whose key it might be; the key itself is checked against the properties every time (one read),
+  // so a key that was changed, unlinked or deleted by hand stops working straight away
+  var name = who.app ? appKeyName_(who.person, who.app) : "KEY_" + who.person;
+  if (PropertiesService.getScriptProperties().getProperty(name) !== k) { keysChanged_(); throw new Error("Wrong app key"); }
+  return {person: who.person, app: who.app};
 }
 
 // ---------- reading ----------
@@ -344,7 +360,13 @@ function applyOne_(me, op, now, by, opts) {
     }
     row.id = id;
   }
-  if (app) appRowOk_(app, me, t, row, existing);
+  if (app && existing && existing.bankId && (op.op === "delete" || toBoolCell_(row.deleted))) {
+    // the bank has matched this shop to a real payment: Peckish taking it off only unlinks it from Peckish, and the
+    // payment stays in Budgie for its person to check, so a real payment can't vanish
+    if (existing.person !== me || existing.source !== app) throw new Error(NOT_ALLOWED_);
+    row = strip_(existing); row.source = ""; row.review = true; row.deleted = false;
+    row.note = String(existing.note || "").replace(/ \(Peckish\)$/, "") + " (taken off in Peckish)";
+  } else if (app) appRowOk_(app, me, t, row, existing);
   // the app and the bank both ticking the same payday move: the second one is kept, marked as a copy
   if (!existing && !sys && t === "moves" && /^pay:/.test(String(row.key || "")) && !toBoolCell_(row.deleted)) {
     var same = tab.rows.filter(function (r) { return r.key === row.key && r.person === row.person && !toBoolCell_(r.deleted); })[0];
@@ -421,17 +443,38 @@ function appAllowed_(app, me, t, op) {
   var id = String(op.id || (op.row && op.row.id) || "");
   if (!/^t-pk-[A-Za-z0-9_-]+$/.test(id)) throw new Error(NOT_ALLOWED_);
 }
+// what a Peckish food shop may hold: its person's own food budget, their own account (or none), split half each or not
+// at all, and nothing a phone or the bank sets (no review flags, no bank link)
+var APP_FIELDS_ = {peckish: ["id", "date", "person", "amount", "budget", "account", "split", "note", "source", "deleted"]};
 function appRowOk_(app, me, t, row, existing) {
   if (existing && (existing.person !== me || existing.source !== app)) throw new Error(NOT_ALLOWED_);
   if (row.person !== me || row.source !== app) throw new Error(NOT_ALLOWED_);
+  var rule = APP_RULES_[app], fields = APP_FIELDS_[app] || [];
+  var blank = function (v) { return v === "" || v === undefined || v === null; };
+  // anything outside its fields must stay exactly as it was (or blank on a new shop)
+  for (var k in row) {
+    if (k === "updated" || k === "by" || fields.indexOf(k) >= 0) continue;
+    var was = existing ? existing[k] : undefined;
+    if (!(was === row[k] || (blank(row[k]) && blank(was)))) throw new Error(NOT_ALLOWED_ + " (" + k + ")");
+  }
+  if (toBoolCell_(row.deleted)) return;   // taking its own shop off again is always fine
+  var bud = byId_("budgets", row.budget);
+  if (!bud || bud.person !== me || toBoolCell_(bud.deleted) || !rule.food.test(String(bud.name || ""))) throw new Error(NOT_ALLOWED_ + " (only your food budget)");
+  if (row.account !== undefined && row.account !== "") { var acc = byId_("accounts", row.account); if (!acc || acc.owner !== me) throw new Error(NOT_ALLOWED_ + " (only your own account)"); }
+  if (row.split !== undefined && row.split !== "" && String(row.split).toLowerCase() !== "half") throw new Error(NOT_ALLOWED_ + " (split half each or not at all)");
+  var amt = +row.amount;
+  var day = String(row.date || "").slice(0, 10), today = Utilities.formatDate(new Date(), tz_(), "yyyy-MM-dd");
+  if (!(amt > 0 && amt <= 2000) || !/^\d{4}-\d{2}-\d{2}$/.test(day) || day < Budgie.addDays(today, -400) || day > Budgie.addDays(today, 31)) throw new Error(NOT_ALLOWED_ + " (amount or date)");
 }
 function appSync_(me, app, since, full, snap) {
-  var rule = APP_RULES_[app], at = snap.at, tables = snap.tables, recent = function (r) { return (+r.updated || 0) > +since - 5000; };
-  full = full || !since;
+  // always the whole (small) picture, never changes since last time: a row that stops being a food shop, or stops
+  // being shared, simply isn't in the next answer, and the app never hears about rows it was never allowed to see
+  var rule = APP_RULES_[app], at = snap.at, tables = snap.tables, recent = function () { return true; };
+  full = true;
   var personRow = function (id) { return tables.people.filter(function (p) { return p.id === id; })[0] || null; };
   var partner = (personRow(me) || {}).partner || "", pr = personRow(partner);
   if (!partner || partner === me || !pr || pr.partner !== me) partner = "";
-  var sharing = {}; tables.settings.forEach(function (r) { if (r.person === partner && /^share\./.test(r.key)) sharing[r.key.slice(6)] = /^(true|yes|on|1)$/i.test(String(r.value)); });
+  var sharing = {}, mine = {}; tables.settings.forEach(function (r) { if (!/^share\./.test(r.key)) return; var on = /^(true|yes|on|1)$/i.test(String(r.value)); if (r.person === partner) sharing[r.key.slice(6)] = on; if (r.person === me) mine[r.key.slice(6)] = on; });
   var budName = {}; tables.budgets.forEach(function (b) { budName[b.id] = String(b.name || ""); });
   var pick = function (r, cols) { if (!cols) return r; var o = {}; cols.concat(["deleted", "updated"]).forEach(function (c) { if (r[c] !== undefined) o[c] = r[c]; }); return o; };
   var mineOnly = {budgets: "person", accounts: "owner"}, rows = {}, count = 0;
@@ -441,10 +484,13 @@ function appSync_(me, app, since, full, snap) {
     tables[t].forEach(function (r) {
       if (!(full || recent(r))) return;
       if (mineOnly[t] && r[mineOnly[t]] !== me) return;
+      if (t === "budgets" && !rule.food.test(String(r.name || ""))) return;   // only the food budgets: Peckish never needs the rest
       if (t === "transactions") {
-        if (!canSee_(me, t, r, sharing)) return;
-        if (r.source === app || rule.food.test(budName[r.budget] || "")) rows[t].push(r);
-        else if (!full) rows[t].push({id: r.id, deleted: true});   // it may have been a food shop before
+        if (!canSee_(me, t, r, sharing) || toBoolCell_(r.deleted)) return;
+        // Peckish's shop list is shared by both of you, so your own food payments only go there if your partner
+        // could see them in Budgie anyway: split ones, ones Peckish logged, or all of them if you share each payment
+        if (r.person === me && !(r.split || r.source === app || mine.payments)) return;
+        if (r.source === app || rule.food.test(budName[r.budget] || "")) rows[t].push(pick(r, ["id", "date", "person", "amount", "budget", "split", "note", "source"]));
         return;
       }
       rows[t].push(pick(r, rule.reads[t]));

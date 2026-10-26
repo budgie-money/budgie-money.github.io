@@ -83,6 +83,22 @@ share (split payments, shared bills, loans, joint goals) you both see.
 Each person has their own key (stored in Apps Script properties, never in the sheet). The app keeps a full copy
 on the phone, sends changes in batches (queued when offline) and asks only for rows changed since its last sync.
 
+## Linked apps
+
+Peckish and Caledonite never get a person's Budgie key. Each person makes a separate, limited link for each app
+(Settings, Linked apps); making a new link switches the old one off, and a new Budgie key for a person unlinks all
+of that person's apps.
+
+- **Peckish** sees names, its person's own budgets and accounts (cut down), the splits, and food shops. Because
+  Peckish's shop list is shared by both of you, a payment only goes there if your partner could see it in Budgie
+  anyway: split ones, ones Peckish logged, or all of them if you share each payment. It always gets the whole small
+  picture, never "what changed", so it never hears about rows it can't see. It can only add or change its own food
+  shops (ids `t-pk-…`): into its person's own food budget, from their own account or none, split half each or not
+  at all, between £0 and £2,000, with no review flags or bank link.
+- **Caledonite** can't sync at all. It only asks for its person's own paydays, bills and what's left for fun, which
+  it shows on that person's phone only.
+- Keys are looked up through one cached list of key hashes, so made-up keys cost nothing.
+
 ## Later
 
 - Google Calendar: a shared "Budgie" calendar with paydays, bills and who-pays-whom, kept up to date by Apps Script.

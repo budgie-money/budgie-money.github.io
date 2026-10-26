@@ -12,6 +12,6 @@ One money app for two people, backed by your own Google Sheet. Lives at **https:
 - **Linked apps**: Peckish and Caledonite each get their own limited link (Budgie: Settings, Linked apps). Neither ever holds Budgie's full key.
 - **How it fits together**: see [ARCHITECTURE.md](ARCHITECTURE.md).
 
-Tests: `node test/engine.test.js`, `node test/backend.test.js`, `node test/scale.test.js`, `node test/bank.test.js`, `node test/extras.test.js`; browser test with `node test/server.js` then `node test/ui.test.js`.
+Tests: `node test/engine.test.js`, `node test/backend.test.js`, `node test/scale.test.js`, `node test/bank.test.js`, `node test/extras.test.js`; browser tests with `node test/server.js` then `node test/ui.test.js` and `node test/addresses.test.js` (Budgie at its real web addresses: the security policy, connect-link checks, Linked apps and the move from the old address).
 
 Nothing secret lives in this repo: bank keys stay inside the sheet owner's Apps Script, and the test data is made up.

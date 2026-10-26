@@ -1,7 +1,7 @@
 /* Budgie app: screens, syncing and offline queue. The maths lives in engine.js. */
 (function () {
   "use strict";
-  var B = window.Budgie, TH = window.BudgieThemes, APP_VERSION = "1.3.1";
+  var B = window.Budgie, TH = window.BudgieThemes, APP_VERSION = "1.4.0";
   var $ = function (s) { return document.querySelector(s); };
   var esc = function (s) { return String(s === undefined || s === null ? "" : s).replace(/[&<>"']/g, function (c) { return {"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]; }); };
   var LS = {get: function (k, d) { try { var v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch (e) { return d; } }, set: function (k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }};
@@ -1557,13 +1557,17 @@
     dirty(); applyTheme();
   }
   function connectFrom(text) {
-    var m = String(text || "").match(/#connect=([A-Za-z0-9_\-=]+)/); if (!m) { S.lastError = "That doesn't look like a connect link"; render(); return false; }
+    // a link Budgie won't use: say why (as a note too if this phone is already connected), and keep things as they were
+    var refuse = function (msg) { S.lastError = msg; try { history.replaceState(null, "", location.pathname); } catch (e) {} render(); if (S.cfg) toast(msg); return false; };
+    var m = String(text || "").match(/#connect=([A-Za-z0-9_\-=]+)/); if (!m) return refuse("That doesn't look like a connect link");
     var j;
     try { var b64 = m[1].replace(/-/g, "+").replace(/_/g, "/"); j = JSON.parse(decodeURIComponent(escape(atob(b64 + "===".slice((b64.length + 3) % 4))))); if (!j.u || !j.k) throw 0; }
-    catch (e) { S.lastError = "That connect link didn't work. Copy it again from your sheet."; render(); return false; }
+    catch (e) { return refuse("That connect link didn't work. Copy it again from your sheet."); }
     // only ever talk to a Google Apps Script web app (or this computer while testing)
-    var host = ""; try { host = new URL(j.u).hostname; } catch (e) {}
-    if (!/^(script\.google\.com|script\.googleusercontent\.com|localhost|127\.0\.0\.1)$/.test(host)) { S.lastError = "That connect link doesn't point at a Google Sheet, so Budgie won't use it."; render(); return false; }
+    var host = "", proto = ""; try { var U = new URL(j.u); host = U.hostname; proto = U.protocol; } catch (e) {}
+    var local = /^(localhost|127\.0\.0\.1)$/.test(host) && /^(localhost|127\.0\.0\.1)$/.test(location.hostname);   // only while testing on a computer
+    if (!(/^(script\.google\.com|script\.googleusercontent\.com)$/.test(host) && proto === "https:") && !local) return refuse("That connect link doesn't point at a Google Sheet, so Budgie won't use it.");
+    if (!/^[0-9a-f]{64}$/.test(String(j.k))) return refuse("That link is for another app, not for Budgie itself.");
     var same = S.cfg && S.cfg.u === j.u && S.cfg.k === j.k;
     // a link to a different Google Sheet than the one this phone uses could be someone else's: ask first
     if (S.cfg && S.cfg.u !== j.u && !S.ui.connectOk) {
@@ -1610,9 +1614,13 @@
   }
 
   async function start() {
+    if (isOldHome()) {
+      // only open the old copy if there's a phone to move, so a visit after moving leaves nothing behind
+      if (S.cfg) { await store.open(); var old = await store.get("data"); if (old && old.tables) S.data = Object.assign(S.data, old); }
+      document.addEventListener("click", function (e) { var el = e.target.closest('[data-a="moveme"]'); if (el) moveMe(); }); movedScreen(); return;
+    }
     await store.open();
     var saved = await store.get("data"); if (saved && saved.tables) S.data = Object.assign(S.data, saved);
-    if (isOldHome()) { document.addEventListener("click", function (e) { var el = e.target.closest('[data-a="moveme"]'); if (el) moveMe(); }); movedScreen(); return; }
     if (S.prefs.demo) setDemo(true);
     if (lockOn()) { lockNow(); unlock(); }
     setInterval(function () { if (document.visibilityState === "visible") sync(false); }, 60000);

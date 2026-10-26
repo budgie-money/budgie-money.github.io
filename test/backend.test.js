@@ -245,9 +245,13 @@ const phone = (F, k) => { const P = {T: {}, since: 0}; P.sync = (ops) => { const
   ok("S1b: Peckish sync works", ps.ok && ps.app === "peckish" && ps.keyType === "app" && ps.partnerSummary === null, ps.error);
   ok("S1b: only the tables it needs", JSON.stringify(Object.keys(ps.rows).sort()) === JSON.stringify(["accounts", "budgets", "people", "splits", "transactions"]), Object.keys(ps.rows));
   ok("S1b: people are names only", ps.rows.people.every(p => JSON.stringify(Object.keys(p).filter(k => k !== "deleted" && k !== "updated").sort()) === '["id","name"]') && !JSON.stringify(ps.rows.people).includes("Monzo"), ps.rows.people);
-  ok("S1b: only Ethan's budgets and accounts, cut down", ps.rows.budgets.every(b => b.person === "ethan" && b.amount === undefined && b.carry === undefined) && ps.rows.budgets.length === 5 && ps.rows.accounts.every(a => a.owner === "ethan" && a.purpose === undefined && a.order === undefined));
+  ok("S1b: only Ethan's budgets and accounts, cut down", ps.rows.budgets.every(b => b.person === "ethan" && /food|grocer/i.test(b.name) && b.amount === undefined && b.carry === undefined) && ps.rows.budgets.length >= 1 && ps.rows.accounts.every(a => a.owner === "ethan" && a.purpose === undefined && a.order === undefined));
   const ids = ps.rows.transactions.map(t => t.id).sort();
-  ok("S1b: only food shops (his, and the one Sophie split with him)", JSON.stringify(ids) === JSON.stringify(["e-food-1", "s-food-split"]), ids);
+  ok("S1b: only food shops both of you could see (the one Sophie split with him; not his private one)", JSON.stringify(ids) === JSON.stringify(["s-food-split"]), ids);
+  ok("S1b: shops come cut down (no account, no bank fields)", ps.rows.transactions.every(t => t.account === undefined && t.bankId === undefined && t.review === undefined), ps.rows.transactions);
+  call({key: kE, ops: [{op: "put", table: "settings", row: {id: "ethan:share.payments", person: "ethan", key: "share.payments", value: true}}]});
+  const ps1 = call({key: kP, full: true});
+  ok("S1b: once he shares each payment, his own food shops go to Peckish too", JSON.stringify(ps1.rows.transactions.map(t => t.id).sort()) === JSON.stringify(["e-food-1", "s-food-split"]), ps1.rows.transactions.map(t => t.id));
   // writes
   const w = call({key: kP, ops: [
     {op: "put", table: "transactions", row: {id: "t-pk-1", date: "2026-10-28", person: "ethan", amount: 52.3, budget: "e-food-b", account: "e-main", note: "Tesco (Peckish)", source: "peckish"}},
@@ -257,19 +261,40 @@ const phone = (F, k) => { const P = {T: {}, since: 0}; P.sync = (ops) => { const
     {op: "put", table: "transactions", row: {id: "e-fun-1", amount: 1}},
     {op: "put", table: "settings", row: {id: "ethan:theme", person: "ethan", key: "theme", value: "light"}},
     {op: "put", table: "budgets", row: {id: "e-food-b", amount: 999}},
-    {op: "delete", table: "transactions", id: "e-food-1"}
+    {op: "delete", table: "transactions", id: "e-food-1"},
+    {op: "put", table: "transactions", row: {id: "t-pk-4", date: "2026-10-28", person: "ethan", amount: 5, budget: "e-fun", source: "peckish"}},
+    {op: "put", table: "transactions", row: {id: "t-pk-5", date: "2026-10-28", person: "ethan", amount: 5, budget: "e-food-b", account: "s-main", source: "peckish"}},
+    {op: "put", table: "transactions", row: {id: "t-pk-6", date: "2026-10-28", person: "ethan", amount: 50, budget: "e-food-b", split: "ethan=0", source: "peckish"}},
+    {op: "put", table: "transactions", row: {id: "t-pk-7", date: "2026-10-28", person: "ethan", amount: 5, budget: "e-food-b", review: true, source: "peckish"}},
+    {op: "put", table: "transactions", row: {id: "t-pk-8", date: "2026-10-28", person: "ethan", amount: 99999, budget: "e-food-b", source: "peckish"}},
+    {op: "put", table: "transactions", row: {id: "t-pk-9", date: "2026-10-28", person: "ethan", amount: 5, budget: "s-food", source: "peckish"}},
+    {op: "put", table: "transactions", row: {id: "t-pk-10", date: "2026-10-28", person: "ethan", amount: 8, budget: "e-food-b", split: "half", source: "peckish"}}
   ]});
-  ok("S1b: Peckish can add its own food shop", w.ok && w.applied.map(x => x.id).join() === "t-pk-1", w.applied);
-  ok("S1b: and nothing else", w.rejected.map(x => x.i).join() === "1,2,3,4,5,6,7" && w.rejected.every(x => x.error === "That's not allowed with this link"), w.rejected);
+  ok("S1b: Peckish can add its own food shop, split half each or not", w.ok && w.applied.map(x => x.id).join() === "t-pk-1,t-pk-10", w.applied);
+  ok("S1b: and nothing else", w.rejected.map(x => x.i).join() === "1,2,3,4,5,6,7,8,9,10,11,12,13" && w.rejected.every(x => x.error.indexOf("That's not allowed with this link") === 0), w.rejected);
+  ok("S1b: not a fun budget, her account, a lopsided split, review flags, a huge amount or her budget", ["only your food budget", "only your own account", "split half each", "(review)", "amount or date", "only your food budget"].every((bit, j) => w.rejected[7 + j].error.indexOf(bit) > 0), w.rejected.slice(7));
+  const far = call({key: kP, ops: [{op: "put", table: "transactions", row: {id: "t-pk-far", date: "2031-01-01", person: "ethan", amount: 5, budget: "e-food-b", source: "peckish"}}]});
+  ok("S1b: not dated years ahead", far.rejected.length === 1 && /amount or date/.test(far.rejected[0].error), far.rejected);
+  // a shop the bank has matched to a real payment: Peckish can't clear its review flag, and taking it off keeps the payment
+  c.CACHE_ = {}; c.applyOne_("ethan", {op: "put", table: "transactions", row: {id: "t-pk-10", bankId: "monzo:tx_1", review: true}}, Date.now(), "bank", {sys: true}); c.CACHE_ = {};
+  const clr = call({key: kP, ops: [{op: "put", table: "transactions", row: {id: "t-pk-10", person: "ethan", source: "peckish", review: ""}}]});
+  ok("S1b: Peckish can't blank fields that aren't its own", clr.rejected.length === 1 && /\(review\)/.test(clr.rejected[0].error), clr);
+  const del = call({key: kP, ops: [{op: "delete", table: "transactions", id: "t-pk-10"}]});
+  c.CACHE_ = {}; const kept = c.readTable_("transactions").rows.find(x => x.id === "t-pk-10");
+  ok("S1b: taking off a bank-matched shop keeps the real payment for checking", del.applied.length === 1 && kept && !kept.deleted && kept.bankId === "monzo:tx_1" && kept.review === true && kept.source === "" && /taken off in Peckish/.test(kept.note), kept);
+  ok("S1b: and it's no longer Peckish's to change", call({key: kP, ops: [{op: "put", table: "transactions", row: {id: "t-pk-10", person: "ethan", source: "peckish", amount: 1}}]}).rejected.length === 1);
   ok("S1b: it can change and delete its own rows", call({key: kP, ops: [{op: "put", table: "transactions", row: {id: "t-pk-1", amount: 50, source: "peckish", person: "ethan"}}, {op: "delete", table: "transactions", id: "t-pk-1"}]}).applied.length === 2);
   ok("S1b: no bank actions", call({key: kP, action: "bank.status"}).error === "That's not allowed with this link" && call({key: kP, action: "bank.disconnect"}).ok === false);
   ok("S1b: no calendar for Peckish", call({key: kP, action: "app.calendar"}).ok === false);
   // a delta sync still works, and a shop that's no longer food leaves Peckish
   const ds = call({key: kP, since: ps.now});
-  ok("S1b: delta sync", ds.ok && ds.full === false && ds.rows.transactions.some(t => t.id === "t-pk-1"), ds.rows && ds.rows.transactions);
+  ok("S1b: a later sync is always the whole (small) picture", ds.ok && ds.full === true && ds.rows.transactions.some(t => t.id === "t-pk-10") && !ds.rows.transactions.some(t => t.id === "t-pk-1"), ds.rows && ds.rows.transactions);
+  ok("S1b: it never hears of rows it can't see (no stubs)", ds.rows.transactions.every(t => !t.deleted) && !ds.rows.transactions.some(t => t.id === "e-fun-1" || t.id === "s-food-private"), ds.rows.transactions);
   call({key: kE, ops: [{op: "put", table: "transactions", row: {id: "e-food-1", budget: "e-fun"}}]});
   const ds2 = call({key: kP, since: ds.now});
-  ok("S1b: a payment moved off food is dropped from Peckish", ds2.rows.transactions.some(t => t.id === "e-food-1" && t.deleted === true && t.amount === undefined), ds2.rows.transactions);
+  ok("S1b: a payment moved off food is dropped from Peckish", ds2.full === true && !ds2.rows.transactions.some(t => t.id === "e-food-1"), ds2.rows.transactions);
+  call({key: kE, ops: [{op: "put", table: "settings", row: {id: "ethan:share.payments", person: "ethan", key: "share.payments", value: false}}]});
+  ok("S1b: and turning sharing off takes his private shops back out", !call({key: kP, since: ds2.now}).rows.transactions.some(t => t.person === "ethan" && !t.split && t.source !== "peckish"));
   // Budgie keys can't take Peckish's ids
   ok("S4: a Budgie key can't make t-pk- or bk- rows", call({key: kE, ops: [{op: "put", table: "transactions", row: {id: "t-pk-9", date: "2026-10-28", person: "ethan", amount: 1, source: "peckish"}}, {op: "put", table: "transactions", row: {id: "bk-monzo-x", date: "2026-10-28", person: "ethan", amount: 1}}]}).rejected.length === 2);
   // rotating the Peckish key
@@ -304,9 +329,18 @@ const phone = (F, k) => { const P = {T: {}, since: 0}; P.sync = (ops) => { const
   ok("S7: a good key is looked up once, then cached for 10 minutes", r1 <= 1 && reads === r1, {r1, reads});
   const wrong = "0".repeat(64); call({key: wrong, action: "ping"}); const r2 = reads; call({key: wrong, action: "ping"});
   ok("S7: a well-formed wrong key is remembered too", reads === r2 && call({key: wrong, action: "ping"}).ok === false);
+  for (let i = 0; i < 50; i++) call({key: require("crypto").randomBytes(32).toString("hex"), action: "ping"});
+  ok("S7: a flood of made-up keys reads the properties at most once", reads - r2 <= 1, reads - r2);
   c.PropertiesService.getScriptProperties = gp;
+  const pkS = JSON.parse(Buffer.from(c.appLink("sophie", "peckish").split("#connect=")[1], "base64url").toString()).k, pkE = env.props.APPKEY_ethan_peckish;
+  ok("S7: a brand new link works straight away", call({key: pkS, action: "ping"}).ok === true);
   const oldS = env.props.KEY_sophie; c.newKey("sophie");
   ok("S7: a changed key stops working at once", call({key: oldS, action: "ping"}).ok === false && call({key: env.props.KEY_sophie, action: "ping"}).person === "sophie");
+  // a new Budgie key (a lost phone) also cuts off that person's linked apps, and nobody else's
+  ok("newKey(person) unlinks that person's apps at once", call({key: cal, action: "app.calendar"}).ok === false && call({key: pkS, action: "ping"}).ok === false && !env.props.APPKEY_sophie_caledonite && !env.props.APPKEY_sophie_peckish);
+  ok("newKey(person) leaves the partner's links alone", call({key: pkE, action: "ping"}).ok === true);
+  delete env.props.APPKEY_ethan_peckish;
+  ok("S7: a key deleted by hand stops at once, even while the list is cached", call({key: pkE, action: "ping"}).ok === false);
 }
 // linking apps from the app itself (a person's own full key), and keyType
 {
