@@ -410,6 +410,15 @@ function applyOne_(me, op, now, by, opts) {
     var same = tab.rows.filter(function (r) { return r.key === row.key && r.person === row.person && !toBoolCell_(r.deleted); })[0];
     if (same) { row.deleted = true; row.note = "Same payday move as " + same.id; }
   }
+  // you both ticking the same settling up (one "I've paid", the other "it's arrived") before your phones caught up:
+  // when nothing is owed any more by the time the second one arrives, it's kept but marked as a copy, so neither of
+  // you ends up owing the other the same amount back
+  if (!existing && !sys && t === "settlements" && /^split:/.test(String(row.key || "")) && !row.loan && !toBoolCell_(row.deleted) && Budgie.isIso(String(row.date || ""))) {
+    var bt = Budgie.between(Budgie.load(allTables_(), String(row.date)), String(row.to), String(row.date));
+    var twin = tab.rows.filter(function (r) { return r.from === row.from && r.to === row.to && !r.loan && !toBoolCell_(r.deleted) && String(r.date) <= String(row.date); })
+      .sort(function (x, y) { return String(x.date) < String(y.date) ? 1 : -1; })[0];
+    if (twin && bt.partner === String(row.from) && !(bt.owedToMe > 0.004)) { row.deleted = true; row.note = "Same settling up as " + twin.id; }
+  }
   // people are set up in the sheet; you can change your own name or colour, never who your partner is
   if (t === "people") {
     if (!existing) throw refuse_("People are added in the sheet");

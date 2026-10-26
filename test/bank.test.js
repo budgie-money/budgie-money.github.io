@@ -841,6 +841,192 @@ const grow = (G, t) => { G.c.CACHE_ = {}; return G.c.readTable_(t).rows; };
   ok("Q10: and only a few wait at a time", peers.length <= 40 && hinted.length <= 40 && G.env.props.BANK_STATUS_ethan.length < 9000, {peers: peers.length, hinted: hinted.length, size: G.env.props.BANK_STATUS_ethan.length});
 }
 
+// ================= fifth security review =================
+{
+  // R1: a move of the partner's that carries the payer's payday key ("pay:<payday>:<his pot>") mustn't stop the payer's
+  // own bank move to that pot coming in
+  freshMonzo(); NOW = RealDate.parse("2026-11-17T12:00:00Z"); monzo.txns = monzoData(planned);
+  const G = bankEnv();
+  const sp = G.call({key: G.kS, ops: [{op: "put", table: "moves", row: {id: "m-spoof", date: "2026-10-29", person: "sophie", from: "", to: "", amount: 1, key: "pay:2026-10-29:e-bills"}}]});
+  connectMonzo(G, {acc_00009main: "e-main", pot_bills: "e-bills"});
+  const pb = grow(G, "moves").find(m => m.id === "bk-monzo-tx_potbills");
+  ok("R1: the partner's move was saved (it's hers to make)", sp.applied.length === 1, sp);
+  ok("R1: and the payer's bank move to his pot still comes in", pb && pb.person === "ethan" && pb.to === "e-bills" && !pb.deleted, pb);
+  // his own tick in the app still stops a second copy
+  freshMonzo(); monzo.txns = monzoData(planned);
+  const G2 = bankEnv();
+  G2.call({key: G2.kE, ops: [{op: "put", table: "moves", row: {id: "m-mine", date: "2026-10-29", person: "ethan", from: "e-main", to: "e-bills", amount: planned.bills, key: "pay:2026-10-29:e-bills"}}]});
+  connectMonzo(G2, {acc_00009main: "e-main", pot_bills: "e-bills"});
+  ok("R1: his own tick still counts", !grow(G2, "moves").some(m => m.id === "bk-monzo-tx_potbills" && !m.deleted));
+}
+
+{
+  // R2: the last part of a first read that was carried on only covers the time since it stopped, so a hold it read in
+  // an earlier part (and so doesn't see now) mustn't be taken for one that's gone
+  freshMonzo(); NOW = RealDate.parse("2026-11-17T12:00:00Z");
+  const list = []; for (let i = 0; i < 790; i++) list.push(mtx("tx_r2old" + String(i).padStart(4, "0"), B.addDays("2024-08-01", Math.floor(i * 0.9)), -(100 + i), {merchant: merchant("Corner Shop", "general"), category: "general"}));
+  list.push(mtx("tx_r2hold", "2026-11-01", -5000, {merchant: merchant("Hotel Stay", "holidays"), category: "holidays", pending: true, time: "07:00:00"}));
+  for (let i = 0; i < 50; i++) list.push(mtx("tx_r2new" + String(i).padStart(3, "0"), B.addDays("2026-11-02", i % 14), -(200 + i), {merchant: merchant("Cafe", "eating_out"), category: "eating_out", time: "09:" + String(i % 60).padStart(2, "0") + ":00"}));
+  monzo.txns = list; monzo.pageDelay = 30000;
+  const G = bankEnv(); connectMonzo(G);
+  let st = JSON.parse(G.env.props.BANK_STATUS_ethan);
+  const hold = () => grow(G, "transactions").find(r => r.id === "bk-monzo-tx_r2hold");
+  ok("R2: the first part read the hold and stopped after it", st.cursor && !st.fullDone && hold() && !hold().deleted && st.pending && st.pending.tx_r2hold, {cursor: st.cursor, hold: hold()});
+  monzo.pageDelay = 0; NOW += 60000; G.c.bankPendingImports(); st = JSON.parse(G.env.props.BANK_STATUS_ethan);
+  ok("R2: carrying on to the end doesn't drop the hold it read before", st.fullDone && hold() && !hold().deleted && st.pending.tx_r2hold, {fullDone: st.fullDone, hold: hold()});
+  NOW += 15 * 60000; G.c.bankPoll();
+  ok("R2: and the next read, which sees it, keeps it", hold() && !hold().deleted);
+}
+
+{
+  // R3: a payment the bank feed took off by itself (a hold that seemed to vanish) comes back if the bank shows it again;
+  // one you dismissed yourself stays dismissed
+  freshMonzo(); NOW = RealDate.parse("2026-11-17T12:00:00Z");
+  monzo.txns = monzoData(planned).concat([mtx("tx_r3hold", "2026-11-05", -4200, {merchant: merchant("Garage", "transport"), category: "transport", pending: true})]);
+  const G = bankEnv(); connectMonzo(G, {acc_00009main: "e-main"});
+  const row = (id) => grow(G, "transactions").find(r => r.id === id);
+  ok("R3: the hold came in", row("bk-monzo-tx_r3hold") && !row("bk-monzo-tx_r3hold").deleted);
+  const held = monzo.txns.find(t => t.id === "tx_r3hold"); monzo.txns = monzo.txns.filter(t => t !== held);
+  NOW += 15 * 60000; G.c.bankPoll();
+  ok("R3: missing from the feed and over a week old, it's taken off", row("bk-monzo-tx_r3hold").deleted === true && row("bk-monzo-tx_r3hold").by === "bank");
+  held.settled = iso("2026-11-18"); held.amount = -4300; monzo.txns.push(held);
+  NOW += 15 * 60000; G.c.bankPoll();
+  ok("R3: when the bank shows it again (settled), it's back, at the settled amount", row("bk-monzo-tx_r3hold").deleted === false && row("bk-monzo-tx_r3hold").amount === 43, row("bk-monzo-tx_r3hold"));
+  G.call({key: G.kE, ops: [{op: "delete", table: "transactions", id: "bk-monzo-tx_r3hold"}]});
+  NOW += 15 * 60000; G.c.bankPoll();
+  ok("R3: one you dismissed stays dismissed", row("bk-monzo-tx_r3hold").deleted === true);
+}
+
+{
+  // R4: the same payment twice in one read (a Starling payment listed under a Space as well as the account, or two
+  // 90-day windows meeting on its time) is one payment: a planned bill it matched doesn't also become a payment
+  freshMonzo(); NOW = RealDate.parse("2026-11-17T12:00:00Z");
+  monzo.txns = monzoData(planned); const rent = monzo.txns.find(t => t.id === "tx_rent"); monzo.txns.push(Object.assign({}, rent));
+  const G = bankEnv(); connectMonzo(G, {acc_00009main: "e-main"});
+  const tx = grow(G, "transactions");
+  ok("R4: a bill read twice is still just the bill", !tx.some(r => r.bankId === "tx_rent" && !r.deleted), tx.filter(r => r.bankId === "tx_rent"));
+}
+
+{
+  // R5: a first import that has to link hundreds of payments logged by hand (each one its own write to the sheet, a few
+  // seconds each on a slow day) stops in good time rather than being stopped by Apps Script at 6 minutes (which keeps
+  // nothing, and tries the same again every minute); what it read is kept, and the next runs finish the links
+  freshMonzo(); NOW = RealDate.parse("2026-11-17T12:00:00Z");
+  const extra = [], hand = [];
+  for (let i = 0; i < 200; i++) { const d = B.addDays("2025-06-01", i); extra.push(mtx("tx_r5_" + i, d, -(500 + i), {merchant: merchant("Market Stall", "general"), category: "general"})); hand.push({id: "hand-r5-" + i, date: d, person: "ethan", amount: (500 + i) / 100, budget: "e-fun", account: "e-main", note: "Market", source: "app"}); }
+  monzo.txns = extra.concat(monzoData(planned));
+  const G = bankEnv(t => { hand.forEach(h => t.transactions.push(h)); });
+  const real = G.c.applyOne_; G.c.applyOne_ = function (me, op, now, by, opts) { if (opts && opts.sys) NOW += 5000; return real.apply(this, arguments); };
+  const t0 = NOW; connectMonzo(G); const took = NOW - t0;
+  const linked = () => grow(G, "transactions").filter(r => /^hand-r5-/.test(r.id) && r.bankId).length;
+  let st = JSON.parse(G.env.props.BANK_STATUS_ethan);
+  ok("R5: the run ends well inside 6 minutes", took < 6 * 60000, {took});
+  ok("R5: what it read is kept (the new payments are in) and it carries on a minute later", grow(G, "transactions").some(r => r.id === "bk-monzo-tx_tesco") && linked() > 0 && linked() < 200 && st.again && !st.fullDone && !st.waiting && G.env.triggers.some(t => t.getHandlerFunction() === "bankPendingImports"), {linked: linked(), st: {again: st.again, fullDone: st.fullDone, err: st.lastError}});
+  let runs = 0, longest = 0;
+  while (st.again && runs < 8) { NOW += 60000; const a = NOW; G.c.bankPendingImports(); longest = Math.max(longest, NOW - a); runs++; st = JSON.parse(G.env.props.BANK_STATUS_ethan); }
+  ok("R5: the next runs finish the links, each in good time, with nothing added twice", linked() === 200 && st.fullDone && !st.again && longest < 6 * 60000 && !grow(G, "transactions").some(r => /^bk-monzo-tx_r5_/.test(r.id)) && !G.env.triggers.some(t => t.getHandlerFunction() === "bankPendingImports"), {linked: linked(), runs, longest, fullDone: st.fullDone});
+  G.c.applyOne_ = real;
+}
+
+{
+  // R6: a row of the partner's that names one of the payer's bank payments (a Peckish shop an older version linked, or
+  // one typed into the sheet) is never changed by reading the payer's bank, and doesn't hide that payment from him
+  freshMonzo(); NOW = RealDate.parse("2026-11-17T12:00:00Z"); monzo.txns = monzoData(planned);
+  const G = bankEnv(t => { t.transactions.push({id: "t-pk-legacy", date: "2026-11-01", person: "sophie", amount: 40, budget: "s-food", account: "s-main", split: "half", note: "Tesco (Peckish)", source: "peckish", bankId: "tx_tesco", review: true}); });
+  const before = JSON.stringify(grow(G, "transactions").find(r => r.id === "t-pk-legacy"));
+  connectMonzo(G, {acc_00009main: "e-main"});
+  const after = grow(G, "transactions"), hers = after.find(r => r.id === "t-pk-legacy");
+  ok("R6: the partner's row is left exactly as it was", JSON.stringify(hers) === before, {before, hers});
+  ok("R6: and the payer's payment comes in as his own", after.some(r => r.id === "bk-monzo-tx_tesco" && r.person === "ethan" && r.amount === 45.2 && !r.deleted));
+}
+
+{
+  // R7: a property holds at most 9 KB. Lots of pots with long names and lots of holds waiting mustn't make the status
+  // too big to save (which would stop every read from then on)
+  freshMonzo(); NOW = RealDate.parse("2026-11-17T12:00:00Z");
+  const pots0 = monzo.pots;
+  monzo.pots = Array.from({length: 70}, (_, i) => ({id: "pot_0000" + String(i).padStart(12, "0"), name: "🏖️ Saving up for something rather far away, number " + i, balance: 100 * i, deleted: false}));
+  monzo.txns = monzoData(planned).concat(Array.from({length: 120}, (_, i) => mtx("tx_r7hold" + i, B.addDays("2026-11-16", -(i % 30)), -(300 + i), {merchant: merchant("Hold " + i, "general"), category: "general", pending: true})));
+  const G = bankEnv();
+  const bytes = (v) => Buffer.byteLength(String(v), "utf8");
+  const strict = (get) => () => { const st = get(); return Object.assign({}, st, {setProperty: (k, v) => { if (bytes(v) > 9 * 1024) throw new Error("Argument too large: value"); st.setProperty(k, v); }}); };
+  G.c.PropertiesService = {getScriptProperties: strict(G.c.PropertiesService.getScriptProperties), getUserProperties: strict(G.c.PropertiesService.getUserProperties)};
+  connectMonzo(G, {acc_00009main: "e-main"});
+  const st = JSON.parse(G.env.props.BANK_STATUS_ethan);
+  ok("R7: the status still saves, and the read went through", !st.lastError && st.fullDone && st.accounts.length === 71 && bytes(G.env.props.BANK_STATUS_ethan) <= 9 * 1024 && grow(G, "transactions").some(r => r.id === "bk-monzo-tx_tesco"), {err: st.lastError, n: (st.accounts || []).length, size: bytes(G.env.props.BANK_STATUS_ethan)});
+  ok("R7: the newest holds are the ones still watched", Object.keys(st.pending || {}).length > 0 && !!st.pending.tx_r7hold0, Object.keys(st.pending || {}).length);
+  monzo.pots = pots0;
+}
+
+{
+  // R8: anyone can open the sign-in return address. A made-up state (the right shape) is turned away without taking the
+  // bank lock, so a stream of them can't hold up the reads; a real one still works, once
+  freshMonzo(); NOW = RealDate.parse("2026-11-17T12:00:00Z"); monzo.txns = monzoData(planned);
+  const G = bankEnv(); let locks = 0;
+  const L = G.c.LockService; G.c.LockService = Object.assign({}, L, {getUserLock: () => { const l = L.getUserLock(); return Object.assign({}, l, {tryLock: (ms) => { locks++; return l.tryLock(ms); }}); }});
+  for (let i = 0; i < 5; i++) G.c.doGet({parameter: {code: "x", state: require("crypto").randomBytes(32).toString("hex")}});
+  ok("R8: made-up states never take the lock", locks === 0, locks);
+  connectMonzo(G);
+  ok("R8: a real sign-in still connects", !!G.env.userProps.BANK_TOKEN_ethan && locks > 0);
+}
+
+{
+  // R9: a connection that needs reconnecting shows Reconnect (Monzo) and Disconnect, not the first-time form (whose
+  // Connect the sheet turns down while a connection is kept: "Disconnect Monzo first", with no way to do that)
+  const app = fs.readFileSync(path.join(__dirname, "../app.js"), "utf8");
+  const src = app.slice(app.indexOf("SCREENS.bank = function () {"), app.indexOf("// new payments from the bank"));
+  const render = (bank, personBank) => {
+    const ctx = {SCREENS: {}, S: {bank: bank, cfg: {u: "https://script.google.com/macros/s/X/exec"}, ui: {}}, B: {accountsOf: () => [{id: "e-main", name: "Main"}], mainOf: () => "e-main", accName: (d, id) => id, nice: (x) => x},
+      demoOn: () => false, person: () => ({bank: personBank}), card: (h) => "<div class=card>" + h + "</div>", esc: (x) => String(x), bankRefresh: () => {}, db: () => ({}), me: () => "ethan",
+      M: (n) => "£" + n, ago: () => "now", reviewRows: () => [], bankName: () => bank.provider === "starling" ? "Starling" : "Monzo"};
+    vm.createContext(ctx); vm.runInContext(src, ctx); return ctx.SCREENS.bank();
+  };
+  const base = {connected: false, needsReconnect: true, needsSetup: false, accounts: [{extId: "acc_1", name: "Current", kind: "main", mappedTo: "e-main"}], lastError: "Monzo needs reconnecting"};
+  const mz = render(Object.assign({provider: "monzo"}, base), "Monzo"), sl = render(Object.assign({provider: "starling"}, base), "Starling");
+  ok("R9: Monzo needing reconnecting offers Reconnect and Disconnect, not the first-time form", /data-a="bankmonzo2"/.test(mz) && /data-a="bankoff"/.test(mz) && !/id="mzSecret"/.test(mz), mz.slice(0, 200));
+  ok("R9: Starling needing reconnecting offers Disconnect, not a token box that can't be used", /data-a="bankoff"/.test(sl) && !/id="stTok"/.test(sl), sl.slice(0, 200));
+  ok("R9: never connected still shows the first-time form", /id="mzSecret"/.test(render({provider: "", connected: false, needsReconnect: false, needsSetup: true, accounts: []}, "Monzo")));
+}
+
+{
+  // R12: the partner's made-up payment between them only hides a payment the bank says went to them, and that's told
+  // by their id (set in the sheet), not their name, which they can change to the name of whoever the payer paid
+  freshMonzo(); NOW = RealDate.parse("2026-11-17T12:00:00Z"); monzo.txns = monzoData(planned);
+  const G = bankEnv();
+  const ren = G.call({key: G.kS, ops: [{op: "put", table: "people", row: {id: "sophie", name: "Sam Smith"}}, {op: "put", table: "settlements", row: {id: "set-fake2", date: "2026-11-06", from: "ethan", to: "sophie", amount: 20, note: "paid back"}}]});
+  connectMonzo(G, {acc_00009main: "e-main"});
+  ok("R12: renaming herself after the person he paid doesn't let her made-up one hide his payment", ren.applied.length === 2 && grow(G, "transactions").some(r => r.id === "bk-monzo-tx_friend" && !r.deleted), ren);
+}
+
+{
+  // R10: Check now and the 15-minute read refreshing the same token at once (they aren't sure to share a lock): the one
+  // whose refresh Monzo turns down (each refresh token works once) waits for the other's new token rather than marking
+  // a working connection as needing reconnecting
+  freshMonzo(); NOW = RealDate.parse("2026-11-17T12:00:00Z"); monzo.txns = monzoData(planned);
+  const G = bankEnv(); connectMonzo(G, {acc_00009main: "e-main"});
+  const tok = JSON.parse(G.env.userProps.BANK_TOKEN_ethan); tok.expiresAt = NOW - 1000; G.env.userProps.BANK_TOKEN_ethan = JSON.stringify(tok);
+  // the other read: its refresh has already been used up at Monzo, and it saves the new token a moment later
+  const other = JSON.parse(monzoRoute("post", "https://api.monzo.com/oauth2/token", {payload: {grant_type: "refresh_token", client_id: CLIENT_ID, client_secret: SECRET.clientSecret, refresh_token: tok.refresh}}).body);
+  const sleep0 = G.c.Utilities.sleep;
+  G.c.Utilities.sleep = () => { const t = JSON.parse(G.env.userProps.BANK_TOKEN_ethan); t.access = other.access_token; t.refresh = other.refresh_token; t.expiresAt = NOW + 6 * 3600000; t.refreshedAt = NOW; G.env.userProps.BANK_TOKEN_ethan = JSON.stringify(t); G.c.Utilities.sleep = sleep0; };
+  NOW += 60000; const r = G.call({key: G.kE, action: "bank.syncNow"}), st = JSON.parse(G.env.props.BANK_STATUS_ethan);
+  ok("R10: the read goes on with the other's new token and the connection stays fine", r.ok && !st.needsReconnect && JSON.parse(G.env.userProps.BANK_TOKEN_ethan).refresh === other.refresh_token, {r, st: {nr: st.needsReconnect, err: st.lastError}});
+  G.c.Utilities.sleep = sleep0;
+}
+
+{
+  // R11: a read that was using the old connection when you connected again fails, but that says nothing about the new
+  // connection, which isn't marked as needing reconnecting
+  freshMonzo(); NOW = RealDate.parse("2026-11-17T12:00:00Z"); monzo.txns = monzoData(planned);
+  const G = bankEnv(); connectMonzo(G, {acc_00009main: "e-main"});
+  const tok = JSON.parse(G.env.userProps.BANK_TOKEN_ethan); tok.expiresAt = NOW - 1000; G.env.userProps.BANK_TOKEN_ethan = JSON.stringify(tok);
+  const fetch0 = G.c.UrlFetchApp.fetch, fresh = {provider: "monzo", conn: "new-connection-0000000000000000", access: "acc-NEW", refresh: "ref-NEW", expiresAt: NOW + 6 * 3600000, issuedAt: NOW, approvedAt: NOW, userId: "user_00009ETHAN"};
+  G.c.UrlFetchApp.fetch = (url, params) => { const out = fetch0(url, params); if (/oauth2\/token/.test(url) && params.payload && params.payload.grant_type === "refresh_token") { G.env.userProps.BANK_TOKEN_ethan = JSON.stringify(fresh); G.env.props.BANK_STATUS_ethan = JSON.stringify({provider: "monzo", accounts: [], lastSync: 0, lastError: "", fullDone: true}); } return out; };
+  NOW += 60000; const r = G.call({key: G.kE, action: "bank.syncNow"}), st = JSON.parse(G.env.props.BANK_STATUS_ethan);
+  ok("R11: the old read stops, and the new connection isn't marked as needing reconnecting", !r.ok && !st.needsReconnect && JSON.parse(G.env.userProps.BANK_TOKEN_ethan).conn === fresh.conn, {r, st});
+  G.c.UrlFetchApp.fetch = fetch0;
+}
+
 // ================= read only, always =================
 const allowedPost = ["https://api.monzo.com/oauth2/token", "https://api.monzo.com/oauth2/logout"];
 const bad = reqs.filter(r => { const u = new URL(r.url); return !(r.method === "get" || (r.method === "post" && allowedPost.indexOf(u.origin + u.pathname) >= 0)); });

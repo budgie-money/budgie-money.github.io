@@ -606,6 +606,24 @@ const phone = (F, k) => { const P = {T: {}, since: 0}; P.sync = (ops) => { const
   ok("R18: and the next change is still saved", j.applied.some(r => r.id === "t-after"), j.applied);
 }
 
+// R19 (1.4.4) you both tick the same settling up before your phones catch up: it only counts once,
+// but settling up again later for something new still counts
+{
+  const F = fresh(), d = "2026-10-28", B = F.c.Budgie;
+  const pay = (id, amt) => ({op: "put", table: "transactions", row: {id, date: d, person: "ethan", amount: amt, budget: "e-fun", account: "e-main", split: "half"}});
+  const settle = (id, amt) => ({op: "put", table: "settlements", row: {id, date: d, from: "sophie", to: "ethan", amount: amt, key: "split:" + d, note: "Settled up"}});
+  F.call({key: F.kE, ops: [pay("t-lunch", 40)]});
+  F.call({key: F.kS, ops: [settle("set-s", 20)]});   // Sophie: "I've paid"
+  F.call({key: F.kE, ops: [settle("set-e", 20)]});   // Ethan, before his phone heard: "it's arrived"
+  const owed = () => { F.c.CACHE_ = {}; return B.between(B.load(F.c.allTables_(), d), "ethan", d).net; };
+  const rows = () => { F.c.CACHE_ = {}; return F.c.readTable_("settlements").rows; };
+  ok("R19: the second tick is kept, marked as a copy", (rows().find(r => r.id === "set-e") || {}).deleted === true && /Same settling up as set-s/.test((rows().find(r => r.id === "set-e") || {}).note), rows().find(r => r.id === "set-e"));
+  ok("R19: so they're all square, not owing it back", Math.abs(owed()) < 0.005, owed());
+  F.call({key: F.kE, ops: [pay("t-dinner", 40)]});
+  F.call({key: F.kS, ops: [settle("set-s2", 20)]});
+  ok("R19: settling up again for something new still counts", !rows().find(r => r.id === "set-s2").deleted && Math.abs(owed()) < 0.005, owed());
+}
+
 // #5 the one-file backend (apps-script/Budgie.gs, made by migrate/build.js) must be built from the current files
 {
   const fs = require("fs"), path = require("path"), dir = path.join(__dirname, ".."), bundle = path.join(dir, "apps-script/Budgie.gs");

@@ -244,6 +244,58 @@ const fails = [], check = (name, cond, extra) => { if (cond) console.log("ok", n
   check("a negative net worth shows as -£…", /-£\d/.test(nwText) && !/£-/.test(nwText), nwText.slice(0, 160));
   await page.context().close();
 
+  // 6. review fixes (1.4.4)
+  page = await newPage("2026-11-02");
+  await page.goto(links.ethan); await page.waitForFunction(() => /Hi Ethan/.test(document.querySelector("#top").textContent), null, {timeout: 8000});
+  // a Google hiccup that lasts a while, with a few things logged during it, loses nothing
+  let hiccups = 0;
+  await page.route("**/exec", async r => {
+    const body = JSON.parse(r.request().postData() || "{}");
+    if (!(body.ops || []).length || hiccups >= 6) return r.continue();
+    hiccups++; const sent = body.ops; body.ops = [];
+    const res = await r.fetch({postData: JSON.stringify(body)}), j = await res.json();
+    j.rejected = sent.map((op, i) => ({i, table: op.table, id: op.row ? op.row.id : op.id, error: i ? "Waiting for an earlier change" : "Service Spreadsheets timed out while accessing document", retry: true, notTried: i > 0}));
+    return r.fulfill({response: res, body: JSON.stringify(j)});
+  });
+  for (const a of ["1.11", "2.22", "3.33", "4.44", "5.55"]) { await page.click('nav [data-v="add"]'); await page.fill("#addAmt", a); await page.click('[data-a="addsave"]'); await page.waitForTimeout(700); }
+  await page.evaluate(() => window.BudgieApp.sync(false)); await page.waitForTimeout(1200);
+  check("(the hiccup lasted six tries)", hiccups === 6, hiccups);
+  await page.evaluate(() => window.BudgieApp.sync(false)); await page.waitForTimeout(1500);
+  const txH = await (await page.request.get("http://localhost:" + PORT + "/dump?transactions")).json();
+  check("a long hiccup with several payments logged during it loses none of them", ["1.11", "2.22", "3.33", "4.44", "5.55"].every(a => txH.some(r => r.person === "ethan" && +r.amount === +a)) && await page.evaluate(() => window.BudgieApp.S.data.queue.length === 0), txH.filter(r => r.person === "ethan").map(r => r.amount));
+  await page.unroute("**/exec");
+  // Hide amounts covers the amounts in To do's sentences too
+  await page.evaluate(() => { const S = window.BudgieApp.S; S.prefs.hide = true; S.ui.reveal = false; window.BudgieApp.go("today"); });
+  await page.waitForTimeout(200);
+  const todoText = T(await page.textContent("main")), payText = await page.evaluate(() => { window.BudgieApp.go("payday"); return document.querySelector("main").textContent; });
+  check("Hide amounts: no amounts anywhere on Today or Payday", !/£\d/.test(todoText) && !/£\d/.test(payText), {todoText: (todoText.match(/.{0,40}£\d.{0,10}/) || [""])[0], payText: (payText.match(/.{0,40}£\d.{0,10}/) || [""])[0]});
+  await page.evaluate(() => { window.BudgieApp.S.prefs.hide = false; window.BudgieApp.go("today"); });
+  // unticking a payday move only takes off your own moves
+  const pk = "pay:2026-10-29:e-food";
+  await page.evaluate(k => { const t = window.BudgieApp.S.data.tables; t.moves = (t.moves || []).concat([{id: "mv-hers", date: "2026-10-29", person: "sophie", from: "s-main", to: "s-lisa", amount: 1, key: k}]); window.BudgieApp.go("payday"); }, pk);
+  await page.route("**/exec", r => r.abort());
+  const box = await page.$(`[data-c="paytick"][data-v^="${pk}|"]`);
+  const flip = (on) => page.evaluate(([k, on]) => { const el = document.querySelector('[data-c="paytick"][data-v^="' + k + '|"]'); el.checked = on; el.dispatchEvent(new Event("change", {bubbles: true})); }, [pk, on]);
+  if (box) { await flip(true); await page.waitForTimeout(200); await flip(false); await page.waitForTimeout(300); }
+  const dels = await page.evaluate(() => window.BudgieApp.S.data.queue.filter(o => o.op === "delete").map(o => o.id));
+  check("unticking a payday move leaves the partner's move alone", !!box && dels.length === 1 && dels.indexOf("mv-hers") < 0, {box: !!box, dels});
+  await page.unroute("**/exec");
+  await page.context().close();
+  // a phone left open past midnight (and offline) moves on to the new day
+  page = await newPage("2026-11-02");
+  await page.clock.install({time: new Date("2026-11-02T23:59:00")});
+  await page.goto(links.ethan); await page.waitForFunction(() => /Hi Ethan/.test(document.querySelector("#top").textContent), null, {timeout: 8000});
+  await page.route("**/exec", r => r.abort());
+  const day0 = await page.evaluate(() => window.BudgieApp.db().today);
+  await page.clock.fastForward(5 * 60000); await page.waitForTimeout(200);
+  const day1 = await page.evaluate(() => window.BudgieApp.db().today);
+  check("after midnight Budgie works from the new day", day0 === "2026-11-02" && day1 === "2026-11-03", {day0, day1});
+  // the partner's summary from days ago doesn't say they're paid today
+  await page.evaluate(() => { const S = window.BudgieApp.S; S.data.summary = Object.assign({}, S.data.summary, {nextPay: "2026-10-30"}); window.BudgieApp.go("partner"); });
+  check("an old summary doesn't say the partner is paid today", !/Paid today/.test(T(await page.textContent("main"))), T(await page.textContent("main")).slice(0, 120));
+  await page.unroute("**/exec");
+  await page.context().close();
+
   console.log(errs.length ? "ERRORS:\n" + errs.join("\n") : "No errors");
   console.log(fails.length ? "FAIL\n  " + fails.join("\n  ") : "All checks passed");
   process.exitCode = fails.length ? 1 : 0;

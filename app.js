@@ -1,7 +1,7 @@
 /* Budgie app: screens, syncing and offline queue. The maths lives in engine.js. */
 (function () {
   "use strict";
-  var B = window.Budgie, TH = window.BudgieThemes, APP_VERSION = "1.4.3";
+  var B = window.Budgie, TH = window.BudgieThemes, APP_VERSION = "1.4.4";
   var $ = function (s) { return document.querySelector(s); };
   var esc = function (s) { return String(s === undefined || s === null ? "" : s).replace(/[&<>"']/g, function (c) { return {"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]; }); };
   var LS = {get: function (k, d) { try { var v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch (e) { return d; } }, set: function (k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }};
@@ -41,7 +41,8 @@
   var demoOn = function () { return !!S.prefs.demo; };
   var tables = function () { return demoOn() ? S.demo.tables : S.data.tables; };
   var me = function () { return demoOn() ? S.demo.me : S.data.me; };
-  var db = function () { if (!DB) DB = B.load(tables(), todayIso()); return DB; };
+  // worked out again once the date changes, so a phone left open overnight (or offline) isn't a day behind
+  var db = function () { var t = todayIso(); if (!DB || DB.today !== t) DB = B.load(tables(), t); return DB; };
   var dirty = function () { DB = null; };
   var savePrefs = function () { LS.set("budgie.prefs", S.prefs); };
   var persist = function () { if (!demoOn()) store.set("data", S.data); };
@@ -51,6 +52,8 @@
 
   // ---------- money display ----------
   var M = function (n) { return S.prefs.hide && !S.ui.reveal ? "£••••" : B.money(n); };
+  // the engine's own sentences ("Pay Sophie £40.00") are covered too
+  var MT = function (s) { return S.prefs.hide && !S.ui.reveal ? String(s === undefined || s === null ? "" : s).replace(/-?£\d[\d,]*(\.\d+)?/g, "£••••") : s; };
   var M0 = function (n) { var r = Math.round(+n || 0); return S.prefs.hide && !S.ui.reveal ? "£••••" : (r < 0 ? "-£" : "£") + Math.abs(r).toLocaleString("en-GB"); };
 
   // ---------- changes ----------
@@ -109,9 +112,12 @@
       var j = await res.json();
       if (S.cfg !== cfgAt || S.data !== dataAt) return; // disconnected or switched sheets while this was on its way
       if (!j.ok) throw new Error(j.error || "The sheet said no");
-      // a change the sheet couldn't save for a passing reason (retry) goes back in the queue, a few times at most;
-      // changes the sheet turned down are dropped (the sheet's copy comes back in a full refresh) so they can't block the rest
-      var again = [], rej = (j.rejected || []).filter(function (r) { var op = ops[r.i]; if (r.retry && op && (r.notTried || (op.tries || 0) < 4)) { if (!r.notTried) op.tries = (op.tries || 0) + 1; again.push(op); return false; } return true; });
+      // a change the sheet couldn't save for a passing reason (retry) goes back in the queue. It's only given up on once
+      // it has failed a few times over several hours, so a Google hiccup (which can last a while, with a few things
+      // logged during it) never loses anything; changes the sheet turned down are dropped (the sheet's copy comes back
+      // in a full refresh) so they can't block the rest
+      var tNow = Date.now(), keepTrying = function (op) { return (op.tries || 0) < 4 || tNow - (op.failedAt || tNow) < 6 * 3600000; };
+      var again = [], rej = (j.rejected || []).filter(function (r) { var op = ops[r.i]; if (r.retry && op && (r.notTried || keepTrying(op))) { if (!r.notTried) { op.tries = (op.tries || 0) + 1; op.failedAt = op.failedAt || tNow; } again.push(op); return false; } return true; });
       S.data.queue = again.concat(S.data.queue.slice(ops.length));
       // changes made on this phone before it was given a new link for the same person and sheet go up now
       if (S.data.carry) { var cr = S.data.carry; delete S.data.carry; if (cr.me === j.person) S.data.queue = S.data.queue.concat(cr.queue); else { S.ui.carryNote = cr.queue.length + " change" + (cr.queue.length === 1 ? "" : "s") + " made as " + (cr.name || cr.me) + " weren't sent, because this link is for someone else."; toast(S.ui.carryNote); } }
@@ -324,10 +330,10 @@
     if (payItems.length) rows += li("Sort your pay into " + esc(potWord(true)), payItems.length + " " + esc(payItems.length === 1 ? potWord() : potWord(true)) + " still to move", "", "go", "payday");
     rest.forEach(function (it, i) {
       var right = num(it.type === "warn" ? "" : M(it.amount));
-      var why = esc(it.why) + (it.short ? ' <span class="warn">Only ' + M(Math.max(0, it.amount - it.short)) + " is there right now.</span>" : "");
-      if (it.type === "warn") rows += '<div class="li"><span class="grow"><span class="what warn">' + esc(it.what) + '</span><span class="why">' + why + '</span></span><button type="button" class="btn ghost sm" data-a="tick" data-v="' + i + '">Got it</button></div>';
-      else if (it.info) rows += '<div class="li"><span class="grow"><span class="what">' + esc(it.what) + '</span><span class="why">' + why + '</span></span><button type="button" class="btn ghost sm" data-a="tick" data-v="' + i + '">I\'ve paid</button></div>';
-      else rows += '<label class="li" style="cursor:pointer"><input type="checkbox" class="tick" data-c="tick" data-v="' + i + '" aria-label="Done: ' + esc(it.what) + '"><span class="grow"><span class="what">' + esc(it.what) + '</span><span class="why">' + why + "</span></span>" + right + "</label>";
+      var why = esc(MT(it.why)) + (it.short ? ' <span class="warn">Only ' + M(Math.max(0, it.amount - it.short)) + " is there right now.</span>" : "");
+      if (it.type === "warn") rows += '<div class="li"><span class="grow"><span class="what warn">' + esc(MT(it.what)) + '</span><span class="why">' + why + '</span></span><button type="button" class="btn ghost sm" data-a="tick" data-v="' + i + '">Got it</button></div>';
+      else if (it.info) rows += '<div class="li"><span class="grow"><span class="what">' + esc(MT(it.what)) + '</span><span class="why">' + why + '</span></span><button type="button" class="btn ghost sm" data-a="tick" data-v="' + i + '">I\'ve paid</button></div>';
+      else rows += '<label class="li" style="cursor:pointer"><input type="checkbox" class="tick" data-c="tick" data-v="' + i + '" aria-label="Done: ' + esc(MT(it.what)) + '"><span class="grow"><span class="what">' + esc(MT(it.what)) + '</span><span class="why">' + why + "</span></span>" + right + "</label>";
     });
     var leftN = rest.length + (payItems.length ? 1 : 0) + (reN ? 1 : 0);
     html += card('<div class="row"><h2>To do</h2><span class="small muted">' + (leftN ? leftN + " left" : "") + "</span></div>" + (rows ? '<div class="list">' + rows + "</div>" : '<p class="muted" style="margin:8px 0 0">All done. Everything is where it should be.</p>'));
@@ -488,7 +494,7 @@
     var sm = demoOn() ? B.summary(d, q, now) : (S.data.summary || {});
     var qp = person(q), col = q === "sophie" || q === "sam" ? "#2F7D6D" : "#2E5E8C", html = "";
     var statusWord = sm.status ? sm.status.toLowerCase() : "";
-    html += card('<div style="display:flex;gap:12px;align-items:center"><span class="round avatar" style="background:' + col + ';color:#fff;width:48px;height:48px;border-radius:24px">' + esc((qp.name || "?").charAt(0)) + '</span><div class="grow"><div style="font-weight:800;font-size:19px">' + esc(qp.name) + (statusWord ? " is " + esc(statusWord) : "") + '</div><div class="small muted">' + (sm.nextPay ? (function (n) { return n <= 0 ? "Paid today" : n === 1 ? "Paid tomorrow" : "Paid in " + n + " days (" + esc(B.nice(sm.nextPay)) + ")"; })(B.diff(now, sm.nextPay)) : "") + "</div></div></div>" +
+    html += card('<div style="display:flex;gap:12px;align-items:center"><span class="round avatar" style="background:' + col + ';color:#fff;width:48px;height:48px;border-radius:24px">' + esc((qp.name || "?").charAt(0)) + '</span><div class="grow"><div style="font-weight:800;font-size:19px">' + esc(qp.name) + (statusWord ? " is " + esc(statusWord) : "") + '</div><div class="small muted">' + (sm.nextPay ? (function (n) { return n < 0 ? "" : n === 0 ? "Paid today" : n === 1 ? "Paid tomorrow" : "Paid in " + n + " days (" + esc(B.nice(sm.nextPay)) + ")"; })(B.diff(now, sm.nextPay)) : "") + "</div></div></div>" +
       (sm.safe !== undefined ? '<div class="two" style="margin-top:14px"><div class="tile" style="background:var(--bg)"><div class="n">Can spend today</div><div class="v">' + M(sm.safe) + '</div></div><div class="tile" style="background:var(--bg)"><div class="n">Saving this month</div><div class="v">' + M(sm.saved || 0) + "</div></div></div>" : "") +
       (sm.tiles ? sm.tiles.map(function (x) { return '<div style="margin-top:12px"><div class="row small"><span style="font-weight:600">' + esc(x.name.replace(/ \(what's left\)/, "")) + '</span><span class="num">' + M(x.spent) + " of " + M(x.amount) + "</span></div>" + '<div style="margin-top:5px">' + bar(x.pct, x.mode === "oneoff" ? null : x.paceMark, col) + "</div></div>"; }).join("") + '<p class="tiny muted" style="margin:12px 0 0">The black line is where they\'d expect to be by today.</p>' : '<p class="small muted">' + esc(qp.name) + " isn't sharing their budget details.</p>"));
     // their own goals and payments, when they've chosen to share them
@@ -528,7 +534,7 @@
   SCREENS.payday = function () {
     var d = db(), p = me(), now = todayIso(), per = B.periodAt(d, p, now);
     // this payday's list stays until every move on it is ticked (Today keeps asking), then the next payday shows
-    var curLeft = per.pay && !per.opening && B.payday(d, p, per).moves.some(function (m) { return !d.moveKeys["pay:" + per.start + ":" + m.to]; });
+    var curLeft = per.pay && !per.opening && B.payday(d, p, per).moves.some(function (m) { return !B.ticked(d, p, "pay:" + per.start + ":" + m.to); });
     var upcoming = !(per.pay && !per.opening && (B.diff(per.start, now) <= 7 || curLeft));
     if (upcoming) per = B.periodAt(d, p, B.today(d, p, now).nextPay);
     var pd = B.payday(d, p, per), pay = pd.pay, html = "";
@@ -537,16 +543,16 @@
       (pay && payOcc ? '<button type="button" class="btn sm" style="background:color-mix(in srgb, var(--hero-ink) 18%, transparent);color:var(--hero-ink)" data-a="payedit" data-v="' + esc(pay.occ) + '">' + (pay.actual ? "Change the amount" : "Paid a different amount?") + "</button>" : "") +
       '<div class="small" style="opacity:.92;margin-top:8px">Change it and everything below re-sorts. What\'s left (' + esc(remainderName(pd.plan)) + ") goes up or down.</div></section>";
     var rows = pd.moves.map(function (m) {
-      var key = "pay:" + per.start + ":" + m.to, done = !!d.moveKeys[key];
-      return '<label class="li" style="cursor:pointer"><input type="checkbox" class="tick" data-c="paytick" data-v="' + esc(key) + "|" + esc(m.from) + "|" + esc(m.to) + "|" + m.amount + '"' + (done ? " checked" : "") + (upcoming ? " disabled" : "") + '><span class="grow"><span class="what">' + esc(B.accName(d, m.to)) + '</span><span class="why">' + esc(m.why) + "</span></span>" + num(M(m.amount)) + "</label>";
+      var key = "pay:" + per.start + ":" + m.to, done = !!B.ticked(d, p, key);
+      return '<label class="li" style="cursor:pointer"><input type="checkbox" class="tick" data-c="paytick" data-v="' + esc(key) + "|" + esc(m.from) + "|" + esc(m.to) + "|" + m.amount + '"' + (done ? " checked" : "") + (upcoming ? " disabled" : "") + '><span class="grow"><span class="what">' + esc(B.accName(d, m.to)) + '</span><span class="why">' + esc(MT(m.why)) + "</span></span>" + num(M(m.amount)) + "</label>";
     }).join("");
     if (pd.cover) {
-      var ckey = "pay:" + per.start + ":cover", cdone = !!d.moveKeys[ckey];
+      var ckey = "pay:" + per.start + ":cover", cdone = !!B.ticked(d, p, ckey);
       html += card('<div class="warn" style="font-weight:700">This pay is ' + M(pd.cover.amount + (pd.uncovered || 0)) + " short of everything planned</div><p class=\"small muted\" style=\"margin:4px 0 8px\">Your " + esc(B.accName(d, pd.cover.from)) + " covers the gap so your " + esc(B.accName(d, pd.payAccount)) + " doesn't go under. To avoid it, lower a budget or saving this month.</p>" +
         (pd.uncovered > 0.004 ? '<p class="small bad" style="margin:0 0 8px;font-weight:600">Your ' + esc(B.accName(d, pd.cover.from)) + " only has enough for " + M(pd.cover.amount) + ", so " + M(pd.uncovered) + " is still short. Lower a budget or saving this month, or move money in from elsewhere.</p>" : "") +
         '<label class="li" style="cursor:pointer"><input type="checkbox" class="tick" data-c="paytick" data-v="' + esc(ckey) + "|" + esc(pd.cover.from) + "|" + esc(pd.cover.to) + "|" + pd.cover.amount + '"' + (cdone ? " checked" : "") + (upcoming ? " disabled" : "") + '><span class="grow"><span class="what">' + esc(B.accName(d, pd.cover.from)) + " to " + esc(B.accName(d, pd.cover.to)) + "</span></span>" + num(M(pd.cover.amount)) + "</label>");
     }
-    var doneN = pd.moves.filter(function (m) { return d.moveKeys["pay:" + per.start + ":" + m.to]; }).length;
+    var doneN = pd.moves.filter(function (m) { return B.ticked(d, p, "pay:" + per.start + ":" + m.to); }).length;
     html += card('<div class="row"><h2>Move from ' + esc(B.accName(d, pd.payAccount)) + '</h2><span class="small muted">' + (upcoming ? "On payday" : doneN + " of " + pd.moves.length + " done") + '</span></div><div class="list" style="margin-top:6px">' + (rows || '<p class="muted">Nothing to move.</p>') + "</div>" +
       '<div class="row" style="padding-top:10px;border-top:1px solid var(--line2);margin-top:4px"><span>Stays in ' + esc(B.accName(d, pd.payAccount)) + ' <span class="tiny muted">for spending from there</span></span>' + num(M(pd.keeps)) + "</div>");
     var left = pd.plan.lines.filter(function (l) { return l.leftover; })[0];
@@ -940,7 +946,8 @@
     var safety = '<div class="banner small"><b>Read-only.</b> Budgie only reads your balances, payments and ' + (isStarling ? "Spaces" : "pots") + ". It can't move or send money. Your " + (isStarling ? "key" : "sign-in") + " is kept inside your Google Sheet's script, never on this phone or anywhere else, and you can switch it off at any time" + (isStarling ? " by deleting the key on Starling's developer site." : " by disconnecting here or in the Monzo app.") + "</div>";
     if (b.err && !b.provider) return card('<p class="bad small">' + esc(b.err) + '</p><button type="button" class="btn ghost sm" data-a="bankre">Try again</button>');
     if (b.waitingForApproval) return safety + card('<h2>Nearly there</h2><p class="muted">Open the Monzo app and approve Budgie. Once you have, Budgie brings in your payments within a minute or two.</p><button type="button" class="btn ghost wide" data-a="bankre">I\'ve approved it</button>');
-    if (!b.connected) {
+    // needing reconnecting isn't the same as never connected: that screen has Reconnect (Monzo) and Disconnect
+    if (!b.connected && !b.needsReconnect) {
       var url = esc((S.cfg || {}).u || "");
       if (isStarling) return safety + card('<h2>Connect Starling</h2><ol class="steps">' +
         '<li>On a computer or your phone\'s browser, go to <b>developer.starlingbank.com</b> and sign up with the email you use for Starling.</li>' +
@@ -1307,8 +1314,9 @@
     },
     settle2: function (v) {
       var bt = B.between(db(), me(), todayIso()), q = partner(), row;
-      if (v === "in") row = put("settlements", {id: newId("set"), date: todayIso(), from: q, to: me(), amount: bt.owedToMe, note: "Settled up"}, true);
-      else row = put("settlements", {id: newId("set"), date: todayIso(), from: me(), to: q, amount: bt.iOwe, note: "Settled up"}, true);
+      // (keyed like To do's settling up, so the sheet can tell if you both ticked the same one)
+      if (v === "in") row = put("settlements", {id: newId("set"), date: todayIso(), from: q, to: me(), amount: bt.owedToMe, key: "split:" + todayIso(), note: "Settled up"}, true);
+      else row = put("settlements", {id: newId("set"), date: todayIso(), from: me(), to: q, amount: bt.iOwe, key: "split:" + todayIso(), note: "Settled up"}, true);
       closeSheet(); toast("All square", {t: "settlements", ids: [row.id]}); render();
     },
     payedit: function (v) {
@@ -1488,7 +1496,7 @@
     if (!c) return;
     var v = el.dataset.v;
     if (c === "tick") { tickItem(last.todo[+v]); return; }
-    if (c === "paytick") { var k = v.split("|"); if (el.checked) put("moves", {id: newId("mv"), date: B.moveDate ? B.moveDate(k[0], todayIso()) : todayIso(), person: me(), from: k[1], to: k[2], amount: +k[3], key: k[0]}); else { (db().moves || []).filter(function (m) { return m.key === k[0]; }).forEach(function (m) { del("moves", m.id); }); } return; }
+    if (c === "paytick") { var k = v.split("|"); if (el.checked) put("moves", {id: newId("mv"), date: B.moveDate ? B.moveDate(k[0], todayIso()) : todayIso(), person: me(), from: k[1], to: k[2], amount: +k[3], key: k[0]}); else { (db().moves || []).filter(function (m) { return m.key === k[0] && m.person === me(); }).forEach(function (m) { del("moves", m.id); }); } return; }
     if (c === "toggle") {
       if (v === "easy") { S.prefs.easy = el.checked; savePrefs(); if (!demoOn() && me()) setting("easy", el.checked); applyTheme(); render(); }
       if (v === "hide") { S.prefs.hide = el.checked; S.ui.reveal = false; savePrefs(); render(); }

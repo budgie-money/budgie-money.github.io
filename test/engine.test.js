@@ -481,7 +481,7 @@ const savedUp = (pl, id) => lineAmt(pl, l => l.setAside && l.bill === id && l.ki
   const bs = B.budgetState(c, me, per);
   eq("compat: budgetState(db, me, per)", ["amount", "spent", "left", "avail", "carryIn", "carryOut", "over"].every(k => k in bs["e-fun"]) && bs["e-fun"].period.start === per.start, true);
   eq("compat: still exported", ["load", "coming", "periodAt", "planFor", "budgetState", "today", "checks", "lisa", "yearly", "yearReview"].every(k => typeof B[k] === "function"), true);
-  eq("compat: version", B.VERSION, "1.4.3");
+  eq("compat: version", B.VERSION, "1.4.4");
 })();
 
 // C3: a payday move ticked in the app and by the bank feed counts once (the latest)
@@ -524,6 +524,28 @@ const savedUp = (pl, id) => lineAmt(pl, l => l.setAside && l.bill === id && l.ki
   eq("R6: by the month it went in", L.expectedBonus.map(x => x.for), ["2026-10", "2026-11", "2026-12"]);
   t.moves.push({id: "m2", date: "2026-12-15", person: "ethan", to: "e-lisa", amount: 116.75, key: "lisa:bonus:1"});
   near("R6: a bonus that lands settles the oldest first", B.lisa(B.load(t, "2026-12-20"), "e-lisa", "2026-12-20").expectedBonusTotal, 41.75);
+})();
+// R7 (1.4.4): a goal Sophie shares shows how far it's got, never each account's balance or her notes
+(() => {
+  const t = fixture(); t.goals.push({id: "s-car", owners: "sophie", name: "Car", target: 5000, accounts: "s-savings, s-main", notes: "private", kind: "car"});
+  t.valuations.push({id: "v-s", account: "s-savings", date: "2026-10-26", amount: 1234});
+  const g = (B.summary(B.load(t, "2026-11-05"), "sophie", "2026-11-05").goals || [])[0] || {};
+  eq("R7: the shared goal is there, with its progress", [g.name, g.target, g.saved > 1000], ["Car", 5000, true]);
+  eq("R7: but not the accounts in it or its notes", [g.parts, g.notes, g.accounts], [undefined, undefined, undefined]);
+})();
+// R8 (1.4.4): a move only ever ticks off its own person's To do, whatever key it carries (the partner's LISA moves are seen)
+(() => {
+  const t = fixture(), d = "2026-11-27", key = "pay:" + d + ":s-rent";
+  const before = B.todo(B.load(t, d), "sophie", d).filter(x => x.key === key).length;
+  t.moves.push({id: "m-his", date: d, person: "ethan", from: "e-main", to: "e-lisa", amount: 0.01, key: key});
+  const after = B.todo(B.load(t, d), "sophie", d).filter(x => x.key === key).length;
+  eq("R8: Sophie's payday move is still to do after Ethan's move with its key", [before, after], [1, 1]);
+  t.moves.push({id: "m-hers", date: d, person: "sophie", from: "s-main", to: "s-rent", amount: 999, key: key});
+  eq("R8: her own tick does it", B.todo(B.load(t, d), "sophie", d).filter(x => x.key === key).length, 0);
+  // both paid on the same day: the payday cover key is the same for both, but each counts only their own tick
+  t.moves.push({id: "m-cov", date: d, person: "sophie", from: "s-savings", to: "s-main", amount: 50, key: "pay:" + d + ":cover"});
+  const L = B.load(t, d);
+  eq("R8: Sophie's cover doesn't tick Ethan's", [B.ticked(L, "ethan", "pay:" + d + ":cover") > 0, B.ticked(L, "sophie", "pay:" + d + ":cover") > 0], [false, true]);
 })();
 // --- whole picture runs without errors for both, across a year
 ["ethan", "sophie"].forEach(p => {

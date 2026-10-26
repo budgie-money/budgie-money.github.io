@@ -6,7 +6,7 @@
   else root.Budgie = factory();
 })(this, function () {
   "use strict";
-  var VERSION = "1.4.3";
+  var VERSION = "1.4.4";
 
   // ---------- dates ----------
   function D(s) { var p = String(s).split("-"); return new Date(Date.UTC(+p[0], +p[1] - 1, +p[2])); }
@@ -213,6 +213,9 @@
   function fallbackOf(db, p) { var a = accountsOf(db, p).filter(function (x) { return x.fallback; })[0]; return a ? a.id : ""; }
   function accName(db, id) { var a = db.byId[id]; return a ? a.name : (id || ""); }
   function startOf(db, p) { return setting(db, p, "start", "2026-10-26"); }
+  // what one person has ticked off under a key (a move is always its own person's, so the other one's moves never
+  // tick off something of yours, whatever key they carry)
+  function ticked(db, p, key) { return db.moveKeysBy[p + "|" + key] || 0; }
   // the day a ticked move should be dated: payday moves belong to their payday, everything else to the day you tick it
   function moveDate(key, today) { var m = String(key || "").match(/^pay:(\d{4}-\d{2}-\d{2}):/); return m && m[1] <= today ? m[1] : today; }
   // to the penny, halves away from zero, without the float slips (1.005 is £1.01, and -0.005 is -£0.01)
@@ -457,8 +460,8 @@
       };
       if (!first) trackedBefore(db, p, from).forEach(function (pk) {
         if (pk.start >= from || pk.next <= st) return;
-        if (pk.pay && !pk.opening) payday(db, p, pk).moves.forEach(function (m) { if (!db.moveKeys["pay:" + pk.start + ":" + m.to]) pendMove(m.from, m.to, m.amount, pk.start); });
-        reimbursements(db, p, pk, minS(dayBefore, addDays(pk.next, -1))).forEach(function (g) { var left = round(g.amount - (db.moveKeys[g.key] || 0)); if (left > 0.004) pendMove(g.from, g.to, left, g.date || pk.start); });
+        if (pk.pay && !pk.opening) payday(db, p, pk).moves.forEach(function (m) { if (!ticked(db, p, "pay:" + pk.start + ":" + m.to)) pendMove(m.from, m.to, m.amount, pk.start); });
+        reimbursements(db, p, pk, minS(dayBefore, addDays(pk.next, -1))).forEach(function (g) { var left = round(g.amount - ticked(db, p, g.key)); if (left > 0.004) pendMove(g.from, g.to, left, g.date || pk.start); });
       });
     }
     // yearly costs (sinking funds). Each pay period puts by (next amount - set aside so far) / pay periods left until
@@ -641,8 +644,8 @@
     var avail = function (a) { return round((bal[a] || 0) + (pend[a] || 0)); };
     var plan = function (key, from, to, amount, what, why, extra) {
       amount = round(amount); if (!(amount > 0.004) || from === to) return;
-      if (extra && extra.partial) { amount = round(amount - (db.moveKeys[key] || 0)); if (!(amount > 0.004)) return; what = "Move " + money(amount) + " from " + accName(db, from) + " to " + accName(db, to); }
-      else if (db.moveKeys[key]) return;
+      if (extra && extra.partial) { amount = round(amount - ticked(db, p, key)); if (!(amount > 0.004)) return; what = "Move " + money(amount) + " from " + accName(db, from) + " to " + accName(db, to); }
+      else if (ticked(db, p, key)) return;
       var it = {key: key, type: "move", from: from, to: to, fromName: accName(db, from), toName: accName(db, to), amount: amount, what: what, why: why, short: false};
       for (var k in extra) it[k] = extra[k];
       if (avail(from) < amount - 0.004) it.short = round(amount - Math.max(0, avail(from)));
@@ -692,7 +695,7 @@
           run[src] = round(run[src] - need); run[f.account] = 0;
         } else if (!src) {
           // "Got it" saves a move with this key: the warning stays away (a new date or pot makes a new one)
-          if (!db.moveKeys["short:" + f.account + ":" + f.date]) items.push({key: "short:" + f.account + ":" + f.date, type: "warn", amount: need, what: accName(db, f.account) + " will be " + money(need) + " short", why: f.what + " on " + nice(f.date) + ", and there isn't enough spare money to cover it yet."});
+          if (!ticked(db, p, "short:" + f.account + ":" + f.date)) items.push({key: "short:" + f.account + ":" + f.date, type: "warn", amount: need, what: accName(db, f.account) + " will be " + money(need) + " short", why: f.what + " on " + nice(f.date) + ", and there isn't enough spare money to cover it yet."});
           run[f.account] = 0;
         }
       }
@@ -911,7 +914,7 @@
     if (owner) {
       var cur = periodAt(db, owner, date);
       payDates(db, owner, maxS(cur.start, tys), addDays(tyEnd, 1)).forEach(function (d) {
-        if (d <= date && db.moveKeys["pay:" + d + ":" + accId]) return;
+        if (d <= date && ticked(db, owner, "pay:" + d + ":" + accId)) return;
         var pk = periodAt(db, owner, d); if (pk.start !== d || pk.opening) return;
         db.budgets.forEach(function (b) { if (b.person === owner && b.mode === "saving" && b.account === accId && activeIn(b, pk)) planned += budgetAmount(db, b, pk); });
       });
@@ -1107,7 +1110,9 @@
     if (share("totals", true) || share("cats", true)) out.status = t.status;
     if (share("totals", true)) { out.safe = t.safe; out.saved = t.plan.totals.save; }
     if (share("cats", true)) out.tiles = t.tiles.map(function (x) { return {name: x.name, spent: x.spent, amount: x.amount, pct: x.pct, paceMark: x.paceMark, mode: x.mode}; });
-    if (share("goals", true)) out.goals = goals(db, p, date).filter(function (g) { return String((db.byId[g.id] || {}).owners || "").split(/[,\s]+/).length < 2; });
+    // only how far each goal has got: not the balance of each account in it, or its notes
+    if (share("goals", true)) out.goals = goals(db, p, date).filter(function (g) { return String((db.byId[g.id] || {}).owners || "").split(/[,\s]+/).length < 2; })
+      .map(function (g) { return {id: g.id, name: g.name, kind: g.kind, target: g.target, saved: g.saved, pct: g.pct, due: g.due}; });
     return out;
   }
 
@@ -1134,7 +1139,7 @@
     calendar: calendar, pots: pots, monthView: monthView, year: year, goals: goals, lisa: lisa, checks: checks, netWorth: netWorth, loans: loans,
     yearly: yearly, yearReview: yearReview, taxYearStart: taxYearStart,
     summary: summary, shareOf: shareOf, amountAt: amountAt, setting: setting, partnerOf: partnerOf, mainOf: mainOf, fallbackOf: fallbackOf,
-    accountsOf: accountsOf, accName: accName, person: person, startOf: startOf, moveDate: moveDate, budgetsOf: budgetsOf, budgetsIn: budgetsOf, reimbursements: reimbursements, startBalances: startBalances,
+    accountsOf: accountsOf, accName: accName, ticked: ticked, person: person, startOf: startOf, moveDate: moveDate, budgetsOf: budgetsOf, budgetsIn: budgetsOf, reimbursements: reimbursements, startBalances: startBalances,
     money: money, nice: nice, describe: describe, addDays: addDays, diff: diff, parseDate: parseDate, isIso: isIso, round: round
   };
 });

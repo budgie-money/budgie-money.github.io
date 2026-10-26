@@ -30,6 +30,8 @@ var BANK_NAMES_ = {monzo: "Monzo", starling: "Starling"};
 // Apps Script stops a run after 6 minutes. A first read of years of history stops reading after this long (from the
 // start of the run), saves what it has and carries on from there a minute later, so nothing read is lost
 var BANK_READ_BUDGET_ = 3.5 * 60000, BANK_MAX_PAGES_ = 300, BANK_T0_ = 0;
+// and saving what was read stops making changes this long after the start, so the run ends well inside the 6 minutes
+var BANK_APPLY_STOP_ = 5 * 60000;
 function bankStart_() { BANK_T0_ = Date.now(); }
 
 // ---------- the only way out to a bank ----------
@@ -101,7 +103,21 @@ function bankNotify_(p, what) {
 }
 function bankKey_(kind, p) { return "BANK_" + kind + "_" + p; }   // TOKEN, CLIENT (secrets), STATUS (no secrets)
 function bankStatus_(p) { return bankGet_(bankKey_("STATUS", p)) || {}; }
-function bankSaveStatus_(p, s) { bankSet_(bankKey_("STATUS", p), s); }
+// A property holds at most 9 KB, and a status that can't be saved stops every read. Lots of holds waiting, or lots of
+// pots with long names, could get near that, so the oldest holds stop being watched and long names are cut short first.
+var BANK_STATUS_MAX_ = 8000;
+function bankBytes_(v) { var t = JSON.stringify(v); try { return encodeURIComponent(t).replace(/%[0-9A-F]{2}/gi, "x").length; } catch (e) { return t.length * 3; } }
+function bankFitStatus_(s) {
+  if (bankBytes_(s) <= BANK_STATUS_MAX_) return s;
+  ["lastError", "note"].forEach(function (k) { if (s[k]) s[k] = String(s[k]).slice(0, 200); });
+  var cut = function (n) { if (bankBytes_(s) > BANK_STATUS_MAX_) (s.accounts || []).forEach(function (a) { if (a && a.name) a.name = Array.from(String(a.name)).slice(0, n).join(""); }); };
+  cut(32);
+  var pend = s.pending || {}, ids = Object.keys(pend).sort(function (a, b) { var x = String((pend[a] || {}).date || ""), y = String((pend[b] || {}).date || ""); return x < y ? 1 : x > y ? -1 : 0; });
+  while (ids.length && bankBytes_(s) > BANK_STATUS_MAX_) delete pend[ids.pop()];
+  cut(16); cut(6);
+  return s;
+}
+function bankSaveStatus_(p, s) { bankSet_(bankKey_("STATUS", p), bankFitStatus_(s)); }
 // anything that could be a secret is blanked out of a message before it's kept or shown
 function bankScrub_(p, msg) {
   msg = String(msg || "");
@@ -195,14 +211,20 @@ function bankCallback_(q) {
       '<div style="font:17px/1.5 system-ui,sans-serif;max-width:28em;margin:48px auto;padding:0 20px">' + msg + "</div>").setTitle("Budgie");
   };
   bankStart_();
+  var expired = "<p>That sign-in link has expired or didn't come from Budgie, so nothing was connected.</p><p>Start again from the Bank screen in Budgie.</p>";
+  var state = String(q.state || ""), key = "BANK_OAUTH_" + state.replace(/[^A-Za-z0-9]/g, "");
+  // anyone can open this address: one that isn't a sign-in Budgie is waiting for is turned away before it can hold up
+  // the bank reads (the lock) or do anything else
+  bankMoveSecrets_();
+  var pre = /^[A-Za-z0-9]{64}$/.test(state) ? bankGet_(key) : null;
+  if (!pre || pre.state !== state || !(pre.exp > Date.now())) { if (pre) bankDel_(key); return page(expired); }
   var lock = bankLock_();
   if (!lock.tryLock(30000)) return page("<p>Budgie is busy reading your bank. Wait a minute, then open this page again (reload it).</p>");
   var p;
   try {
-  bankMoveSecrets_();
-  var state = String(q.state || ""), key = "BANK_OAUTH_" + state.replace(/[^A-Za-z0-9]/g, ""), st = /^[A-Za-z0-9]{64}$/.test(state) ? bankGet_(key) : null;
+  var st = bankGet_(key);   // read again under the lock, so it can only be used once
   if (st) bankDel_(key);   // a state works once
-  if (!st || st.state !== state || !(st.exp > Date.now())) return page("<p>That sign-in link has expired or didn't come from Budgie, so nothing was connected.</p><p>Start again from the Bank screen in Budgie.</p>");
+  if (!st || st.state !== state || !(st.exp > Date.now())) return page(expired);
   p = st.person;
   if (q.error || !q.code) return page("<p>Monzo wasn't connected. You can close this tab and try again from Budgie.</p>");
   var cl = bankGet_(bankKey_("CLIENT", p)); if (!cl) return page("<p>Monzo wasn't connected. Add your client details in Budgie first.</p>");
@@ -252,9 +274,11 @@ function monzoRefresh_(p, tok) {
   // Monzo having a bad moment isn't a broken connection: the refresh token still works, so the next poll tries again
   if (!(r.code >= 200 && r.code < 500)) throw bankErr_("other", "Monzo had a problem (" + r.code + "). Budgie tries again soon.");
   if (r.code !== 200 || !r.json || !r.json.access_token) {
-    // another read refreshed it a moment ago (each refresh token works once): use the token it saved
-    var cur = bankGet_(bankKey_("TOKEN", p));
-    if (cur && cur.provider === "monzo" && cur.refresh && cur.refresh !== tok.refresh && cur.expiresAt > Date.now() + 60000) return cur;
+    // another read refreshed it a moment ago (each refresh token works once): use the token it saved. It may still be
+    // saving it (the phone's Check now and the 15-minute read aren't sure to share a lock), so look twice
+    var newer = function () { var cur = bankGet_(bankKey_("TOKEN", p)); return cur && cur.provider === "monzo" && cur.refresh && cur.refresh !== tok.refresh && cur.expiresAt > Date.now() + 60000 ? cur : null; };
+    var got = newer(); if (!got) { try { Utilities.sleep(3000); } catch (e) {} got = newer(); }
+    if (got && !bankGone_(p, got)) return got;
     throw bankErr_("reconnect", "Monzo needs reconnecting");
   }
   var fresh = {}; Object.keys(tok).forEach(function (k) { fresh[k] = tok[k]; });
@@ -458,10 +482,11 @@ function bankSyncNow_(me) {
 // connection (monzoRefresh_). Rows are only ever written under the script lock (bankApply_).
 function bankLock_() { return LockService.getUserLock(); }
 function bankRun_(p) {
-  var lock = bankLock_(), s;
+  var lock = bankLock_(), s, conn0 = "";
   if (!lock.tryLock(30000)) return {ok: false, error: "The bank is already being read. Try again in a minute."};
   try {
     var tok = bankGet_(bankKey_("TOKEN", p)); if (!tok) return {ok: false, error: "No bank is connected."};
+    conn0 = bankConnId_(tok);
     s = bankStatus_(p);
     if (s.backoffUntil && s.backoffUntil > Date.now()) return {ok: false, error: BANK_NAMES_[tok.provider] + " asked Budgie to wait. It'll try again soon."};
     // a Starling token is checked once a day: if what it can do has changed, it's disconnected
@@ -496,14 +521,18 @@ function bankRun_(p) {
       note = cutNote(data); data = {provider: data.provider, accounts: recent.accounts, txns: data.txns.filter(function (t) { return !have[t.id]; }).concat(recent.txns)};
     }
     var more = full && !note && data.cursor && Object.keys(data.cursor).length ? data.cursor : null;
-    // a read that stopped part-way can't tell which pending payments have gone, so none are dropped this time
-    var windowFrom = more ? "9999-12-31" : full && !note ? "" : bankDate_(bankSince_(false, wide || !!note).toISOString());
+    // a read that stopped part-way can't tell which pending payments have gone, so none are dropped this time; nor can
+    // the last part of a carried-on first read (it only covers the time since the part before stopped)
+    var windowFrom = more || (cursor && !note) ? "9999-12-31" : full && !note ? "" : bankDate_(bankSince_(false, wide || !!note).toISOString());
     var res = bankApply_(p, data, windowFrom);
     s = bankStatus_(p);
     s.provider = tok.provider; s.accounts = data.accounts; s.lastSync = Date.now(); s.lastError = ""; s.needsReconnect = false; s.backoffUntil = 0; s.backoffN = 0;
-    if (more) { s.cursor = more; s.historyTo = lastOf(data); s.note = "Still bringing in your history"; bankEnsureMinuteTrigger_(); }
+    delete s.again;
+    // ran short of time saving it: the next run (in a minute) reads the same again and does what's left
+    if (res.stopped) { s.again = true; if (full) s.note = "Still bringing in your history"; bankEnsureMinuteTrigger_(); }
+    else if (more) { s.cursor = more; s.historyTo = lastOf(data); s.note = "Still bringing in your history"; bankEnsureMinuteTrigger_(); }
     else if (full) { s.fullDone = true; delete s.cursor; delete s.historyTo; if (s.note === "Still bringing in your history") s.note = ""; }
-    if ((wide || full) && !more) { s.wideNext = false; s.wideAt = started; }
+    if ((wide || full) && !more && !res.stopped) { s.wideNext = false; s.wideAt = started; }
     if (note) s.note = note;
     if (s.waiting) { s.waiting = false; tok = bankGet_(bankKey_("TOKEN", p)); if (tok && !tok.approvedAt) { tok.approvedAt = Date.now(); bankSet_(bankKey_("TOKEN", p), tok); bankGone_(p, tok); } }
     bankSaveStatus_(p, s);
@@ -511,6 +540,10 @@ function bankRun_(p) {
   } catch (e) {
     s = bankStatus_(p);
     var msg = bankScrub_(p, e && e.message || e);
+    // disconnected or connected again while this read was going: it was about the old connection, so it says nothing
+    // about the one there is now
+    var nowConn = bankConnId_(bankGet_(bankKey_("TOKEN", p)));
+    if (e && e.bank === "reconnect" && conn0 && nowConn && nowConn !== conn0) return {ok: false, error: msg};
     if (e && e.bank === "reconnect") {
       // waiting for the first approval in the Monzo app is expected for a few minutes
       if (s.waiting && s.firstUntil > Date.now()) { s.lastError = "Waiting for you to approve Budgie in the Monzo app."; }
@@ -566,7 +599,9 @@ function bankApply_(p, data, windowFrom) {
       return ext === primary || (forPayment && extKind[ext] !== "main") ? main : null;
     };
     var rawTx = readTable_("transactions").rows, byBank = {}, byIdRow = {};
-    rawTx.forEach(function (r) { if (r.bankId) byBank[String(r.bankId)] = r; byIdRow[r.id] = r; });
+    // only your own rows are ever linked to your bank: a row of your partner's that names one of your payments (left
+    // by an older version, or typed into the sheet) is neither changed nor lets it hide that payment
+    rawTx.forEach(function (r) { if (r.bankId && r.person === p) byBank[String(r.bankId)] = r; byIdRow[r.id] = r; });
     var moveRows = {}; readTable_("moves").rows.forEach(function (r) { moveRows[r.id] = r; });
     var used = {}, usedOcc = {}, newRows = {transactions: [], moves: [], valuations: [], exceptions: []}, updates = [];
     var near = function (a, b) { return Math.abs(a - b) <= 0.0105; };
@@ -603,12 +638,15 @@ function bankApply_(p, data, windowFrom) {
       var id = "bk-" + provider + "-" + t.id, ex = moveRows[id];
       if (ex && ex.person !== p) { Logger.log("Bank feed skipped moves " + id + ": it isn't " + p + "'s."); return; }
       if (ex) { if (!bankTrue_(ex.deleted) && (!near(+ex.amount, amount) || ex.from !== from || ex.to !== to)) update("moves", id, {amount: amount, from: from, to: to}); return; }
-      // already ticked in the app: nothing new to add
-      if (key && /^pay:/.test(key) && db.moveKeys[key]) return;
+      // already ticked in your app: nothing new to add (only your own ticks count: your partner can write any key on
+      // a move of theirs, and that mustn't hide one of yours)
+      if (key && /^pay:/.test(key) && db.moveKeysBy[p + "|" + key]) return;
       create("moves", {id: id, date: /^pay:/.test(key) ? D.moveDate(key, t.date) : t.date, person: p, from: from, to: to, amount: amount, key: key, note: note || "", review: !!review});
     };
     // a bill, a regular payment to your partner, or a payment you've already logged between you two
-    var partnerWords = bankMerchantKey_((db.byId[partnerId] || {}).name).split(" ").filter(function (w) { return w.length > 2; });
+    // (by their id, which is set in the sheet: their name is theirs to change, so "Sam Smith" or "Tesco" could be made
+    // to match anyone's payment)
+    var partnerWords = bankMerchantKey_(partnerId).split(" ").filter(function (w) { return w.length > 2; });
     var plannedOut = function (t, needName) {
       var toPartner = partnerWords.length && bankMerchantKey_(t.name).split(" ").some(function (w) { return partnerWords.indexOf(w) >= 0; });
       var a = t.amount, win = function (item) { return D.occurrences(db, item, D.addDays(t.date, -3), D.addDays(t.date, 4)); }, hit = null;
@@ -648,12 +686,15 @@ function bankApply_(p, data, windowFrom) {
       else create("exceptions", {id: id, item: itemId, date: orig, action: "amount", amount: amount, note: note});
     };
 
-    data.txns.slice().sort(function (x, y) { return x.date < y.date ? -1 : x.date > y.date ? 1 : 0; }).forEach(function (t) {
+    // each payment once, even if the read listed it twice (under a Space as well as the account, say, or in two
+    // windows that meet on its time): a second copy would find its bill already used and come in as a payment too
+    var last = {}; data.txns.forEach(function (t, i) { if (t && t.id) last[t.id] = i; });
+    data.txns.filter(function (t, i) { return t && t.id && last[t.id] === i; }).sort(function (x, y) { return x.date < y.date ? -1 : x.date > y.date ? 1 : 0; }).forEach(function (t) {
       if (!t.date) return;
       seen[t.id] = true;
       var mine = byBank[t.id] || byIdRow["bk-" + provider + "-" + t.id];
       // a row with the bank's id that isn't this person's (typed into the sheet by someone else): left alone
-      if (mine && mine.person !== p && !(mine.source === "peckish" && mine.bankId === t.id)) { Logger.log("Bank feed skipped transactions " + mine.id + ": it isn't " + p + "'s."); return; }
+      if (mine && mine.person !== p) { Logger.log("Bank feed skipped transactions " + mine.id + ": it isn't " + p + "'s."); return; }
       // a pending hold that went to nothing, or a payment refused or reversed: drop the row the bank added
       if (t.declined || t.reversed || (!t.amount && t.pending !== undefined && (t.pending || pending[t.id]))) {
         delete pending[t.id];
@@ -703,8 +744,10 @@ function bankApply_(p, data, windowFrom) {
       }
       // a payment (or card refund)
       if (mine) {
-        if (bankTrue_(mine.deleted)) return;
         var f = {}, confirmed = !bankTrue_(mine.review);
+        // dismissed on a phone: it stays dismissed. Taken off by the bank feed itself (a hold that seemed to have gone):
+        // the bank shows it again, so it comes back
+        if (bankTrue_(mine.deleted)) { if (!(String(mine.by) === "bank" && /^bk-/.test(mine.id))) return; f.deleted = false; }
         if (!near(+mine.amount, t.amount)) f.amount = t.amount;      // a pending payment settled at a different amount
         if (!confirmed) { if (mine.account !== acc && /^bk-/.test(mine.id)) f.account = acc;   // the account was mapped since
           if (!mine.note && t.name) f.note = t.name; if (!mine.budget) { var g0 = bankGuess_(db, p, t.name, t.category, t.date); if (g0.budget) { f.budget = g0.budget; if (!mine.split && g0.splitHint) f.splitHint = g0.splitHint; } } }
@@ -750,21 +793,28 @@ function bankApply_(p, data, windowFrom) {
       if (windowFrom && x.date < windowFrom) return;   // older than this read: can't tell
       if (D.diff(x.date, today) <= BANK_PENDING_DROP_DAYS_) return;
       var row = byBank[id] || byIdRow["bk-" + provider + "-" + id];
-      if (row && /^bk-/.test(row.id) && !bankTrue_(row.deleted)) update("transactions", row.id, {deleted: true});
+      if (row && row.person === p && /^bk-/.test(row.id) && !bankTrue_(row.deleted)) { update("transactions", row.id, {deleted: true}); updates[updates.length - 1].pend = {id: id, x: x}; }
       delete pending[id];
     });
     Object.keys(pending).forEach(function (id) { if (!pending[id] || !pending[id].date || D.diff(pending[id].date, today) >= BANK_RECENT_DAYS_) delete pending[id]; });
-    var s1 = bankStatus_(p); s1.pending = pending; delete s1.peers; bankSaveStatus_(p, s1);
 
-    // every row on its own: one that can't be written (its id is taken) is skipped and logged, and the rest go on
-    var now = Date.now(), added = 0, updated = 0;
-    updates.forEach(function (u) {
-      try { applyOne_(p, {op: "put", table: u.t, row: u.row}, now, "bank", {sys: true}); updated++; }
-      catch (e) { Logger.log("Bank feed skipped " + u.t + " " + u.row.id + ": " + (e && e.message || e)); }
-    });
+    // New rows first, in one write per tab, so what was read is kept even if this run runs short of time. Then the
+    // changes, every row on its own (one that can't be written is skipped and logged, and the rest go on). Each is a
+    // write of its own, and a first import can link hundreds of rows you logged by hand, so they stop in good time
+    // (Apps Script stops a run at 6 minutes and would lose the lot): the rest are made on the next run, which finds
+    // the rows already written and only does what's left.
+    var now = Date.now(), added = 0, updated = 0, stopAt = BANK_T0_ ? BANK_T0_ + BANK_APPLY_STOP_ : 0, stopped = false;
     Object.keys(newRows).forEach(function (t) { added += bankAppend_(p, t, newRows[t], now); });
     SpreadsheetApp.flush();
-    return {added: added, updated: updated};
+    for (var ui = 0; ui < updates.length; ui++) {
+      var u = updates[ui];
+      if (stopAt && Date.now() > stopAt) { stopped = true; if (u.pend) pending[u.pend.id] = u.pend.x; continue; }   // a hold not taken off yet is still watched
+      try { applyOne_(p, {op: "put", table: u.t, row: u.row}, now, "bank", {sys: true}); updated++; }
+      catch (e) { Logger.log("Bank feed skipped " + u.t + " " + u.row.id + ": " + (e && e.message || e)); }
+    }
+    SpreadsheetApp.flush();
+    var s1 = bankStatus_(p); s1.pending = pending; delete s1.peers; bankSaveStatus_(p, s1);
+    return {added: added, updated: updated, stopped: stopped};
   } finally { lock.releaseLock(); }
 }
 // new rows in one write per tab (a first import can be thousands of payments), checked like any other change
@@ -834,11 +884,11 @@ function bankPendingImports() {
   CACHE_ = {}; bankStart_(); bankMoveSecrets_();
   var waiting = 0;
   bankPeople_().forEach(function (p) {
-    var s = bankStatus_(p), more = s.cursor && !s.fullDone && !s.needsReconnect; if (!s.waiting && !more) return;
+    var s = bankStatus_(p), more = (s.again || (s.cursor && !s.fullDone)) && !s.needsReconnect; if (!s.waiting && !more) return;
     if (s.waiting && !(s.firstUntil > Date.now())) { s.waiting = false; s.needsReconnect = true; s.lastError = "Budgie wasn't approved in the Monzo app in time. Reconnect and approve it there."; bankSaveStatus_(p, s); return; }
     if (Date.now() - BANK_T0_ > BANK_READ_BUDGET_ / 2) { waiting++; return; }   // the next minute
     bankRun_(p);
-    var s2 = bankStatus_(p); if (s2.waiting || (s2.cursor && !s2.fullDone && !s2.needsReconnect)) waiting++;
+    var s2 = bankStatus_(p); if (s2.waiting || ((s2.again || (s2.cursor && !s2.fullDone)) && !s2.needsReconnect)) waiting++;
   });
   if (!waiting) ScriptApp.getProjectTriggers().forEach(function (t) { if (t.getHandlerFunction() === "bankPendingImports") ScriptApp.deleteTrigger(t); });
 }

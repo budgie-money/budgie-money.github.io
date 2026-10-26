@@ -58,9 +58,12 @@ The code is `apps-script/BankFeeds.gs`. Its tests are `test/bank.test.js`, which
     - logged by hand: the same amount within 1p, within 2 days;
     - posted by Peckish: within 15% or £5 (whichever is bigger), within 3 days, best if the shop's name matches. Your own Peckish shop is linked and its amount becomes the bank's.
   - A rule learned from a correction sets the budget, but its split is only stored as `splitHint`. The split itself stays empty until you confirm the payment.
-  - A pending payment that goes to £0, or that disappears from the feed and is more than a week old, is removed.
+  - A pending payment that goes to £0, or that disappears from the feed and is more than a week old, is removed. If the bank shows it again later, it comes back (one you dismissed on your phone stays dismissed).
+  - A payment the bank lists twice in one read (under a Space as well as the account, say) counts once.
   - Rows the bank wrote or linked: phones can only change `budget`, `split`, `note` and `review`. A phone can dismiss one, but not bring it back.
 - **Planned items aren't imported again.** These are already in Budgie: bills, regular transfers to your partner, and payments between you that you've already logged.
+  - A payment between you that your partner logged only counts if the bank's name for it has your partner's Budgie id in it (e.g. "SOPHIE …"). Their display name isn't used, because they can change it.
+  - Only your own payday ticks stop a bank pot move coming in. Your partner's rows never do.
   - A bill that came to a different amount becomes an `amount` exception.
   - A card payment only counts as a bill if the names share a word (e.g. "Phone").
 - **Pay** at a different amount becomes an `amount` exception. Money only counts as the pay if it's within 50% of the expected pay and within 3 days. Other money in is ignored, except card refunds.
@@ -84,7 +87,7 @@ These were built from the docs. Starling's reference pages need JavaScript and c
 - A pending payment keeps the same `id` when it settles.
 - Paging with `since=<last id>` and `limit=100` returns the whole history.
 - When the 5-minute full-history window starts: at sign-in or at approval. Budgie tries the full import from the moment you sign in. If a full read is refused more than 5 minutes after approval, it reads the last 89 days instead and notes "Monzo only lets Budgie read the last 90 days now".
-- A first read of a long history stops reading after 3½ minutes of a run (Apps Script stops any run at 6), saves what it has, and carries on from the last payment a minute later. If Monzo stops sharing older payments part-way (on a page, or when carrying on), what was read is kept, the last 89 days are read too, and the note says how far the history got. Whether Monzo lets a read carry on from a payment's id after its 5 minutes is unknown: if not, the gap between the two is lost, so approve straight away.
+- A first read of a long history stops reading after 3½ minutes of a run (Apps Script stops any run at 6), saves what it has, and carries on from the last payment a minute later. Saving writes the new rows first; the changes to rows already there (one write each, such as linking payments you logged by hand) stop 5 minutes into the run, and the next run, a minute later, reads the same again and makes the rest. If Monzo stops sharing older payments part-way (on a page, or when carrying on), what was read is kept, the last 89 days are read too, and the note says how far the history got. Whether Monzo lets a read carry on from a payment's id after its 5 minutes is unknown: if not, the gap between the two is lost, so approve straight away.
 - Before approval, `/accounts` returns 403. Rate limits return 429, maybe with `Retry-After`.
 
 **Starling**
@@ -96,7 +99,8 @@ These were built from the docs. Starling's reference pages need JavaScript and c
 - `effectiveBalance` is used for the balance. Status values used: PENDING, SETTLED, DECLINED, REVERSED, UPCOMING.
 
 **Both**
-- Apps Script doesn't document whether a web app run as the owner gets the owner's **user lock** (the one the triggers use). Budgie doesn't rely on it for safety: a disconnect always wins over a refresh happening at the same moment, two refreshes at once don't break the connection, and rows are only written under the script lock.
+- Apps Script doesn't document whether a web app run as the owner gets the owner's **user lock** (the one the triggers use). Budgie doesn't rely on it for safety: a disconnect always wins over a refresh happening at the same moment, two refreshes at once don't break the connection (the one Monzo turns down waits a moment for the other's new token), a read that was using an old connection never marks a new one as needing reconnecting, and rows are only written under the script lock.
+- The status (no secrets) has to fit in one property (9 KB). If lots of pots with long names and lots of pending payments ever make it too big, names are cut short and the oldest pending payments stop being watched.
 - Dates are London dates, so a 23:30 payment on a summer night counts on that day.
 - Moneybox payments are spotted by "Moneybox" in the name.
 
