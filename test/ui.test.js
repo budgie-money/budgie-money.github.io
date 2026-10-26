@@ -269,7 +269,16 @@ const fails = [], check = (name, cond, extra) => { if (cond) console.log("ok", n
   await page.waitForTimeout(200);
   const todoText = T(await page.textContent("main")), payText = await page.evaluate(() => { window.BudgieApp.go("payday"); return document.querySelector("main").textContent; });
   check("Hide amounts: no amounts anywhere on Today or Payday", !/£\d/.test(todoText) && !/£\d/.test(payText), {todoText: (todoText.match(/.{0,40}£\d.{0,10}/) || [""])[0], payText: (payText.match(/.{0,40}£\d.{0,10}/) || [""])[0]});
-  await page.evaluate(() => { window.BudgieApp.S.prefs.hide = false; window.BudgieApp.go("today"); });
+  // ...and the fixed amount in a split ("Sophie pays £500.00")
+  const splitText = await page.evaluate(() => { window.BudgieApp.go("list", {table: "splits"}); return document.querySelector("main").textContent; });
+  check("Hide amounts: a split's fixed amount is covered too", /pays £••••/.test(splitText) && !/£\d/.test(splitText), (splitText.match(/.{0,40}£.{0,10}/) || [""])[0]);
+  // a peek (the eye) ends when Budgie goes into the background
+  const away = (state) => page.evaluate(st => { Object.defineProperty(document, "visibilityState", {get: () => st, configurable: true}); document.dispatchEvent(new Event("visibilitychange")); }, state);
+  await page.evaluate(() => window.BudgieApp.go("today")); await page.click('[data-a="reveal"]'); await page.waitForTimeout(100);
+  const peeked = /£\d/.test(T(await page.textContent("main")));
+  await away("hidden"); await page.waitForTimeout(100); await away("visible"); await page.waitForTimeout(300);
+  check("Hide amounts: a peek ends when Budgie goes into the background", peeked && !/£\d/.test(T(await page.textContent("main"))) && await page.evaluate(() => window.BudgieApp.S.ui.reveal === false));
+  await page.evaluate(() => { delete document.visibilityState; window.BudgieApp.S.prefs.hide = false; window.BudgieApp.go("today"); });
   // unticking a payday move only takes off your own moves
   const pk = "pay:2026-10-29:e-food";
   await page.evaluate(k => { const t = window.BudgieApp.S.data.tables; t.moves = (t.moves || []).concat([{id: "mv-hers", date: "2026-10-29", person: "sophie", from: "s-main", to: "s-lisa", amount: 1, key: k}]); window.BudgieApp.go("payday"); }, pk);

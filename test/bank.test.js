@@ -404,7 +404,8 @@ const grow = (G, t) => { G.c.CACHE_ = {}; return G.c.readTable_(t).rows; };
     {op: "put", table: "exceptions", row: {id: "x-e-2026-12-01-skip", item: "e", date: "2026-12-01", action: "skip"}}
   ]});
   ok("S4: Sophie can't take Ethan's ids (her own change still saves)", sq.ok && sq.rejected.map(x => x.i).join() === "0,1,2,3,4" && sq.applied.map(x => x.id).join() === "x-e-2026-12-01-skip", sq.rejected);
-  ok("S4: the reasons say why", /x-<item>-<date>/.test(sq.rejected[0].error) && /your name and its key/.test(sq.rejected[2].error) && /bank feed/.test(sq.rejected[3].error));
+  // (someone else's ids get the same answer as their rows do, so the answer never says whether something of theirs exists)
+  ok("S4: the reasons say why", /can't change that \(exceptions\)/.test(sq.rejected[0].error) && /can't change that \(settings\)/.test(sq.rejected[2].error) && /bank feed/.test(sq.rejected[3].error), sq.rejected);
   // a squatted id typed straight into the sheet still doesn't stop Ethan's import
   const exSh = G.env.sheets.exceptions, exHead = exSh.getRange(1, 1, 1, exSh.getLastColumn()).getValues()[0];
   exSh.appendRow(exHead.map(h => ({id: "x-e-pay-2026-10-29-bank-ethan", item: "e", date: "2026-10-29", action: "amount", amount: 1})[h] ?? ""));
@@ -1025,6 +1026,165 @@ const grow = (G, t) => { G.c.CACHE_ = {}; return G.c.readTable_(t).rows; };
   NOW += 60000; const r = G.call({key: G.kE, action: "bank.syncNow"}), st = JSON.parse(G.env.props.BANK_STATUS_ethan);
   ok("R11: the old read stops, and the new connection isn't marked as needing reconnecting", !r.ok && !st.needsReconnect && JSON.parse(G.env.userProps.BANK_TOKEN_ethan).conn === fresh.conn, {r, st});
   G.c.UrlFetchApp.fetch = fetch0;
+}
+
+{
+  // T1: an id names one thing whatever its tab. The partner can't make a split (or goal, transfer, loan) called after
+  // the payer's main account, which made the bank feed skip every one of his payments, nor an income called after his
+  // private bill, which made the bank's "the bill came to £61.23" hers to see and change
+  freshMonzo(); NOW = RealDate.parse("2026-11-17T12:00:00Z");
+  monzo.txns = [mtx("tx_energy", "2026-11-10", -6123, {counterparty: {name: "ENERGY CO"}, category: "bills"})];
+  const G = bankEnv(t => { t.bills.push({id: "e-energy", person: "ethan", name: "Energy", amount: 50, account: "e-main", unit: "month", on: "10", start: "2026-11-01", variable: true}); });
+  connectMonzo(G, {acc_00009main: "e-main"});
+  ok("T1: the bank's amount for his private bill is saved", grow(G, "exceptions").some(x => x.id === "x-e-energy-2026-11-10-bank-ethan" && x.amount === 61.23));
+  const plant = G.call({key: G.kS, ops: [
+    {op: "put", table: "splits", row: {id: "e-main", name: "Ours", shares: "sophie:1"}},
+    {op: "put", table: "goals", row: {id: "e-bills", owners: "sophie", name: "Mine", target: 10}},
+    {op: "put", table: "transfers", row: {id: "e-food", from: "sophie", to: "ethan", name: "x", amount: 1, unit: "once", start: "2030-01-01"}},
+    {op: "put", table: "income", row: {id: "e-energy", person: "sophie", name: "x", amount: 1, account: "s-main", unit: "once", start: "2030-01-01"}},
+    {op: "put", table: "budgets", row: {id: "e-pay", person: "sophie", name: "x", amount: 1, mode: "oneoff"}},
+    {op: "put", table: "splits", row: {id: "split-new-1", name: "Thirds", shares: "ethan:2, sophie:1"}}
+  ]});
+  ok("T1: a new row can't take an id another tab uses (her own new split still saves; the refusal looks like any other)", plant.applied.length === 1 && plant.applied[0].id === "split-new-1" && plant.rejected.length === 5 && plant.rejected.every(x => /^You can.t change that/.test(x.error) && x.retry === false), plant);
+  const seen = G.call({key: G.kS, full: true});
+  ok("T1: the partner still can't see the bank's amount for his private bill", !seen.rows.exceptions.some(x => /e-energy/.test(x.id)), seen.rows.exceptions);
+  monzo.txns.push(mtx("tx_boots", "2026-11-16", -1234, {merchant: merchant("Boots", "shopping"), category: "shopping"}));
+  NOW += 60000; const sn = G.call({key: G.kE, action: "bank.syncNow"});
+  ok("T1: and his next payment still comes in", sn.ok && grow(G, "transactions").some(r => r.id === "bk-monzo-tx_boots" && r.account === "e-main"), sn);
+}
+{
+  // T1b: an id already in two tabs (only by typing into the sheet) belongs to nobody: its changes can't be seen or made
+  // by either of you, and the bank feed doesn't make one for it; and an account another tab's row shares an id with
+  // still takes the bank's payments
+  freshMonzo(); NOW = RealDate.parse("2026-11-17T12:00:00Z");
+  monzo.txns = [mtx("tx_energy", "2026-11-10", -6123, {counterparty: {name: "ENERGY CO"}, category: "bills"})];
+  const G = bankEnv(t => {
+    t.bills.push({id: "e-energy", person: "ethan", name: "Energy", amount: 50, account: "e-main", unit: "month", on: "10", start: "2026-11-01", variable: true});
+    t.income.push({id: "e-energy", person: "sophie", name: "x", amount: 1, account: "s-main", unit: "once", start: "2030-01-01"});
+    t.exceptions.push({id: "x-e-energy-2026-12-10-skip", item: "e-energy", date: "2026-12-10", action: "skip"});
+    t.splits.push({id: "e-main", name: "Typed in", shares: "sophie:1"});
+  });
+  connectMonzo(G, {acc_00009main: "e-main"});
+  monzo.txns.push(mtx("tx_boots", "2026-11-12", -1234, {merchant: merchant("Boots", "shopping"), category: "shopping"}));
+  NOW += 60000; G.call({key: G.kE, action: "bank.syncNow"});
+  const so = G.call({key: G.kS, full: true}), ed = G.call({key: G.kS, ops: [{op: "put", table: "exceptions", row: {id: "x-e-energy-2026-12-10-skip", item: "e-energy", date: "2026-12-10", action: "amount", amount: 5}}]});
+  ok("T1b: an item id in two tabs: its changes are nobody's to see or make", !so.rows.exceptions.some(x => /e-energy/.test(x.id)) && ed.rejected.length === 1 && ed.applied.length === 0, {ex: so.rows.exceptions, ed});
+  ok("T1b: and the bank doesn't make one for it", !grow(G, "exceptions").some(x => x.id === "x-e-energy-2026-11-10-bank-ethan"));
+  ok("T1b: an account sharing its id with another tab's row still takes the bank's payments", grow(G, "transactions").some(r => r.id === "bk-monzo-tx_boots" && r.account === "e-main") && grow(G, "valuations").some(v => v.id === "bk-acc_00009main-2026-11-17"), grow(G, "transactions").map(r => r.id));
+}
+
+{
+  // T2: Peckish (which both of you see) posting a shop for the payer, at any amount near a payment somewhere else: the
+  // shop isn't linked to it, so Peckish never learns that payment's amount and it isn't hidden under the food shop.
+  // A shop that names the same shop is still linked.
+  freshMonzo(); NOW = RealDate.parse("2026-11-17T12:00:00Z");
+  monzo.txns = [mtx("tx_old", "2026-11-01", -100, {merchant: merchant("Coffee Place", "eating_out"), category: "eating_out"})];
+  const G = bankEnv(); connectMonzo(G, {acc_00009main: "e-main"});
+  const link = G.call({key: G.kE, action: "app.link", app: "peckish"}).link, pk = JSON.parse(Buffer.from(link.split("#connect=")[1], "base64url").toString()).k;
+  const shop = (id, date, amount, note) => ({op: "put", table: "transactions", row: {id: id, date: date, person: "ethan", amount: amount, budget: "e-food-b", account: "", split: "", note: note, source: "peckish"}});
+  const put = G.call({key: pk, ops: [shop("t-pk-probe1", "2026-11-12", 20, "Tesco (Peckish)"), shop("t-pk-real1", "2026-11-14", 40, "Aldi (Peckish)")]});
+  monzo.txns.push(mtx("tx_pharm", "2026-11-13", -1650, {merchant: merchant("Boots Pharmacy", "personal_care"), category: "personal_care"}), mtx("tx_aldi", "2026-11-14", -4312, {merchant: merchant("ALDI STORES 123", "groceries"), category: "groceries"}));
+  NOW += 60000; G.call({key: G.kE, action: "bank.syncNow"});
+  const seen = G.call({key: pk}).rows.transactions, probe = seen.find(r => r.id === "t-pk-probe1"), real = seen.find(r => r.id === "t-pk-real1");
+  ok("T2: the shops were saved", put.applied.length === 2, put);
+  ok("T2: a Peckish shop naming another shop doesn't take over a payment somewhere else", probe && probe.amount === 20 && !grow(G, "transactions").find(r => r.id === "t-pk-probe1").bankId, probe);
+  ok("T2: that payment comes in as itself", grow(G, "transactions").some(r => r.id === "bk-monzo-tx_pharm" && r.note === "Boots Pharmacy" && r.amount === 16.5));
+  ok("T2: a shop that names the same shop is still linked, at the bank's amount", real && real.amount === 43.12 && grow(G, "transactions").find(r => r.id === "t-pk-real1").bankId === "tx_aldi" && !grow(G, "transactions").some(r => r.id === "bk-monzo-tx_aldi"), real);
+}
+
+{
+  // T3: a big payment from the partner just before payday isn't taken for the pay (it used to be, being first)
+  freshMonzo(); NOW = RealDate.parse("2026-11-17T12:00:00Z");
+  monzo.txns = monzoData(planned).concat([mtx("tx_sophie_big", "2026-10-27", 150000, {counterparty: {name: "SOPHIE D"}, category: "transfers"})]);
+  const G = bankEnv(); connectMonzo(G, {acc_00009main: "e-main"});
+  const px = grow(G, "exceptions").find(x => x.id === "x-e-pay-2026-10-29-bank-ethan");
+  ok("T3: the pay is the pay, not the partner's payment two days before", px && px.amount === 2390, px);
+}
+
+{
+  // T4: a hold from the first day a read goes back to, earlier that day than the read starts, isn't taken off as
+  // vanished (the read never looked at that part of the day)
+  freshMonzo(); NOW = RealDate.parse("2026-11-16T12:00:00Z");
+  monzo.txns = monzoData(planned).concat([mtx("tx_oldhold", "2026-10-13", -4000, {merchant: merchant("Hotel Stay", "holidays"), category: "holidays", pending: true, time: "09:00:00"})]);
+  const G = bankEnv(); connectMonzo(G, {acc_00009main: "e-main"});
+  const had = grow(G, "transactions").find(r => r.id === "bk-monzo-tx_oldhold");
+  NOW = RealDate.parse("2026-11-17T12:00:00Z"); G.call({key: G.kE, action: "bank.syncNow"});
+  const now = grow(G, "transactions").find(r => r.id === "bk-monzo-tx_oldhold");
+  ok("T4: a hold the read didn't cover isn't taken off", had && !had.deleted && now && !now.deleted, {had, now});
+}
+
+{
+  // T5: disconnected and connected again while a read was going (the phone's Check now and the 15-minute read aren't
+  // sure to share a lock): the old read doesn't mark the new connection approved, or save what it read
+  freshMonzo(); NOW = RealDate.parse("2026-11-17T12:00:00Z"); monzo.txns = monzoData(planned);
+  const G = bankEnv(); connectMonzo(G, {acc_00009main: "e-main"});
+  monzo.txns.push(mtx("tx_during", "2026-11-17", -999, {merchant: merchant("Corner Shop", "groceries"), category: "groceries"}));
+  const fetch0 = G.c.UrlFetchApp.fetch, fresh = {provider: "monzo", conn: "new-connection-1111111111111111", access: "acc-NEW", refresh: "ref-NEW", expiresAt: NOW + 6 * 3600000, issuedAt: NOW, approvedAt: 0, userId: "user_00009ETHAN"};
+  const waitSt = {provider: "monzo", waiting: true, firstUntil: NOW + 20 * 60000, fullDone: false, accounts: [], lastSync: 0, lastError: ""};
+  G.c.UrlFetchApp.fetch = (url, params) => { const out = fetch0(url, params); if (/\/transactions\?/.test(url) && !G.env.userProps.BANK_TOKEN_ethan.includes(fresh.conn)) { G.env.userProps.BANK_TOKEN_ethan = JSON.stringify(fresh); G.env.props.BANK_STATUS_ethan = JSON.stringify(waitSt); } return out; };
+  NOW += 60000; const r = G.call({key: G.kE, action: "bank.syncNow"}); G.c.UrlFetchApp.fetch = fetch0;
+  const st = JSON.parse(G.env.props.BANK_STATUS_ethan), tk = JSON.parse(G.env.userProps.BANK_TOKEN_ethan);
+  ok("T5: the new connection still waits for its approval", !r.ok && st.waiting === true && st.fullDone === false && !st.lastSync && tk.approvedAt === 0 && tk.conn === fresh.conn, {r, st, a: tk.approvedAt});
+  ok("T5: and the old read's payments weren't saved", !grow(G, "transactions").some(x => x.id === "bk-monzo-tx_during"));
+}
+
+{
+  // T6: a first import that keeps failing part-way stops being tried every minute after a few goes (each try is trigger
+  // time from the owner's daily allowance); the 15-minute read carries on with it
+  const big = []; for (let i = 0; i < 1000; i++) big.push(mtx("tx_big" + String(i).padStart(4, "0"), B.addDays("2024-01-01", i), -(100 + i), {merchant: merchant("Corner Shop", "general"), category: "general"}));
+  freshMonzo(); NOW = RealDate.parse("2026-11-17T12:00:00Z"); monzo.txns = big.concat(monzoData(planned)); monzo.pageDelay = 30000;
+  const G = bankEnv(); connectMonzo(G); monzo.pageDelay = 0;
+  const minute = () => G.env.triggers.some(t => t.getHandlerFunction() === "bankPendingImports");
+  ok("T6: the first part came in and the rest waits", JSON.parse(G.env.props.BANK_STATUS_ethan).cursor && minute());
+  const fetch0 = G.c.UrlFetchApp.fetch;
+  G.c.UrlFetchApp.fetch = (url, params) => /\/transactions\?/.test(url) ? {getResponseCode: () => 500, getContentText: () => "{}", getHeaders: () => ({})} : fetch0(url, params);
+  const left = []; for (let i = 0; i < 4; i++) { NOW += 60000; G.c.bankPendingImports(); left.push(minute()); }
+  ok("T6: after three failed minutes it stops running every minute", JSON.stringify(left) === JSON.stringify([true, true, false, false]), left);
+  G.c.UrlFetchApp.fetch = fetch0; NOW += 15 * 60000; G.c.bankPoll();
+  const st = JSON.parse(G.env.props.BANK_STATUS_ethan);
+  ok("T6: the 15-minute read finishes it", st.fullDone && !st.cursor && !st.minuteFails && grow(G, "transactions").filter(r => /^bk-monzo-tx_big/.test(r.id)).length === 1000, {fullDone: st.fullDone, cursor: st.cursor, mf: st.minuteFails});
+}
+
+{
+  // T7: a Starling euro account isn't read (its amounts would be taken as pounds)
+  NOW = RealDate.parse("2026-11-17T12:00:00Z");
+  const acc0 = starling.accounts; starling.accounts = acc0.concat([{accountUid: "sacc-eur", accountType: "ADDITIONAL", defaultCategory: "scat-eur", currency: "EUR", createdAt: "2026-06-01T09:00:00.000Z", name: "Euros"}]);
+  const G = bankEnv(), r = G.call({key: G.kS, action: "bank.starling.setToken", token: SECRET.starling}), st = G.call({key: G.kS, action: "bank.status"}).bank;
+  ok("T7: only the pound accounts are read", r.ok && !r.note && !st.accounts.some(a => a.extId === "sacc-eur") && st.accounts.some(a => a.extId === "sacc-0001") && !reqs.some(q => /sacc-eur/.test(q.url)), {r, accts: st.accounts.map(a => a.extId)});
+  starling.accounts = acc0;
+}
+
+{
+  // T8: changing the bank details over and over can't use up the owner's emails (100 a day, the Sunday emails need
+  // them too): the first few are sent, the last of them saying so
+  const G = bankEnv();
+  for (let i = 0; i < 12; i++) G.call({key: G.kS, action: "bank.monzo.setClient", clientId: "oauth2client_000SOPH" + i, clientSecret: "mnzconf.sophie" + i});
+  ok("T8: at most five notices in a few hours", G.env.mail.length === 5 && /won't be emailed/.test(G.env.mail[4].body) && !/won't be emailed/.test(G.env.mail[0].body), G.env.mail.length);
+}
+
+{
+  // T9: the sign-in page, which anyone can open, turns away made-up states without reading any properties (each read
+  // is from the owner's daily allowance, which every Budgie request needs); a real sign-in still connects
+  freshMonzo(); NOW = RealDate.parse("2026-11-17T12:00:00Z"); monzo.txns = monzoData(planned);
+  const G = bankEnv(); let reads = 0;
+  G.call({key: G.kE, action: "bank.monzo.setClient", clientId: CLIENT_ID, clientSecret: SECRET.clientSecret});
+  const real = new URL(G.call({key: G.kE, action: "bank.monzo.authUrl"}).url).searchParams.get("state");
+  const ps0 = G.c.PropertiesService, count = (store) => new Proxy(store, {get: (t, k) => (/^getPropert/.test(k) && reads++, t[k])});
+  G.c.PropertiesService = {getScriptProperties: () => count(ps0.getScriptProperties()), getUserProperties: () => count(ps0.getUserProperties())};
+  const pages = []; for (let i = 0; i < 20; i++) pages.push(G.c.doGet({parameter: {code: "x", state: require("crypto").randomBytes(32).toString("hex")}}).getContent());
+  ok("T9: made-up states are turned away without a property read", reads === 0 && pages.every(h => /expired or didn't come from Budgie/.test(h)), reads);
+  G.c.PropertiesService = ps0;
+  ok("T9: a real sign-in still connects", /Budgie is connected to Monzo/.test(G.c.doGet({parameter: {code: SECRET.code, state: real}}).getContent()));
+}
+
+{
+  // T10: a mapping setting with an odd name (typed on the phone, say) doesn't break the status or the reads
+  freshMonzo(); NOW = RealDate.parse("2026-11-17T12:00:00Z"); monzo.txns = monzoData(planned);
+  const G = bankEnv(); connectMonzo(G, {acc_00009main: "e-main"});
+  G.call({key: G.kE, ops: [{op: "put", table: "settings", row: {id: "ethan:bank.map.hasOwnProperty", person: "ethan", key: "bank.map.hasOwnProperty", value: "e-main"}}]});
+  monzo.txns.push(mtx("tx_odd", "2026-11-17", -321, {merchant: merchant("Corner Shop", "groceries"), category: "groceries"}));
+  NOW += 60000; const st = G.call({key: G.kE, action: "bank.status"}), sn = G.call({key: G.kE, action: "bank.syncNow"});
+  ok("T10: an odd mapping name doesn't break the status or the next read", st.ok && sn.ok && grow(G, "transactions").some(r => r.id === "bk-monzo-tx_odd"), {st: st.error, sn});
 }
 
 // ================= read only, always =================

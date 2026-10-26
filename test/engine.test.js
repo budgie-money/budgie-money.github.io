@@ -481,7 +481,7 @@ const savedUp = (pl, id) => lineAmt(pl, l => l.setAside && l.bill === id && l.ki
   const bs = B.budgetState(c, me, per);
   eq("compat: budgetState(db, me, per)", ["amount", "spent", "left", "avail", "carryIn", "carryOut", "over"].every(k => k in bs["e-fun"]) && bs["e-fun"].period.start === per.start, true);
   eq("compat: still exported", ["load", "coming", "periodAt", "planFor", "budgetState", "today", "checks", "lisa", "yearly", "yearReview"].every(k => typeof B[k] === "function"), true);
-  eq("compat: version", B.VERSION, "1.4.4");
+  eq("compat: version", B.VERSION, "1.4.5");
 })();
 
 // C3: a payday move ticked in the app and by the bank feed counts once (the latest)
@@ -546,6 +546,16 @@ const savedUp = (pl, id) => lineAmt(pl, l => l.setAside && l.bill === id && l.ki
   t.moves.push({id: "m-cov", date: d, person: "sophie", from: "s-savings", to: "s-main", amount: 50, key: "pay:" + d + ":cover"});
   const L = B.load(t, d);
   eq("R8: Sophie's cover doesn't tick Ethan's", [B.ticked(L, "ethan", "pay:" + d + ":cover") > 0, B.ticked(L, "sophie", "pay:" + d + ":cover") > 0], [false, true]);
+})();
+// A2: a loan paid from a pot is paid back into the main account, as the repayment is logged, so payday still tops the pot up
+(() => {
+  const t = fixture(); t.loans[0].account = "e-emergency";
+  t.transactions.push({id: "t-over", date: "2026-12-10", person: "ethan", amount: 400, budget: "e-fun", account: "e-main"});
+  t.settlements.push({id: "s-rep", date: "2026-12-28", from: "sophie", to: "ethan", amount: 200, loan: "sofa", key: "loan:sofa:2026-12-28"});
+  const L = B.load(t, "2026-12-31"), per = B.periodAt(L, "ethan", "2026-12-24");
+  eq("A2: the repayment is planned into the main account", B.planFor(L, "ethan", per).lines.filter(l => l.loan).map(l => l.account), ["e-main"]);
+  eq("A2: and the Emergency pot's top-up is still moved on payday", B.payday(L, "ethan", per).moves.filter(m => m.to === "e-emergency").map(m => m.amount), [100]);
+  eq("A2: Coming up says where it lands", B.coming(L, "ethan", "2027-01-20", 10).filter(c => c.table === "loans").map(c => c.account), ["Main account"]);
 })();
 // --- whole picture runs without errors for both, across a year
 ["ethan", "sophie"].forEach(p => {

@@ -6,7 +6,7 @@
   else root.Budgie = factory();
 })(this, function () {
   "use strict";
-  var VERSION = "1.4.4";
+  var VERSION = "1.4.5";
 
   // ---------- dates ----------
   function D(s) { var p = String(s).split("-"); return new Date(Date.UTC(+p[0], +p[1] - 1, +p[2])); }
@@ -408,7 +408,9 @@
       loanPlan(db, l).forEach(function (r) {
         if (r.date < from || r.date >= to || !live(r.date)) return;
         if (l.borrower === p) lines.push({kind: "bill", name: "Pay " + person(db, l.lender).name + " back: " + l.name, amount: r.amount, account: main, date: r.date, id: l.id, loan: true});
-        if (l.lender === p) lines.push({kind: "in", name: person(db, l.borrower).name + " pays back: " + l.name, amount: r.amount, account: l.account || main, date: r.date, id: l.id, loan: true});
+        // a repayment lands in the lender's main account, as the payment logged for it does (whichever account the loan
+        // was paid from), so payday still moves what the other pots need
+        if (l.lender === p) lines.push({kind: "in", name: person(db, l.borrower).name + " pays back: " + l.name, amount: r.amount, account: main, date: r.date, id: l.id, loan: true});
       });
     });
     if (per.opening) {
@@ -830,7 +832,7 @@
     db.transfers.forEach(function (t) {
       if (t.from === p || t.to === p) occurrences(db, t, from, to).forEach(function (o) { add(o, "transfers", t.from === p ? (t.name || "Transfer") + " to " + person(db, t.to).name : person(db, t.from).name + ": " + (t.name || "transfer"), o.amount, t.from === p ? t.fromAccount : t.toAccount, t.from === p ? -1 : 1); });
     });
-    db.loans.forEach(function (l) { loanPlan(db, l).forEach(function (r) { if (r.paid || r.date < from || r.date >= to) return; if (l.borrower === p) out.push({date: r.date, key: r.key, item: l.id, table: "loans", name: "Pay " + person(db, l.lender).name + " back", amount: r.amount, sign: -1, account: accName(db, mainOf(db, p))}); if (l.lender === p) out.push({date: r.date, key: r.key, item: l.id, table: "loans", name: person(db, l.borrower).name + " pays you back", amount: r.amount, sign: 1, account: accName(db, l.account || mainOf(db, p))}); }); });
+    db.loans.forEach(function (l) { loanPlan(db, l).forEach(function (r) { if (r.paid || r.date < from || r.date >= to) return; if (l.borrower === p) out.push({date: r.date, key: r.key, item: l.id, table: "loans", name: "Pay " + person(db, l.lender).name + " back", amount: r.amount, sign: -1, account: accName(db, mainOf(db, p))}); if (l.lender === p) out.push({date: r.date, key: r.key, item: l.id, table: "loans", name: person(db, l.borrower).name + " pays you back", amount: r.amount, sign: 1, account: accName(db, mainOf(db, p))}); }); });
     return out.sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : 0; });
   }
   // everything due on each day of a month, for the calendar

@@ -292,9 +292,18 @@ function writers_(t, r) {
 }
 function byId_(t, id) { return index_(t)[id] || null; }
 var ITEM_TABS_ = ["income", "bills", "budgets", "transfers", "loans"];
+// An id names one thing, whatever its tab: the engine finds accounts, items, splits and goals by id alone (db.byId),
+// and a price or one-date change finds its item by id alone. So a new row can't take an id another tab already uses
+// (a split called after your partner's main account would make the bank feed skip their payments, and an income
+// called after their bill would make that bill's changes yours to see and edit).
+var ID_TABS_ = ["people", "accounts", "income", "bills", "budgets", "splits", "transfers", "loans", "goals"];
+function idUsedElsewhere_(t, id) { for (var i = 0; i < ID_TABS_.length; i++) if (ID_TABS_[i] !== t && byId_(ID_TABS_[i], id)) return ID_TABS_[i]; return ""; }
+// an id in more than one item tab (only possible by typing into the sheet) belongs to nobody: its changes can't be
+// seen or made by either of you
 function findItem_(id) {
-  for (var i = 0; i < ITEM_TABS_.length; i++) { var r = byId_(ITEM_TABS_[i], id); if (r) return {t: ITEM_TABS_[i], row: r}; }
-  return null;
+  var hit = null;
+  for (var i = 0; i < ITEM_TABS_.length; i++) { var r = byId_(ITEM_TABS_[i], id); if (r) { if (hit) return null; hit = {t: ITEM_TABS_[i], row: r}; } }
+  return hit;
 }
 function itemOwner_(id) { var it = findItem_(id); return it ? owner_(it.t, it.row) : []; }
 function isLisa_(accId) { var a = accId ? byId_("accounts", accId) : null; return !!a && /lisa/.test(String(a.kind)); }
@@ -378,12 +387,23 @@ function applyOne_(me, op, now, by, opts) {
   var tab = readTable_(t), sh = tab.sheet || ensureTab_(ss_(), t);
   var existing = byId_(t, id);
   var row = existing ? strip_(existing) : {};
+  // the other one's rows are turned away in the same words whether they're there or not, so a refusal never tells you
+  // about something private of theirs (that they have a bank rule for a shop, or changed a bill on a date)
+  var cant = function () { return refuse_("You can't change that (" + t + ")"); };
+  if (!sys && !app) {
+    if (t === "settings" && id.indexOf(String(me) + ":") !== 0) throw cant();
+    if (existing) { var was = writers_(t, existing); if (was !== null && was.indexOf(me) < 0) throw cant(); }
+    else if (t === "exceptions" && op.op === "delete") throw cant();
+  }
   // a new row can't take an id that belongs to someone else's kind of row
   if (!existing && !sys) {
     if (/^bk-/.test(id)) throw refuse_("That id is kept for the bank feed");
     if (/^t-pk-/.test(id) && app !== "peckish") throw refuse_("That id is kept for Peckish");
     if (t === "settings" && (String(src.person) !== String(me) || id !== me + ":" + src.key)) throw refuse_("A setting's id is your name and its key");
-    if (t === "exceptions" && !exceptionIdOk_(id, src.item)) throw refuse_("A change to one date needs an id like x-<item>-<date>");
+    if (t === "exceptions" && !exceptionIdOk_(id, src.item)) throw cant();
+    // an id another tab already uses (someone else's account, a bill) is turned away, with the same wording as
+    // any other refusal, so it never shows whether a row exists
+    if (ID_TABS_.indexOf(t) >= 0 && idUsedElsewhere_(t, id)) throw cant();
   }
   if (existing && t === "settings" && !sys && src.key !== undefined && String(src.key) !== String(existing.key)) throw refuse_("A setting's key can't change");
   var bankRow = !sys && isBankRow_(t, existing);
@@ -398,6 +418,7 @@ function applyOne_(me, op, now, by, opts) {
     }
     row.id = id;
   }
+  if (!sys && !app) { var will = writers_(t, row); if (will !== null && will.indexOf(me) < 0) throw cant(); }
   if (app && existing && existing.bankId && (op.op === "delete" || toBoolCell_(row.deleted))) {
     // the bank has matched this shop to a real payment: Peckish taking it off only unlinks it from Peckish, and the
     // payment stays in Budgie for its person to check, so a real payment can't vanish
@@ -419,6 +440,12 @@ function applyOne_(me, op, now, by, opts) {
       .sort(function (x, y) { return String(x.date) < String(y.date) ? 1 : -1; })[0];
     if (twin && bt.partner === String(row.from) && !(bt.owedToMe > 0.004)) { row.deleted = true; row.note = "Same settling up as " + twin.id; }
   }
+  // the same for a loan repayment: the lender ticking "it's been paid to me" and the borrower "I've paid it" are one
+  // repayment (its key names the loan and the date it was due), so the second is kept but marked as a copy
+  if (!existing && !sys && t === "settlements" && row.loan && /^loan:/.test(String(row.key || "")) && !toBoolCell_(row.deleted)) {
+    var paidAlready = tab.rows.filter(function (r) { return String(r.key) === String(row.key) && String(r.loan) === String(row.loan) && !toBoolCell_(r.deleted); })[0];
+    if (paidAlready) { row.deleted = true; row.note = "Same repayment as " + paidAlready.id; }
+  }
   // people are set up in the sheet; you can change your own name or colour, never who your partner is
   if (t === "people") {
     if (!existing) throw refuse_("People are added in the sheet");
@@ -434,8 +461,8 @@ function applyOne_(me, op, now, by, opts) {
     Object.keys(sides).forEach(function (k) {
       var v = row[k]; if (v === undefined || v === null || v === "") return;
       var acc = byId_("accounts", String(v)), whose = String(row[sides[k]] || "");
-      var name = (byId_("people", whose) || {}).name || whose || "they";
-      if (!acc || acc.owner !== whose) throw refuse_(whose === String(me) ? "That isn't one of your accounts (" + k + ")" : "That account isn't " + name + "'s (" + k + ")");
+      var name = (byId_("people", whose) || {}).name || whose;
+      if (!acc || acc.owner !== whose) throw refuse_(whose === String(me) ? "That isn't one of your accounts (" + k + ")" : name ? "That account isn't " + name + "'s (" + k + ")" : "That account isn't theirs (" + k + ")");
       // and only they can say which of their accounts money came out of (a row the other one made keeps what it had)
       if ((ACCOUNT_OUT_[t] || {})[k] && whose !== String(me) && !(existing && String(existing[k] === undefined || existing[k] === null ? "" : existing[k]) === String(v))) throw refuse_("Only " + name + " can say which of their accounts it came from (" + k + ")");
     });

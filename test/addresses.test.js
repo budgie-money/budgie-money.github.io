@@ -82,6 +82,23 @@ async function setup(b) {
     ok("no page errors at the old home", errs.length === 0, errs);
     await ctx.close();
   }
+  // 3) the old home with Show and tell left on and a payment still waiting: moving across still sends it first
+  {
+    const {ctx, csp, errs, watch} = await setup(b), p = await ctx.newPage(); watch(p);
+    await p.goto("https://alertrobot.github.io/budgie/");
+    await p.evaluate(([u, k]) => new Promise(res => {
+      localStorage.setItem("budgie.cfg", JSON.stringify({u, k})); localStorage.setItem("budgie.prefs", JSON.stringify({demo: true}));
+      const r = indexedDB.open("budgie", 1); r.onupgradeneeded = () => r.result.createObjectStore("kv");
+      r.onsuccess = () => { const tx = r.result.transaction("kv", "readwrite"); tx.objectStore("kv").put({tables: {}, since: 0, me: "ethan", queue: [{op: "put", table: "transactions", row: {id: "t-waiting-move", date: "2026-10-26", person: "ethan", amount: 3.21, budget: "e-fun", account: "e-main"}}]}, "data"); tx.oncomplete = () => { r.result.close(); res(); }; };
+    }), [SHEET, kE]);
+    await p.reload(); await p.waitForTimeout(1200);
+    await p.click('[data-a="moveme"]');
+    let landed = true; await p.waitForURL(/budgie-money\.github\.io/, {timeout: 15000}).catch(() => { landed = false; });
+    const tx = await (await p.request.get("http://localhost:" + PORT + "/dump?transactions")).json();
+    ok("Show and tell left on at the old home doesn't stop a waiting payment going across", landed && tx.some(r => r.id === "t-waiting-move"), {landed, toast: T(await p.textContent("#toast").catch(() => ""))});
+    ok("no page errors moving with Show and tell on", errs.length === 0, errs);
+    await ctx.close();
+  }
   console.log("PASS\n  " + out.join("\n  ")); console.log("FAIL\n  " + fail.join("\n  ")); process.exitCode = fail.length ? 1 : 0;
   await b.close();
 })();

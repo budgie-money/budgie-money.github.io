@@ -1,7 +1,7 @@
 /* Budgie app: screens, syncing and offline queue. The maths lives in engine.js. */
 (function () {
   "use strict";
-  var B = window.Budgie, TH = window.BudgieThemes, APP_VERSION = "1.4.4";
+  var B = window.Budgie, TH = window.BudgieThemes, APP_VERSION = "1.4.5";
   var $ = function (s) { return document.querySelector(s); };
   var esc = function (s) { return String(s === undefined || s === null ? "" : s).replace(/[&<>"']/g, function (c) { return {"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]; }); };
   var LS = {get: function (k, d) { try { var v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch (e) { return d; } }, set: function (k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }};
@@ -1062,7 +1062,7 @@
   };
   function describeShares(s) {
     var d = db(), names = function (id) { return person(id).name || id; }, txt = String(s || "");
-    var fixed = txt.match(/([a-z]+)\s*=\s*([\d.]+)/i); if (fixed) return names(fixed[1].toLowerCase()) + " pays " + B.money(+fixed[2]) + ", the rest by the other";
+    var fixed = txt.match(/([a-z]+)\s*=\s*([\d.]+)/i); if (fixed) return names(fixed[1].toLowerCase()) + " pays " + M(+fixed[2]) + ", the rest by the other";
     var parts = []; txt.replace(/([a-z]+)\s*:\s*([\d.]+)/gi, function (_, a, b) { parts.push(names(a.toLowerCase()) + " " + b); }); return parts.length ? parts.join(" : ") + " parts" : "Half each";
   }
   SCREENS.list = function (p) {
@@ -1588,6 +1588,8 @@
   }
   function lockNow() { if (!lockOn()) return; LOCK.locked = true; showLock(true); }
   document.addEventListener("visibilitychange", function () {
+    // a peek at the amounts (the eye) lasts until Budgie goes into the background, so coming back shows £•••• again
+    if (document.visibilityState === "hidden" && S.ui.reveal) { S.ui.reveal = false; render(true); }
     if (!lockOn()) return;
     if (document.visibilityState === "hidden") { LOCK.hiddenAt = Date.now(); if (!LOCK.locked) showLock(true, true); }
     else if (LOCK.locked || Date.now() - LOCK.hiddenAt > LOCK.GRACE) { LOCK.locked = true; render(); showLock(true); unlock(); }
@@ -1648,6 +1650,7 @@
   async function moveMe() {
     if (lockOn() && !(await lockCheck())) { toast("Budgie needs to check it's you first"); return; }
     toast("Sending anything waiting…");
+    S.prefs.demo = false;   // (Show and tell left on here would stop anything being sent; it isn't saved, as this copy is wiped)
     for (var i = 0; i < 5 && S.data.queue.length; i++) { await sync(false); if (S.data.queue.length) await new Promise(function (r) { setTimeout(r, 1500); }); }
     if (S.data.queue.length) { toast("Couldn't reach your sheet yet. Try again when you have signal."); return; }
     var link = HOME + "#connect=" + btoa(unescape(encodeURIComponent(JSON.stringify({u: S.cfg.u, k: S.cfg.k})))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");

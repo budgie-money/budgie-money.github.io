@@ -624,6 +624,45 @@ const phone = (F, k) => { const P = {T: {}, since: 0}; P.sync = (ops) => { const
   ok("R19: settling up again for something new still counts", !rows().find(r => r.id === "set-s2").deleted && Math.abs(owed()) < 0.005, owed());
 }
 
+// ================= review 2026-10-26 (1.4.5) =================
+// A1: you both ticking the same loan repayment (one offline) only pays it off once
+{
+  const F = fresh(), key = "loan:sofa:2026-12-28";
+  F.call({key: F.kS, ops: [{op: "put", table: "settlements", row: {id: "set-paid", date: "2026-12-28", from: "sophie", to: "ethan", amount: 200, loan: "sofa", key}}]});
+  const r = F.call({key: F.kE, ops: [{op: "put", table: "settlements", row: {id: "set-arrived", date: "2026-12-29", from: "sophie", to: "ethan", amount: 200, loan: "sofa", key}}]});
+  const L = B.load(F.call({key: F.kE, full: true}).rows, "2026-12-30");
+  ok("A1: the second tick of one loan repayment is kept as a copy", r.applied.length === 1 && (F.c.readTable_("settlements").rows.find(x => x.id === "set-arrived") || {}).deleted === true, r);
+  ok("A1: so the loan has £400 left, not £200", B.loans(L, "ethan", "2026-12-30")[0].left === 400, B.loans(L, "ethan", "2026-12-30")[0]);
+  // the next month's repayment is a different one
+  const r2 = F.call({key: F.kE, ops: [{op: "put", table: "settlements", row: {id: "set-jan", date: "2027-01-28", from: "sophie", to: "ethan", amount: 200, loan: "sofa", key: "loan:sofa:2027-01-28"}}]});
+  ok("A1: next month's repayment still counts", r2.applied.length === 1 && !(F.c.readTable_("settlements").rows.find(x => x.id === "set-jan") || {}).deleted);
+}
+
+// A3: a refusal reads the same whether the other one's row is there or not, so it can't be used to find out about it
+{
+  const F = fresh();
+  F.call({key: F.kE, ops: [
+    {op: "put", table: "settings", row: {id: "ethan:bank.rule.corner shop", person: "ethan", key: "bank.rule.corner shop", value: "e-fun"}},
+    {op: "put", table: "exceptions", row: {id: "x-e-phone-2026-11-05-skip", item: "e-phone", date: "2026-11-05", action: "skip"}},
+    {op: "put", table: "transactions", row: {id: "t-e-secret", date: "2026-11-01", person: "ethan", amount: 5, budget: "e-fun", account: "e-main"}}]});
+  const errs = (ops) => F.call({key: F.kS, ops}).rejected.map(r => r.error);
+  const there = errs([
+    {op: "put", table: "settings", row: {id: "ethan:bank.rule.corner shop", person: "sophie", key: "bank.rule.corner shop", value: "x"}},
+    {op: "put", table: "exceptions", row: {id: "x-e-phone-2026-11-05-skip", item: "s-gym", date: "2026-11-05", action: "skip"}},
+    {op: "delete", table: "exceptions", id: "x-e-phone-2026-11-05-skip"},
+    {op: "put", table: "transactions", row: {id: "t-e-secret", account: "s-main"}}]);
+  const notThere = errs([
+    {op: "put", table: "settings", row: {id: "ethan:bank.rule.other shop", person: "sophie", key: "bank.rule.other shop", value: "x"}},
+    {op: "put", table: "exceptions", row: {id: "x-e-phone-2026-12-05-skip", item: "s-gym", date: "2026-12-05", action: "skip"}},
+    {op: "delete", table: "exceptions", id: "x-e-phone-2026-12-05-skip"},
+    {op: "put", table: "transactions", row: {id: "t-nothing-here", account: "s-main"}}]);
+  ok("A3: the same answer for the other one's rows whether they exist or not", there.length === 4 && JSON.stringify(there.map(e => e.replace(/\(.*\)/, ""))) === JSON.stringify(notThere.map(e => e.replace(/\(.*\)/, ""))), {there, notThere});
+  ok("A3: and it reads as plain English", notThere.every(e => !/they's/.test(e)), notThere);
+  // your own changes are unaffected
+  const mine = F.call({key: F.kS, ops: [{op: "put", table: "settings", row: {id: "sophie:theme.mode", person: "sophie", key: "theme.mode", value: "dark"}}, {op: "put", table: "exceptions", row: {id: "x-s-gym-2026-12-16-skip", item: "s-gym", date: "2026-12-16", action: "skip"}}]});
+  ok("A3: your own settings and changes still save", mine.applied.length === 2 && !mine.rejected.length, mine.rejected);
+}
+
 // #5 the one-file backend (apps-script/Budgie.gs, made by migrate/build.js) must be built from the current files
 {
   const fs = require("fs"), path = require("path"), dir = path.join(__dirname, ".."), bundle = path.join(dir, "apps-script/Budgie.gs");

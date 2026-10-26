@@ -13,7 +13,7 @@ The code is `apps-script/BankFeeds.gs`. Its tests are `test/bank.test.js`, which
    - This only hides them from view. Anyone who can edit the sheet can edit its script, and code they add runs as the owner. So **share the sheet with nobody**; each of you uses Budgie through your own key.
    - Anything an older version kept in Script Properties moves over the first time the bank feed runs.
    - Budgie keys stay in Script Properties.
-5. **Notices.** Whenever bank details are added, changed or removed, the sheet's owner gets a short email (nothing secret in it). If it wasn't you, run `newKey("<person>")` and reconnect.
+5. **Notices.** Whenever bank details are added, changed or removed, the sheet's owner gets a short email (nothing secret in it). At most 5 for each of you in 6 hours, so repeated changes can't use up the 100 emails a day the Sunday emails need too; the fifth says so. If it wasn't you, run `newKey("<person>")` and reconnect.
 
 ## Who can see what
 - **Budgie itself can't move money.** Every bank request goes through one helper that only allows reading (GET) from Monzo and Starling, plus Monzo's sign-in and log-out. It never follows redirects.
@@ -21,7 +21,9 @@ The code is `apps-script/BankFeeds.gs`. Its tests are `test/bank.test.js`, which
 - **Starling's token is read-only at Starling.** Budgie refuses any token with more than the read boxes, and checks again every day.
 - **The sheet's owner (Ethan) can see everything in the sheet**, including Sophie's payments and her Starling token, whatever she shares in the app. Sharing settings keep things private between your phones, not from the owner.
 - **Nobody else can**: not someone who finds the web app's address, not your partner's Budgie key, not Peckish or Caledonite. Bank actions are always about the caller's own bank.
+  - **An id names one thing, whatever the tab.** A new row can't take an id another tab already uses, so neither of you can make a split, goal, transfer or loan called after the other's account (which would make the bank feed skip their payments) or an income called after the other's bill (which would make the bank's amount for it yours to see). An id typed into two tabs in the sheet belongs to nobody.
   - **Reading your bank only ever looks at your own rows.** Nothing your partner logs (in Budgie or Peckish) is matched, linked or changed by it, so nothing they write can tell them anything about your payments. If you both log the same shared shop, the one that isn't the payer's can simply be removed.
+- **The sign-in page** (the web app's address with `?code=…&state=…`) can be opened by anyone. A state Budgie isn't waiting for is turned away using the script's cache alone, so a flood of made-up ones can't use up the owner's 50,000 property reads a day, which every Budgie request needs. If the cache has lost a real one (rare), the page says the sign-in expired: start again from the Bank screen.
 - **Check now** works at most every 30 seconds each, because every read uses the owner's daily allowance of Google requests, which both of you share.
 - **When you stop using it**: disconnect in Budgie, then delete the OAuth client in the Monzo developer portal and revoke the Starling token in Starling's portal.
 
@@ -56,7 +58,7 @@ The code is `apps-script/BankFeeds.gs`. Its tests are `test/bank.test.js`, which
   - Payments dated before your Budgie start date are history, so they get `review: false`.
   - A payment matching one already logged is linked instead of added:
     - logged by hand: the same amount within 1p, within 2 days;
-    - posted by Peckish: within 15% or £5 (whichever is bigger), within 3 days, best if the shop's name matches. Your own Peckish shop is linked and its amount becomes the bank's.
+    - posted by Peckish: the bank's name for it shares a word with the shop's (e.g. "Tesco"), within 15% or £5 (whichever is bigger), within 3 days. Your own Peckish shop is linked and its amount becomes the bank's, so Peckish (which you both see) learns what that shop really cost. A shop that doesn't name the same shop is never linked, so a made-up one can't take over a payment somewhere else.
   - A rule learned from a correction sets the budget, but its split is only stored as `splitHint`. The split itself stays empty until you confirm the payment.
   - A pending payment that goes to £0, or that disappears from the feed and is more than a week old, is removed. If the bank shows it again later, it comes back (one you dismissed on your phone stays dismissed).
   - A payment the bank lists twice in one read (under a Space as well as the account, say) counts once.
@@ -66,7 +68,7 @@ The code is `apps-script/BankFeeds.gs`. Its tests are `test/bank.test.js`, which
   - Only your own payday ticks stop a bank pot move coming in. Your partner's rows never do.
   - A bill that came to a different amount becomes an `amount` exception.
   - A card payment only counts as a bill if the names share a word (e.g. "Phone").
-- **Pay** at a different amount becomes an `amount` exception. Money only counts as the pay if it's within 50% of the expected pay and within 3 days. Other money in is ignored, except card refunds.
+- **Pay** at a different amount becomes an `amount` exception. Money only counts as the pay if it's within 50% of the expected pay and within 3 days, and never if the bank's name for it has your partner's Budgie id in it. Other money in is ignored, except card refunds.
 - **Pot or Space moves** become `moves`. A move to a pot, Moneybox, LISA or ISA within 7 days after payday ticks the planned payday move.
   - It matches to the penny, or it's the one planned move to that place within 10%. The plan can drift after payday, e.g. when a bill comes in higher.
   - A Moneybox payment that doesn't match goes to the LISA (if it equals the LISA saving) or the ISA, with `review: true`.
@@ -87,7 +89,7 @@ These were built from the docs. Starling's reference pages need JavaScript and c
 - A pending payment keeps the same `id` when it settles.
 - Paging with `since=<last id>` and `limit=100` returns the whole history.
 - When the 5-minute full-history window starts: at sign-in or at approval. Budgie tries the full import from the moment you sign in. If a full read is refused more than 5 minutes after approval, it reads the last 89 days instead and notes "Monzo only lets Budgie read the last 90 days now".
-- A first read of a long history stops reading after 3½ minutes of a run (Apps Script stops any run at 6), saves what it has, and carries on from the last payment a minute later. Saving writes the new rows first; the changes to rows already there (one write each, such as linking payments you logged by hand) stop 5 minutes into the run, and the next run, a minute later, reads the same again and makes the rest. If Monzo stops sharing older payments part-way (on a page, or when carrying on), what was read is kept, the last 89 days are read too, and the note says how far the history got. Whether Monzo lets a read carry on from a payment's id after its 5 minutes is unknown: if not, the gap between the two is lost, so approve straight away.
+- A first read of a long history stops reading after 3½ minutes of a run (Apps Script stops any run at 6), saves what it has, and carries on from the last payment a minute later. If carrying on keeps failing (not just waiting for the approval), the minute runs stop after 3 failures in a row, so they can't use up the daily trigger time, and the 15-minute read carries on instead. Saving writes the new rows first; the changes to rows already there (one write each, such as linking payments you logged by hand) stop 5 minutes into the run, and the next run, a minute later, reads the same again and makes the rest. If Monzo stops sharing older payments part-way (on a page, or when carrying on), what was read is kept, the last 89 days are read too, and the note says how far the history got. Whether Monzo lets a read carry on from a payment's id after its 5 minutes is unknown: if not, the gap between the two is lost, so approve straight away.
 - Before approval, `/accounts` returns 403. Rate limits return 429, maybe with `Retry-After`.
 
 **Starling**
