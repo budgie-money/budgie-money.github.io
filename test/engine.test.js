@@ -481,7 +481,7 @@ const savedUp = (pl, id) => lineAmt(pl, l => l.setAside && l.bill === id && l.ki
   const bs = B.budgetState(c, me, per);
   eq("compat: budgetState(db, me, per)", ["amount", "spent", "left", "avail", "carryIn", "carryOut", "over"].every(k => k in bs["e-fun"]) && bs["e-fun"].period.start === per.start, true);
   eq("compat: still exported", ["load", "coming", "periodAt", "planFor", "budgetState", "today", "checks", "lisa", "yearly", "yearReview"].every(k => typeof B[k] === "function"), true);
-  eq("compat: version", B.VERSION, "1.4.8");
+  eq("compat: version", B.VERSION, "1.4.9");
 })();
 
 // C3: a payday move ticked in the app and by the bank feed counts once (the latest)
@@ -652,6 +652,31 @@ eq("R1: half of £20.15 shows as what's owed", B.money(B.shareOf(db(), "half", "
   eq("P6: its balance is its last check plus what's happened since", B.balances(L, d).constructor, 65);
   eq("P6: and a payment in called isPrototypeOf counts towards the LISA's allowance", B.lisa(L, "toString", d).paidThisYear, 40);
   eq("P6: and the payment from it is asked back from the pot it's for", B.todo(L, "ethan", d).filter(x => x.type === "move" && x.to === "constructor").map(x => x.amount), [5]);
+}
+// ================= review 2026-10-27c (1.4.9) =================
+// F1: a pot that will run short before payday, with the money in the main account: the move To do suggests can be
+// ticked like any other (it says which key it ticks off, and how much)
+{
+  const t = fixture(), d = "2026-11-02"; t.valuations.push({id: "v-sm", account: "s-main", date: "2026-10-26", amount: 2000});
+  const fill = B.todo(B.load(t, d), "sophie", d).filter(x => x.fill);
+  eq("F1: the move to fill the Space is in To do", fill.map(x => [x.from, x.to, x.amount]), [["s-main", "s-rent", 640]]);
+  eq("F1: and it carries the key it ticks off", fill.map(x => x.keys), [[{key: "fill:s-rent:2026-11-13", amount: 640}]]);
+}
+// C1: the Bills calendar shows what's due on the last day of the month (pay on the last working day, a bill on the 31st)
+{
+  const L = B.load(fixture(), "2026-11-02"), nov = B.calendar(L, "sophie", 2026, 10), dec = B.calendar(L, "sophie", 2026, 11);
+  eq("C1: Sophie's side income on Mon 30 Nov is on November's calendar", (nov["2026-11-30"] || []).map(c => c.name), ["Side income"]);
+  eq("C1: and on Thu 31 Dec on December's", (dec["2026-12-31"] || []).map(c => c.name), ["Side income"]);
+  eq("C1: and nothing from the next month creeps in", Object.keys(nov).every(k => k.slice(0, 7) === "2026-11") && Object.keys(dec).every(k => k.slice(0, 7) === "2026-12"), true);
+}
+// L3: a repayment only partly paid under its own key (the monthly amount went up after it was ticked) still asks for the
+// rest in To do, as Debts says
+{
+  const t = fixture(), d = "2027-01-05"; t.loans[0].repay = 250;
+  t.settlements.push({id: "s-dec", date: "2026-12-28", from: "sophie", to: "ethan", amount: 200, loan: "sofa", key: "loan:sofa:2026-12-28"});
+  const L = B.load(t, d);
+  eq("L3: To do asks Sophie for the £50 left of December's", B.todo(L, "sophie", d).filter(x => x.type === "loan").map(x => [x.key, x.amount]), [["loan:sofa:2026-12-28", 50]]);
+  eq("L3: as Debts does", B.loans(L, "sophie", d)[0].plan.map(r => r.date + " " + r.amount)[0], "2026-12-28 50");
 }
 console.log(fails ? fails + " failed, " + passes + " passed" : "All " + passes + " passed");
 process.exit(fails ? 1 : 0);

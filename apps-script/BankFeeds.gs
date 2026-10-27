@@ -45,7 +45,7 @@ function bankHttp_(method, url, opts) {
   method = String(method || "get").toLowerCase(); opts = opts || {};
   // the whole address is checked: just a host (no port, no user@ part, no #), then a path and a query
   var m = String(url).match(/^https:\/\/([a-z0-9.-]+)(\/[^?#@\\\s]*)?(\?[^#\s]*)?$/), host = m ? m[1] : "";
-  if (!BANK_HOSTS_[host]) throw bankErr_("other", "Budgie only talks to Monzo and Starling");
+  if (!bankHas_(BANK_HOSTS_, host)) throw bankErr_("other", "Budgie only talks to Monzo and Starling");
   var bare = "https://" + host + (m[2] || "");
   if (method !== "get" && !(method === "post" && BANK_POST_OK_.indexOf(bare) >= 0)) throw bankErr_("other", "Budgie only reads from your bank");
   var params = {method: method, muteHttpExceptions: true, followRedirects: false, headers: opts.headers || {}};
@@ -720,6 +720,8 @@ function bankApply_(p, data, windowFrom, payCarry) {
     var moveRows = {}; readTable_("moves").rows.forEach(function (r) { moveRows[r.id] = r; });
     var used = Object.create(null), usedOcc = {}, newRows = {transactions: [], moves: [], valuations: [], exceptions: []}, updates = [];
     var near = function (a, b) { return Math.abs(a - b) <= 0.0105; };
+    // (matching allows a penny either way; what's kept is the bank's amount, to the penny)
+    var same = function (a, b) { return Math.abs(a - b) < 0.005; };
     var update = function (t, id, fields) { updates.push({t: t, row: Object.assign({id: id}, fields)}); };
     var create = function (t, row) { newRows[t].push(row); };
     var st0 = bankStatus_(p), pending = st0.pending || {}, seen = {}, partnerId = partnerOf_(p);
@@ -764,7 +766,10 @@ function bankApply_(p, data, windowFrom, payCarry) {
       // the payer's own hand-logged payment is already checked; a Peckish shop still asks them
       var link = {bankId: t.id, review: dupe.r.source === "peckish"};
       if (was) { link.review = false; link.budget = was.budget || ""; link.split = was.split || ""; }
-      if (!near(+dupe.r.amount, t.amount)) link.amount = t.amount;
+      if (!same(+dupe.r.amount, t.amount)) link.amount = t.amount;
+      // and its date is the bank's, as the bank's own copy's would have been (a shop logged the day after, or a late-night
+      // one the bank dates after midnight): the date decides which week and pay period it counts in
+      if (t.date && String(dupe.r.date) !== t.date) link.date = t.date;
       // a shop logged without an account (Peckish's) was paid from the account the bank says (a spending Space, say)
       var acc = accOf(t.acc, true); if (acc && (dupe.r.account === undefined || dupe.r.account === null || dupe.r.account === "")) link.account = acc;
       update("transactions", dupe.r.id, link);
@@ -793,7 +798,7 @@ function bankApply_(p, data, windowFrom, payCarry) {
     var putMove = function (t, from, to, amount, key, review, note) {
       var id = "bk-" + provider + "-" + t.id, ex = moveRows[id];
       if (ex && ex.person !== p) { Logger.log("Bank feed skipped moves " + id + ": it isn't " + p + "'s."); return; }
-      if (ex) { if (!bankTrue_(ex.deleted) && (!near(+ex.amount, amount) || ex.from !== from || ex.to !== to)) update("moves", id, {amount: amount, from: from, to: to}); return; }
+      if (ex) { if (!bankTrue_(ex.deleted) && (!same(+ex.amount, amount) || ex.from !== from || ex.to !== to)) update("moves", id, {amount: amount, from: from, to: to}); return; }
       // already ticked in your app: nothing new to add (only your own ticks count: your partner can write any key on
       // a move of theirs, and that mustn't hide one of yours)
       // Ticked by another payment from the bank, though, it's a second move of its own (a top-up the same week, say):
@@ -872,7 +877,7 @@ function bankApply_(p, data, windowFrom, payCarry) {
     var exception = function (itemId, orig, amount, note) {
       var id = "x-" + itemId + "-" + orig + "-bank-" + p, ex = byId_("exceptions", id);
       if (ex && ex.item !== itemId) { Logger.log("Bank feed skipped " + id + ": that id is already used for something else."); return; }
-      if (ex) { if (!near(+ex.amount, amount)) update("exceptions", id, {amount: amount, deleted: false}); }
+      if (ex) { if (!same(+ex.amount, amount)) update("exceptions", id, {amount: amount, deleted: false}); }
       else create("exceptions", {id: id, item: itemId, date: orig, action: "amount", amount: amount, note: note});
     };
 
@@ -970,7 +975,7 @@ function bankApply_(p, data, windowFrom, payCarry) {
           var po = mine ? null : plannedOut(t);
           if (po) {
             usedOcc[po.occ.key] = true;
-            if (po.kind === "bill" && !near(t.amount, po.occ.amount)) exception(po.item.id, po.occ.orig, t.amount, "from " + label);
+            if (po.kind === "bill" && !same(t.amount, po.occ.amount)) exception(po.item.id, po.occ.orig, t.amount, "from " + label);
             return;
           }
         }
@@ -980,7 +985,7 @@ function bankApply_(p, data, windowFrom, payCarry) {
           // money from your partner is never your pay, however much it is
           if (mine || namesPartner(t)) return;
           var pi = payIn(t);
-          if (pi) { usedOcc[pi.o.key] = true; if (!near(-t.amount, pi.o.amount)) exception(pi.i.id, pi.o.orig, -t.amount, "from " + label); }
+          if (pi) { usedOcc[pi.o.key] = true; if (!same(-t.amount, pi.o.amount)) exception(pi.i.id, pi.o.orig, -t.amount, "from " + label); }
           return;   // other money in (Sophie's share, a friend paying you back) is already planned or isn't spending
         }
       }
@@ -1007,7 +1012,7 @@ function bankApply_(p, data, windowFrom, payCarry) {
         // dismissed on a phone: it stays dismissed. Taken off by the bank feed itself (a hold that seemed to have gone):
         // the bank shows it again, so it comes back
         if (bankTrue_(mine.deleted)) { if (!(String(mine.by) === "bank" && /^bk-/.test(mine.id))) return; f.deleted = false; }
-        if (!near(+mine.amount, t.amount)) f.amount = t.amount;      // a pending payment settled at a different amount
+        if (!same(+mine.amount, t.amount)) f.amount = t.amount;      // a pending payment settled at a different amount
         if (!confirmed) { if (mine.account !== acc && /^bk-/.test(mine.id)) f.account = acc;   // the account was mapped since
           if (!mine.note && t.name) f.note = t.name; if (!mine.budget) { var g0 = bankGuess_(db, p, t.name, t.category, t.date); if (g0.budget) { f.budget = g0.budget; if (!mine.split && g0.splitHint) f.splitHint = g0.splitHint; } } }
         if (Object.keys(f).length) update("transactions", mine.id, f);
@@ -1028,7 +1033,7 @@ function bankApply_(p, data, windowFrom, payCarry) {
       var acc = accOf(a.extId, false); if (!acc || a.balance === null || a.balance === undefined || isNaN(+a.balance)) return;   // no balance given: nothing saved, never £0
       var id = "bk-" + a.extId + "-" + today, ex = byId_("valuations", id), amount = a.kind === "credit" ? -Math.abs(a.balance) : a.balance;
       if (ex && (byId_("accounts", ex.account) || {}).owner !== p) { Logger.log("Bank feed skipped valuations " + id + ": it isn't " + p + "'s."); return; }
-      if (ex) { if (!near(+ex.amount, amount) || ex.account !== acc) update("valuations", id, {amount: amount, account: acc}); }
+      if (ex) { if (!same(+ex.amount, amount) || ex.account !== acc) update("valuations", id, {amount: amount, account: acc}); }
       else create("valuations", {id: id, account: acc, date: today, amount: amount, note: "from " + label});
     });
 

@@ -412,6 +412,47 @@ const fails = [], check = (name, cond, extra) => { if (cond) console.log("ok", n
     await page.context().close();
   }
 
+  // ===== review 2026-10-27c (1.4.9) =====
+  // a Space that will run short before payday, with the money in the main account: ticking the move To do suggests saves it
+  {
+    page = await newPage("2026-11-02");
+    await page.goto(links.sophie); await page.waitForFunction(() => /Hi Sophie/.test(document.querySelector("#top").textContent), null, {timeout: 8000});
+    await page.evaluate(() => { document.querySelector("#sheets").innerHTML = ""; window.BudgieApp.go("pots"); });
+    await page.click('[data-a="potcheck"][data-v="s-main"]'); await page.fill("#potBal", "2000"); await page.click('[data-a="potsave"]'); await page.waitForTimeout(1200);
+    await page.click('nav [data-v="today"]'); await page.waitForTimeout(100);
+    const fillText = T(await page.textContent("main")), n0 = errs.length;
+    await page.click('input[data-c="tick"]'); await page.waitForTimeout(1500);
+    const fm = (await (await page.request.get("http://localhost:" + PORT + "/dump?moves")).json()).filter(r => r.person === "sophie" && /^fill:s-rent:/.test(r.key));
+    check("a move to fill a Space before a payment is in To do", /Move £640\.00 from Main account to Rent & bills Space/.test(fillText), fillText.slice(0, 200));
+    check("and ticking it saves it", errs.length === n0 && fm.length === 1 && +fm[0].amount === 640 && fm[0].from === "s-main" && fm[0].to === "s-rent", {errs: errs.slice(n0), fm});
+    check("and it leaves To do", !/Move £640\.00 from Main account/.test(T(await page.textContent("main"))));
+    // the Bills calendar shows what's due on the last day of the month (her side income on the last working day)
+    await page.evaluate(() => window.BudgieApp.go("bills")); await page.waitForTimeout(100);
+    const lastDay = await page.$('[data-a="calday"][data-v="2026-11-30"]'), dot = lastDay ? await lastDay.evaluate(el => el.classList.contains("has")) : false;
+    if (lastDay) { await lastDay.click(); await page.waitForTimeout(100); }
+    check("the calendar shows what's due on the last day of the month", dot && /Side income/.test(T(await page.textContent("#sheets"))), T(await page.textContent("#sheets")).slice(0, 120));
+    await page.context().close();
+  }
+  // an amount typed with too many decimals into a real pay, a bill's real amount, a balance or the LISA's paid-in is
+  // kept to the penny, as everywhere else
+  {
+    page = await newPage("2026-11-20");
+    await page.goto(links.ethan); await page.waitForFunction(() => /Hi Ethan/.test(document.querySelector("#top").textContent), null, {timeout: 8000});
+    await page.evaluate(() => { document.querySelector("#sheets").innerHTML = ""; window.BudgieApp.go("payday"); });
+    await page.click('[data-a="payedit"]'); await page.fill("#payAmt", "2412.345"); await page.click('[data-a="paysave"]'); await page.waitForTimeout(200);
+    await page.evaluate(() => window.BudgieApp.go("today")); await page.waitForTimeout(100);
+    const occ2 = await page.evaluate(() => { const f = [...document.querySelectorAll(".swipe")].find(x => x.querySelector(".acts")); return f ? f.querySelector(".face").dataset.v : ""; });
+    await page.click('.swipe .face[data-v="' + occ2 + '"]'); await page.waitForTimeout(80); await page.click('#sheets [data-a="occdo"][data-v="amount|' + occ2 + '"]'); await page.waitForTimeout(80);
+    await page.fill("#occAmt", "20.555"); await page.click('[data-a="occsave"][data-v="amount"]'); await page.waitForTimeout(200);
+    await page.evaluate(() => window.BudgieApp.go("pots")); await page.click('[data-a="potcheck"][data-v="e-food"]'); await page.fill("#potBal", "40.125"); await page.click('[data-a="potsave"]'); await page.waitForTimeout(200);
+    await page.evaluate(() => window.BudgieApp.go("lisa")); await page.click('[data-a="lisapaid"][data-v="e-lisa"]'); await page.fill("#lisaPaid", "1000.005"); await page.click('[data-a="lisapaidsave"]'); await page.waitForTimeout(1500);
+    const dump = async t => (await (await page.request.get("http://localhost:" + PORT + "/dump?" + t)).json());
+    const exs = await dump("exceptions"), vals = await dump("valuations"), sets = await dump("settings");
+    const pay = exs.find(r => r.item === "e-pay" && r.action === "amount" && +r.amount > 2412 && +r.amount < 2413), bill = exs.find(r => r.id === "x-" + occ2.replace("@", "-") + "-amount"), food = vals.filter(r => r.account === "e-food").pop(), paid = sets.find(r => r.id === "ethan:lisa.paidBefore.e-lisa");
+    check("typed amounts are kept to the penny", pay && +pay.amount === 2412.35 && bill && +bill.amount === 20.56 && food && +food.amount === 40.13 && paid && +paid.value === 1000.01, {pay: pay && pay.amount, bill: bill && bill.amount, food: food && food.amount, paid: paid && paid.value});
+    await page.context().close();
+  }
+
   console.log(errs.length ? "ERRORS:\n" + errs.join("\n") : "No errors");
   console.log(fails.length ? "FAIL\n  " + fails.join("\n  ") : "All checks passed");
   process.exitCode = fails.length ? 1 : 0;

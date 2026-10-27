@@ -1658,6 +1658,42 @@ const grow = (G, t) => { G.c.CACHE_ = {}; return G.c.readTable_(t).rows; };
   const m = grow(G, "moves").find(x => x.id === "bk-monzo-tx_x5") || {};
   ok("X5: a Moneybox payment is only ever a move into your own account", m.to !== "s-lisa" && (!m.to || ["e-lisa", "e-isa"].indexOf(m.to) >= 0), m);
 }
+{
+  // Y1: a penny is a penny. Matching allows a penny either way (a hand-logged £3.30 is the bank's £3.31), but what's
+  // kept is the bank's amount: a pending payment that settles a penny different, a Peckish shop a penny off, a balance
+  // that moved by a penny
+  freshMonzo(); NOW = RealDate.parse("2026-11-17T12:00:00Z"); monzo.txns = monzoData(planned);
+  monzo.txns.push(mtx("tx_y1hold", "2026-11-17", -1000, {merchant: merchant("Esso", "transport"), category: "transport", pending: true, time: "09:00:00"}));
+  monzo.txns.push(mtx("tx_y1aldi", "2026-11-17", -2331, {merchant: merchant("Aldi", "groceries"), category: "groceries", time: "10:00:00"}));
+  const G = bankEnv(); connectMonzo(G, {acc_00009main: "e-main"});
+  const pk = JSON.parse(Buffer.from(G.call({key: G.kE, action: "app.link", app: "peckish"}).link.split("#connect=")[1], "base64url").toString()).k;
+  G.call({key: pk, ops: [{op: "put", table: "transactions", row: {id: "t-pk-y1", date: "2026-11-17", person: "ethan", amount: 23.3, budget: "e-food-b", account: "", split: "", note: "Aldi (Peckish)", source: "peckish"}}]});
+  const h = monzo.txns.find(t => t.id === "tx_y1hold"); h.amount = -1001; h.settled = iso("2026-11-17", "11:00:00");
+  monzo.balance.balance += 1;
+  NOW += 15 * 60000; G.c.bankPoll();
+  monzo.balance.balance -= 1;
+  const r = (id) => grow(G, "transactions").find(x => x.id === id) || {};
+  ok("Y1: a hold that settles a penny more is the penny more", r("bk-monzo-tx_y1hold").amount === 10.01, r("bk-monzo-tx_y1hold"));
+  ok("Y1: a Peckish shop a penny off takes the bank's amount", r("t-pk-y1").bankId === "tx_y1aldi" && r("t-pk-y1").amount === 23.31, r("t-pk-y1"));
+  ok("Y1: a balance a penny different is saved", (grow(G, "valuations").find(v => v.id === "bk-acc_00009main-2026-11-17") || {}).amount === 543.22, grow(G, "valuations").find(v => v.id === "bk-acc_00009main-2026-11-17"));
+}
+{
+  // Y2: a payment you logged by hand the day before the bank's date (a late-night shop the bank dates after midnight)
+  // is linked, and dated when the bank says, as the bank's own copy would have been: its date decides which pay period
+  // and week it counts in
+  freshMonzo(); NOW = RealDate.parse("2026-11-17T12:00:00Z"); monzo.txns = monzoData(planned);
+  monzo.txns.push(mtx("tx_y2", "2026-11-17", -1475, {merchant: merchant("Late Shop", "shopping"), category: "shopping", time: "00:20:00"}));
+  const G = bankEnv(t => { t.transactions.push({id: "app-y2", date: "2026-11-16", person: "ethan", amount: 14.75, budget: "e-fun", account: "e-main", note: "Late Shop", source: "app"}); });
+  connectMonzo(G, {acc_00009main: "e-main"});
+  const r = grow(G, "transactions").find(x => x.id === "app-y2") || {};
+  ok("Y2: a linked payment takes the bank's date", r.bankId === "tx_y2" && r.date === "2026-11-17" && !grow(G, "transactions").some(x => x.id === "bk-monzo-tx_y2" && x.deleted !== true), r);
+}
+{
+  // Y3: the one way out to a bank only knows the two banks' hosts: a host that's a built-in name isn't one of them
+  const G = bankEnv();
+  let threw = ""; try { G.c.bankHttp_("get", "https://constructor/x"); } catch (e) { threw = e.message; }
+  ok("Y3: a host called like a built-in name is turned away", /only talks to Monzo and Starling/.test(threw), threw);
+}
 // ================= read only, always =================
 const allowedPost = ["https://api.monzo.com/oauth2/token", "https://api.monzo.com/oauth2/logout"];
 const bad = reqs.filter(r => { const u = new URL(r.url); return !(r.method === "get" || (r.method === "post" && allowedPost.indexOf(u.origin + u.pathname) >= 0)); });

@@ -770,5 +770,21 @@ const phone = (F, k) => { const P = {T: {}, since: 0}; P.sync = (ops) => { const
   ok("K1: Peckish really taking it off still works", F.call({key: kP, ops: [{op: "delete", table: "transactions", id: "t-pk-k1"}]}).applied.length === 1);
 }
 
+// ================= review 2026-10-27c (1.4.9) =================
+// L3: the rest of a repayment that was only partly paid under its own key (the monthly amount went up after it was
+// ticked) is saved when it's ticked, rather than taken for a copy of the first part
+{
+  const F = fresh(), key = "loan:sofa:2026-12-28";
+  F.call({key: F.kS, ops: [{op: "put", table: "settlements", row: {id: "set-dec", date: "2026-12-28", from: "sophie", to: "ethan", amount: 200, loan: "sofa", key}}]});
+  F.call({key: F.kE, ops: [{op: "put", table: "loans", row: {id: "sofa", lender: "ethan", borrower: "sophie", name: "Sofa", amount: 600, date: "2026-10-25", repay: 250, repayFrom: "2026-12-28", repayDay: "28"}}]});
+  const r = F.call({key: F.kS, ops: [{op: "put", table: "settlements", row: {id: "set-dec2", date: "2026-12-30", from: "sophie", to: "ethan", amount: 50, loan: "sofa", key}}]});
+  const L = B.load(F.call({key: F.kE, full: true}).rows, "2026-12-31"), l = B.loans(L, "ethan", "2026-12-31")[0];
+  ok("L3: the rest of a partly paid repayment counts", r.applied.length === 1 && !(F.c.readTable_("settlements").rows.find(x => x.id === "set-dec2") || {}).deleted, r);
+  ok("L3: so December's is paid and £350 is left", l.left === 350 && l.plan[0].date === "2027-01-28", l);
+  // and a second tick once it's all paid is still a copy
+  const r2 = F.call({key: F.kE, ops: [{op: "put", table: "settlements", row: {id: "set-dec3", date: "2026-12-31", from: "sophie", to: "ethan", amount: 50, loan: "sofa", key}}]});
+  ok("L3: ticking it again once it's paid is kept as a copy", r2.applied.length === 1 && (F.c.readTable_("settlements").rows.find(x => x.id === "set-dec3") || {}).deleted === true, r2);
+}
+
 console.log(fails ? fails + " failed, " + passes + " passed" : "All " + passes + " passed");
 process.exit(fails ? 1 : 0);

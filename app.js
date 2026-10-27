@@ -1,7 +1,7 @@
 /* Budgie app: screens, syncing and offline queue. The maths lives in engine.js. */
 (function () {
   "use strict";
-  var B = window.Budgie, TH = window.BudgieThemes, APP_VERSION = "1.4.8";
+  var B = window.Budgie, TH = window.BudgieThemes, APP_VERSION = "1.4.9";
   var $ = function (s) { return document.querySelector(s); };
   var esc = function (s) { return String(s === undefined || s === null ? "" : s).replace(/[&<>"']/g, function (c) { return {"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]; }); };
   // wiped: Budgie's copy at the old address has been wiped (it's moving across), so nothing is saved here again
@@ -1308,7 +1308,7 @@
     calday: function (v) { calDay(v); }, occ: function (v) { occSheet(v); }, occskip: function (v) { occSheet(v); occDo("skip"); }, occdo: function (v) { var k = v.split("|"); occDo(k[0]); },
     occsave: function (v) {
       var o = S.ui.occ, c = o.c, id = "x-" + c.item + "-" + o.orig;
-      if (v === "amount") { var a = +String(($("#occAmt") || {}).value || "").replace(/[£,\s]/g, ""); if (!(a >= 0)) return; put("exceptions", {id: id + "-amount", item: c.item, date: o.orig, action: "amount", amount: a}); }
+      if (v === "amount") { var a = +String(($("#occAmt") || {}).value || "").replace(/[£,\s]/g, ""); if (!(a >= 0)) return; put("exceptions", {id: id + "-amount", item: c.item, date: o.orig, action: "amount", amount: B.round(a)}); }
       if (v === "move") { var nd = ($("#occDate") || {}).value; if (!nd) return; put("exceptions", {id: id + "-move", item: c.item, date: o.orig, action: "move", newDate: nd}); }
       closeSheet(); toast("Saved. Your budget has updated.");
     },
@@ -1347,10 +1347,10 @@
     },
     paysave: function () {
       var a = +String(($("#payAmt") || {}).value || "").replace(/[£,\s]/g, ""), o = S.ui.payOcc; if (!(a > 0)) return;
-      put("exceptions", {id: "x-" + o.item + "-" + o.date + "-amount", item: o.item, date: o.date, action: "amount", amount: a}); closeSheet(); toast("Pay set to " + M(a) + ". Everything has re-sorted.");
+      put("exceptions", {id: "x-" + o.item + "-" + o.date + "-amount", item: o.item, date: o.date, action: "amount", amount: B.round(a)}); closeSheet(); toast("Pay set to " + M(a) + ". Everything has re-sorted.");
     },
     potcheck: function (v) { var a = db().byId[v]; S.ui.potCheck = v; openSheet("<h2>" + esc(a.name) + '</h2><p class="muted">What does your ' + esc(person().bank || "bank") + ' app show right now? Budgie starts again from this.</p><label class="f">Balance<input type="text" inputmode="decimal" id="potBal" placeholder="£"></label>' + (/lisa|isa|pension|saving/.test(a.kind || "") ? '<label class="f">On<input type="date" id="potDate" value="' + todayIso() + '" max="' + todayIso() + '"></label><p class="tiny muted" style="margin:6px 0 0">You can add past balances too (say, the last day of each month) to fill in the chart.</p>' : "") + '<button type="button" class="btn wide" style="margin-top:12px" data-a="potsave">Save</button>'); },
-    potsave: function () { var a = +String(($("#potBal") || {}).value || "").replace(/[£,\s]/g, ""); if (isNaN(a) || ($("#potBal") || {}).value === "") return; var vd = (($("#potDate") || {}).value || todayIso()); put("valuations", {id: newId("val"), account: S.ui.potCheck, date: vd > todayIso() ? todayIso() : vd, amount: a}, true); markChecked(S.ui.potCheck); closeSheet(); toast("Thanks. Budgie has caught up."); render(); },
+    potsave: function () { var a = +String(($("#potBal") || {}).value || "").replace(/[£,\s]/g, ""); if (isNaN(a) || ($("#potBal") || {}).value === "") return; var vd = (($("#potDate") || {}).value || todayIso()); put("valuations", {id: newId("val"), account: S.ui.potCheck, date: vd > todayIso() ? todayIso() : vd, amount: B.round(a)}, true); markChecked(S.ui.potCheck); closeSheet(); toast("Thanks. Budgie has caught up."); render(); },
     chk: function (v) {
       var c = checkList().filter(function (x) { return x.id === v; })[0]; if (!c) return;
       if (c.action === "edit") { var k = c.value.split(":"); openEditor(k[0], k[1]); }
@@ -1363,7 +1363,7 @@
       S.ui.lisaAcc = v; var cur = getSetting("lisa.paidBefore." + v, "");
       openSheet('<h2>Paid in since 6 April</h2><p class="muted">Your LISA app shows how much has gone in this tax year (yours and anyone else\'s). Budgie adds what comes next, so it can warn you before you go over £4,000.</p><label class="f">Paid in before ' + esc(B.nice(B.startOf(db(), me()))) + '<input type="text" inputmode="decimal" id="lisaPaid" value="' + esc(cur) + '" placeholder="£"></label><button type="button" class="btn wide" style="margin-top:12px" data-a="lisapaidsave">Save</button>');
     },
-    lisapaidsave: function () { var raw = ($("#lisaPaid") || {}).value || "", a = +String(raw).replace(/[£,\s]/g, ""); if (raw === "" || isNaN(a)) return; setting("lisa.paidBefore." + S.ui.lisaAcc, a); markChecked("lisapaid-" + S.ui.lisaAcc); closeSheet(); toast("Saved"); render(); },
+    lisapaidsave: function () { var raw = ($("#lisaPaid") || {}).value || "", a = +String(raw).replace(/[£,\s]/g, ""); if (raw === "" || isNaN(a)) return; setting("lisa.paidBefore." + S.ui.lisaAcc, B.round(a)); markChecked("lisapaid-" + S.ui.lisaAcc); closeSheet(); toast("Saved"); render(); },
     edit: function (v) { var k = v.split(":"); openEditor(k[0], k[1]); }, "new": function (v) { openEditor(v, null); },
     editsave: function () { saveEditor(); },
     amtwhen: function (v) { if (S.ui.amtFinish) S.ui.amtFinish(v === "today"); },

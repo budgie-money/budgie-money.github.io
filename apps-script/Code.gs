@@ -470,7 +470,13 @@ function applyOne_(me, op, now, by, opts) {
   // repayment (its key names the loan and the date it was due), so the second is kept but marked as a copy
   if (!existing && !sys && t === "settlements" && row.loan && /^loan:/.test(String(row.key || "")) && !toBoolCell_(row.deleted)) {
     var paidAlready = tab.rows.filter(function (r) { return String(r.key) === String(row.key) && String(r.loan) === String(row.loan) && !toBoolCell_(r.deleted); })[0];
-    if (paidAlready) { row.deleted = true; row.note = "Same repayment as " + paidAlready.id; }
+    // (unless that repayment is still partly owed, as when the monthly amount went up after it was ticked: then this
+    // is the rest of it)
+    if (paidAlready) {
+      var ldb = Budgie.load(allTables_(), Budgie.isIso(String(row.date || "")) ? String(row.date) : ""), lrow = ldb.byId[String(row.loan)];
+      var stillOwed = !!lrow && Budgie.loans(ldb, String(lrow.lender), String(row.date || "")).some(function (l) { return l.id === lrow.id && l.plan.some(function (r) { return r.key === String(row.key) && r.amount > 0.004; }); });
+      if (!stillOwed) { row.deleted = true; row.note = "Same repayment as " + paidAlready.id; }
+    }
   }
   // people are set up in the sheet; you can change your own name or colour, never who your partner is
   if (t === "people") {

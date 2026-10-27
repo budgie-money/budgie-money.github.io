@@ -6,7 +6,7 @@
   else root.Budgie = factory();
 })(this, function () {
   "use strict";
-  var VERSION = "1.4.8";
+  var VERSION = "1.4.9";
 
   // ---------- dates ----------
   function D(s) { var p = String(s).split("-"); return new Date(Date.UTC(+p[0], +p[1] - 1, +p[2])); }
@@ -679,7 +679,8 @@
       amount = round(amount); if (!(amount > 0.004) || from === to) return;
       if (extra && extra.partial) { amount = round(amount - ticked(db, p, key)); if (!(amount > 0.004)) return; what = "Move " + money(amount) + " from " + accName(db, from) + " to " + accName(db, to); }
       else if (ticked(db, p, key)) return;
-      var it = {key: key, type: "move", from: from, to: to, fromName: accName(db, from), toName: accName(db, to), amount: amount, what: what, why: why, short: false};
+      // keys: what ticking it saves (a move added after the grouping below, like one to fill a pot, is ticked by its own key)
+      var it = {key: key, type: "move", from: from, to: to, fromName: accName(db, from), toName: accName(db, to), amount: amount, what: what, why: why, short: false, keys: [{key: key, amount: amount}]};
       for (var k in extra) it[k] = extra[k];
       if (avail(from) < amount - 0.004) it.short = round(amount - Math.max(0, avail(from)));
       pend[from] = (pend[from] || 0) - amount; pend[to] = (pend[to] || 0) + amount;
@@ -737,7 +738,8 @@
     db.loans.forEach(function (l) {
       if (l.lender !== p && l.borrower !== p) return;
       loanPlan(db, l).forEach(function (r) {
-        if (r.paid || r.date > today || db.settleKeys[r.key]) return;
+        // (one partly paid under its own key, as when the monthly amount went up after it was ticked, still asks for the rest)
+        if (r.paid || r.date > today) return;
         // (only what's still to pay of it, when part of it has been paid already)
         items.push({key: r.key, type: "loan", loan: l.id, amount: r.left, date: r.date, lender: l.lender, borrower: l.borrower,
           what: l.borrower === p ? "Pay " + person(db, l.lender).name + " " + money(r.left) : person(db, l.borrower).name + " pays you " + money(r.left),
@@ -872,7 +874,9 @@
   // everything due on each day of a month, for the calendar
   function calendar(db, p, year, month) {
     var from = ymd(year, month, 1), to = ymd(year, month + 1, 1), days = {};
-    var all = coming(db, p, addDays(from, -1), diff(from, to) - 1);
+    // (coming() looks from the day after the one it's given, up to and including the number of days after it, so the
+    // last day of the month is in too)
+    var all = coming(db, p, addDays(from, -1), diff(from, to));
     all.forEach(function (c) { (days[c.date] = days[c.date] || []).push(c); });
     return days;
   }
