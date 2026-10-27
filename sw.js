@@ -1,6 +1,6 @@
 // Offline support for Budgie. App files come from the network when it's there (so an update arrives
 // straight away) and from the cache when it isn't. VERSION only names the cache.
-const VERSION = "1.4.13";
+const VERSION = "1.4.14";
 const CACHE = "budgie-" + VERSION;
 const FILES = ["./", "./index.html", "./app.js", "./engine.js", "./demo.js", "./themes.js", "./manifest.webmanifest", "./icon-192.png", "./icon-512.png", "./apple-touch-icon.png", "./maskable-512.png", "./icon.svg"];
 self.addEventListener("install", e => { e.waitUntil(caches.open(CACHE).then(c => c.addAll(FILES.map(f => new Request(f, {cache: "reload"})))).then(() => self.skipWaiting())); });
