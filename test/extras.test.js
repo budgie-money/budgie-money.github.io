@@ -307,5 +307,15 @@ const yearHousehold = (fx) => {
   ok("P5: only Ethan, who turned it on, gets an email", JSON.stringify(sent) === JSON.stringify(["ethan"]) && env.mail.every(m => m.to === "ethan@example.com"), {sent, to: env.mail.map(m => m.to)});
 }
 
+// ================= review 2026-10-27e (1.4.11) =================
+// E1: the Sunday email counts a split payment as the app does: half of £20.15 paid by Ethan is his £10.07 (Sophie
+// pays him back £10.08)
+{
+  const {env, c} = setupEnv(fx => { optIn(fx, "ethan", "ethan@example.com"); fx.transactions.push({id: "e-odd", date: "2026-10-31", person: "ethan", amount: 20.15, budget: "e-fun", account: "e-main", split: "half"}); });
+  c.exSendSunday_(SUNDAY);
+  const e = env.mail.find(m => m.to === "ethan@example.com");
+  ok("E1: Ethan's fun this week is his £10.07 share", e && /- Fun: [^\n]*\(£10\.07 spent this week/.test(e.body), e && e.body);
+}
+
 console.log(fails ? fails + " failed, " + passes + " passed" : "All " + passes + " passed");
 process.exit(fails ? 1 : 0);

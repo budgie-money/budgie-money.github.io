@@ -52,6 +52,18 @@ const fails = [], check = (name, cond, extra) => { if (cond) console.log("ok", n
   await page.click('nav [data-v="more"]'); await page.click('main [data-v="settings"]'); await page.click('main [data-v="themes"]'); await page.click('[data-a="tmode"][data-v="system"]');
   await page.context().close();
 
+  // ===== review 2026-10-27e (1.4.11), first, while the test household is as it starts =====
+  // Christmas pay on the 24th, Sophie's sofa repayment on the 28th: the payday screen says that part of the Cash ISA
+  // waits for it
+  {
+    page = await newPage("2026-12-24");
+    await page.goto(links.ethan); await page.waitForFunction(() => /Hi Ethan/.test(document.querySelector("#top").textContent), null, {timeout: 8000});
+    await page.evaluate(() => { document.querySelector("#sheets").innerHTML = ""; window.BudgieApp.go("payday"); }); await page.waitForTimeout(100);
+    const pdText = T(await page.textContent("main"));
+    check("the payday screen says what waits for money that comes in after payday", /£200\.00 more goes to your Cash ISA once Sophie pays back: Sofa has come in, after payday/.test(pdText), pdText.slice(0, 400));
+    await page.context().close();
+  }
+
   // 2. Ethan connected to the test backend, on 2 Nov (just after payday)
   page = await newPage("2026-11-02");
   await page.goto(links.ethan); await page.waitForFunction(() => /Hi Ethan/.test(document.querySelector("#top").textContent), null, {timeout: 8000});

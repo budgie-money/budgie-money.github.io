@@ -102,7 +102,7 @@ function exSpent_(db, p, b, from, to) {
   db.transactions.forEach(function (x) {
     if (x.date < from || x.date > to) return;
     var tb = db.byId[x.budget], same = x.budget === b.id || (!!tb && tb.person !== b.person && String(tb.name).toLowerCase() === String(b.name).toLowerCase());
-    if (same) t += Budgie.shareOf(db, x.split, p, +x.amount || 0, x.person);
+    if (same) t += Budgie.myShare(db, p, x);
   });
   return Budgie.round(t);
 }
@@ -307,7 +307,7 @@ function exReviewBase_(db, p, tys, today) {
   var byBudget = {}, byMonth = {}, byDay = {};
   db.transactions.forEach(function (x) {
     if (x.date < from || x.date > last) return;
-    var s = Budgie.shareOf(db, x.split, p, +x.amount || 0, x.person); if (!(s > 0.004)) return;
+    var s = Budgie.myShare(db, p, x); if (!(s > 0.004)) return;
     var b = db.byId[x.budget], name = exName_(b && b.name ? b.name : "Other");
     byBudget[name] = (byBudget[name] || 0) + s; byMonth[x.date.slice(0, 7)] = (byMonth[x.date.slice(0, 7)] || 0) + s; byDay[x.date] = true;
   });

@@ -1,7 +1,7 @@
 /* Budgie app: screens, syncing and offline queue. The maths lives in engine.js. */
 (function () {
   "use strict";
-  var B = window.Budgie, TH = window.BudgieThemes, APP_VERSION = "1.4.10";
+  var B = window.Budgie, TH = window.BudgieThemes, APP_VERSION = "1.4.11";
   var $ = function (s) { return document.querySelector(s); };
   var esc = function (s) { return String(s === undefined || s === null ? "" : s).replace(/[&<>"']/g, function (c) { return {"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]; }); };
   // wiped: Budgie's copy at the old address has been wiped (it's moving across), so nothing is saved here again
@@ -574,6 +574,7 @@
       '<div class="row" style="padding-top:10px;border-top:1px solid var(--line2);margin-top:4px"><span>Stays in ' + esc(B.accName(d, pd.payAccount)) + ' <span class="tiny muted">for spending from there</span></span>' + num(M(pd.keeps)) + "</div>");
     var left = pd.plan.lines.filter(function (l) { return l.leftover; })[0];
     if (pd.already.length || left) html += '<div class="banner small">Less to move: ' + pd.already.map(function (a) { return M(a.amount) + " is already in your " + esc(a.name); }).concat(left ? [M(left.amount) + " still in your " + esc(B.accName(d, pd.payAccount)) + " from last month counts towards it"] : []).join(", ") + ".</div>";
+    (pd.later || []).forEach(function (m) { html += '<div class="banner small">' + M(m.amount) + " more goes to your " + esc(B.accName(d, m.to)) + " once " + esc(m.names.join(" and ")) + " has come in, after payday. To do asks for it then.</div>"; });
     if (upcoming && pd.estimate) html += '<p class="tiny muted" style="margin:8px 4px">These are estimates until payday: they use what should be in your ' + esc(potWord(true)) + " then. Log spending as you go and they stay right.</p>";
     if (pd.plan.shortfall > 0.004) html += card('<div class="bad" style="font-weight:700">This pay is ' + M(pd.plan.shortfall) + " short of the plan.</div><p class=\"small muted\">Lower a budget or saving for this month in Settings.</p>");
     return html;
