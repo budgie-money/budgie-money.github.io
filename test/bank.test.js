@@ -1721,6 +1721,42 @@ ok("the only POSTs are Monzo token and logout", posts.length >= 3 && posts.every
 const APPJS = fs.readFileSync(path.join(__dirname, "../app.js"), "utf8");
 ok("Q8: every tab Budgie opens for a bank sign-in drops its opener", (APPJS.match(/window\.open\(/g) || []).length === (APPJS.match(/window\.open\([^;]*\);\s*(\/\/[^\n]*\n\s*)?try \{ if \(w\) w\.opener = null; \}/g) || []).length);
 
+// ================= review 2026-10-27 (1.4.12) =================
+// V1: a pot move that's one To do asked for (to the same place, the same amount to the penny, within a week) takes that
+// move's key, so To do counts it as done instead of asking again (and a tick in the app adding a second move); a move
+// already saved under the bank's own key is given it too; one you'd already ticked in the app isn't added twice
+{
+  const tickPay = (t, p, d) => { const L0 = B.load(t, d), per = B.periodAt(L0, p, d); B.payday(L0, p, per).moves.forEach((m, i) => t.moves.push({id: "pm-" + p + d + i, date: per.start, person: p, from: m.from, to: m.to, amount: m.amount, key: "pay:" + per.start + ":" + m.to, updated: 1})); };
+  const env = (more) => bankEnv(t => {
+    tickPay(t, "ethan", "2026-10-29");
+    t.transactions.push({id: "app-v1", date: "2026-11-16", person: "ethan", amount: 24.4, budget: "e-food-b", account: "e-main", note: "Tesco", source: "app", updated: 1});
+    ["acc_main:e-main", "pot_food:e-food"].forEach(x => { const [e, a] = x.split(":"); t.settings.push({id: "ethan:bank.map." + e, person: "ethan", key: "bank.map." + e, value: a}); });
+    if (more) more(t);
+  });
+  const open = G => { G.c.CACHE_ = {}; return B.todo(B.load(G.c.allTables_(), "2026-11-17"), "ethan", "2026-11-17").filter(x => x.type === "move").map(x => [x.from, x.to, x.amount]); };
+  const read = id => ({provider: "monzo", accounts: [], txns: [{id: id, acc: "acc_main", date: "2026-11-17", amount: -24.4, pot: "pot_food", name: "", category: "savings"}]});
+  const G1 = env();
+  ok("V1: (To do asks for the £24.40 back from the Food pot)", JSON.stringify(open(G1)) === JSON.stringify([["e-food", "e-main", 24.4]]), open(G1));
+  G1.c.bankApply_("ethan", read("tx_v1"), "", []);
+  const m1 = rows(G1, "moves").filter(m => /^bk-/.test(m.id));
+  ok("V1: the bank's move takes the To do move's key", m1.length === 1 && m1[0].key === "back:e-food-b:2026-10-29:e-main" && +m1[0].amount === 24.4, m1);
+  ok("V1: and To do doesn't ask for it again", open(G1).length === 0, open(G1));
+  NOW += 15 * 60000; G1.c.bankApply_("ethan", read("tx_v1"), "", []);
+  ok("V1: reading it again leaves it as it is", rows(G1, "moves").filter(m => /^bk-/.test(m.id)).map(m => m.key).join() === "back:e-food-b:2026-10-29:e-main");
+  // saved under the bank's own key by an older version: it's given the To do move's key
+  const G2 = env(t => t.moves.push({id: "bk-monzo-tx_v2", date: "2026-11-17", person: "ethan", from: "e-food", to: "e-main", amount: 24.4, key: "bank:tx_v2", updated: 2, by: "bank"}));
+  G2.c.bankApply_("ethan", read("tx_v2"), "", []);
+  ok("V1: a move saved under the bank's key is given the To do move's key", rows(G2, "moves").filter(m => m.id === "bk-monzo-tx_v2").map(m => m.key).join() === "back:e-food-b:2026-10-29:e-main" && open(G2).length === 0, rows(G2, "moves").filter(m => /^bk-/.test(m.id)));
+  // ticked in the app first, then made at the bank: the bank's copy isn't added
+  const G3 = env(t => t.moves.push({id: "mv-app-v3", date: "2026-11-17", person: "ethan", from: "e-food", to: "e-main", amount: 24.4, key: "back:e-food-b:2026-10-29:e-main", updated: 2}));
+  G3.c.bankApply_("ethan", read("tx_v3"), "", []);
+  ok("V1: a move already ticked in the app isn't added a second time", rows(G3, "moves").filter(m => /^bk-/.test(m.id)).length === 0);
+  // a move of a different amount is the bank's own, as before
+  const G4 = env();
+  G4.c.bankApply_("ethan", {provider: "monzo", accounts: [], txns: [{id: "tx_v4", acc: "acc_main", date: "2026-11-17", amount: -20, pot: "pot_food", name: "", category: "savings"}]}, "", []);
+  ok("V1: a move that isn't one To do asked for keeps the bank's key", rows(G4, "moves").filter(m => /^bk-/.test(m.id)).map(m => m.key).join() === "bank:tx_v4");
+}
+
 // ================= no secrets anywhere they shouldn't be =================
 const secrets = Object.values(SECRET).concat(["acc-ETHAN-3-eeeeeeee", "ref-ETHAN-3-ffffffff", "acc-ETHAN-4-gggggggg"]);
 const sheetText = JSON.stringify(Object.values(F.env.sheets).map(s => s._s.cells));

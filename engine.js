@@ -6,7 +6,7 @@
   else root.Budgie = factory();
 })(this, function () {
   "use strict";
-  var VERSION = "1.4.11";
+  var VERSION = "1.4.12";
 
   // ---------- dates ----------
   function D(s) { var p = String(s).split("-"); return new Date(Date.UTC(+p[0], +p[1] - 1, +p[2])); }
@@ -449,8 +449,13 @@
         reimbursements(db, p, pvT, addDays(pvT.next, -1)).forEach(function (g) { if (g.kind === "over" && g.from === fb) top += g.amount; });
         // (by person: you can both be paid on the same day, and the key doesn't say whose pay it was)
         if (pvT.pay && !pvT.opening) top += db.moveKeysBy[p + "|pay:" + pvT.start + ":cover"] || 0;
-        // and what it really put into a pot that would have run short before a payment (a ticked move to fill it)
-        db.moves.forEach(function (m) { if (!m.dup && m.person === p && m.from === fb && /^fill:/.test(m.key || "") && m.date >= pvT.start && m.date < pvT.next) top += +m.amount || 0; });
+        // and what it really put into a pot that would have run short before a payment (a ticked move to fill it), or
+        // back into a pot for your partner's share of something it paid, until you settled up
+        db.moves.forEach(function (m) { if (!m.dup && m.person === p && m.from === fb && /^(fill|lent):/.test(m.key || "") && m.date >= pvT.start && m.date < pvT.next) top += +m.amount || 0; });
+        // and what last payday's move into it came up short of (or over), once it was ticked: spending from before then
+        // logged after it was moved (its cover is asked for, but that payday's top-up was already done), say
+        var tk = pvT.pay && !pvT.opening ? db.moveKeysBy[p + "|pay:" + pvT.start + ":" + fb] || 0 : 0;
+        if (tk > 0.004) { var mfb = payday(db, p, pvT).moves.filter(function (m) { return m.to === fb; })[0]; top += (mfb ? mfb.amount : 0) - tk; }
       }
       top = round(top);
       if (top > 0.004) lines.push({kind: "topup", name: "Top up " + accName(db, fb), amount: top, account: fb, id: "topup"});
@@ -465,13 +470,17 @@
     var resIn = prevPl ? (prevPl.reserveOut || dict()) : dict(), saIn = prevPl ? (prevPl.setAside || dict()) : dict(), reserveOut = dict(), setOut = dict(), saShort = dict();
     var potOk = function (id) { var a = db.byId[id]; return a && a.owner === p && a.kind === "pot" && !a.fallback; };
     Object.keys(resIn).forEach(function (id) { reserveOut[id] = resIn[id]; });
-    var est = !per.opening && from >= st && (!db.today || from <= addDays(db.today, 1) || upcoming), bal = dict(), keepOf = function () { return 0; };
+    var est = !per.opening && from >= st && (!db.today || from <= addDays(db.today, 1) || upcoming), bal = dict(), keepOf = function () { return 0; }, keepBud = keepOf, owe = 0;
     if (est) {
       var first = from === st, dayBefore = addDays(from, -1), pv = prevPeriod(db, p, per), bst = !first && pv && pv.start < from ? budgetState(db, p, pv) : dict();
       bal = Object.assign(dict(), first ? startBalances(db, p) : balances(db, dayBefore));
       // what each budget keeps in its pot: what carries over, and before payday whatever is still left to spend
       // (including "whatever is left" budgets, which can still be spent until payday)
       keepOf = function (accId) { var k = 0; Object.keys(bst).forEach(function (id) { var s = bst[id]; if ((s.budget.account || main) !== accId || s.budget.mode === "saving") return; k += upcoming ? Math.max(s.carryOut || 0, (s.avail || 0) - (s.spent || 0), 0) : (s.carryOut || 0); }); return k; };
+      // what you owe your partner when the period starts stays in the main account (where settling up happens), rather
+      // than counting as left over: so settling up after payday doesn't take it from this month's budgets
+      owe = partnerOf(db, p) && !first ? Math.max(0, -owedAt(db, p, dayBefore)) : 0; keepBud = keepOf;
+      keepOf = function (accId) { return keepBud(accId) + (accId === main ? owe : 0); };
       // moves still on the To do count as done, so a forgotten tick doesn't ask for the money twice;
       // but a balance checked on or after the move already includes it, so that side is left alone
       var vd = dict(); db.valuations.forEach(function (v) { if (v.date <= dayBefore && v.date > (vd[v.account] || "")) vd[v.account] = v.date; });
@@ -551,7 +560,9 @@
     lines.forEach(function (l) { if (l.kind === "in") tin += l.amount; else tout += l.amount; });
     var left = round(tin - tout);
     if (per.opening && remainder && savingKind(db, remainder.account)) left = 0;
-    var res = {period: per, lines: lines, totalIn: round(tin), totalOut: round(tout), remainder: Math.max(0, round(left)), shortfall: left < 0 ? round(-left) : 0, remainderBudget: remainder, opening: !!per.opening, reserveOut: reserveOut, setAside: setOut, setAsideShort: saShort};
+    // keptMain: what's already in the main account for its budgets when the period starts (what they carry over), on top
+    // of what this pay gives them
+    var res = {period: per, lines: lines, totalIn: round(tin), totalOut: round(tout), remainder: Math.max(0, round(left)), shortfall: left < 0 ? round(-left) : 0, remainderBudget: remainder, opening: !!per.opening, reserveOut: reserveOut, setAside: setOut, setAsideShort: saShort, keptMain: est && bal[main] !== undefined ? round(Math.max(0, keepBud(main))) : 0, owe: round(owe || 0)};
     if (remainder) lines.push({kind: remainder.account && (db.byId[remainder.account] || {}).kind !== "main" && /saving|isa|lisa|pension/.test((db.byId[remainder.account] || {}).kind) ? "save" : "spend", name: remainder.name, amount: res.remainder, account: remainder.account || main, id: remainder.id, mode: "remainder", remainder: true});
     var sum = function (k) { var t = 0; lines.forEach(function (l) { if (l.kind === k) t += l.amount; }); return round(t); };
     res.totals = {in: sum("in"), bills: sum("bill"), spend: sum("spend"), save: round(sum("save") + sum("topup"))};
@@ -603,13 +614,14 @@
   function flows(db, after, upTo) { return memo(db, "fl|" + after + "|" + upTo, function () { return fl0(db, after, upTo); }); }
   function fl0(db, after, upTo) {
     // upd: when a logged row was saved, so a balance checked earlier the same day doesn't swallow it
-    var out = [], push = function (date, acc, amt, what, src, upd) { if (acc && date > after && date <= upTo && amt) out.push({date: date, account: acc, amount: round(amt), what: what, src: src, upd: +upd || 0}); };
+    // bank: it came from the bank feed (a balance the bank feed checked that day already has it in)
+    var out = [], push = function (date, acc, amt, what, src, upd, bank) { if (acc && date > after && date <= upTo && amt) out.push({date: date, account: acc, amount: round(amt), what: what, src: src, upd: +upd || 0, bank: !!bank}); };
     var from = addDays(after, 1), to = addDays(upTo, 1);
     db.income.forEach(function (i) { occurrences(db, i, from, to).forEach(function (o) { if (o.date >= startOf(db, i.person)) push(o.date, i.account || mainOf(db, i.person), o.amount, i.name, o.key); }); });
     db.bills.forEach(function (b) { occurrences(db, b, from, to).forEach(function (o) { if (o.date >= startOf(db, b.person)) push(o.date, b.account || mainOf(db, b.person), -o.amount, b.name, o.key); }); });
     db.transfers.forEach(function (t) { occurrences(db, t, from, to).forEach(function (o) { if (o.date >= startOf(db, t.from)) { push(o.date, t.fromAccount || mainOf(db, t.from), -o.amount, t.name, o.key); push(o.date, t.toAccount || mainOf(db, t.to), o.amount, t.name, o.key); } }); });
-    db.transactions.forEach(function (x) { push(x.date, x.account || mainOf(db, x.person), -(+x.amount || 0), x.note || x.budget, x.id, x.updated); });
-    db.moves.forEach(function (m) { if (m.dup) return; if (m.from) push(m.date, m.from, -(+m.amount || 0), "move", m.id, m.updated); if (m.to) push(m.date, m.to, +m.amount || 0, "move", m.id, m.updated); });
+    db.transactions.forEach(function (x) { push(x.date, x.account || mainOf(db, x.person), -(+x.amount || 0), x.note || x.budget, x.id, x.updated, !!x.bankId || /^bk-/.test(String(x.id))); });
+    db.moves.forEach(function (m) { if (m.dup) return; var bk = /^bk-/.test(String(m.id)); if (m.from) push(m.date, m.from, -(+m.amount || 0), "move", m.id, m.updated, bk); if (m.to) push(m.date, m.to, +m.amount || 0, "move", m.id, m.updated, bk); });
     db.settlements.forEach(function (s) { push(s.date, s.fromAccount || mainOf(db, s.from), -(+s.amount || 0), s.note || "payment", s.id, s.updated); push(s.date, s.toAccount || mainOf(db, s.to), +s.amount || 0, s.note || "payment", s.id, s.updated); });
     db.loans.forEach(function (l) { if (l.account) push(l.date, l.account, -(+l.amount || 0), l.name, l.id); });
     return out;
@@ -631,18 +643,20 @@
   // (flows on a valuation's own date are already in it)
   function balances(db, date) { return memo(db, "bal|" + date, function () { return bal0(db, date); }); }
   function bal0(db, date) {
-    var res = dict(), base = dict(), vdate = dict(), vupd = dict();
+    var res = dict(), base = dict(), vdate = dict(), vupd = dict(), vbank = dict();
     db.accounts.forEach(function (a) { res[a.id] = 0; base[a.id] = addDays(startOf(db, a.owner), -1); });
     db.valuations.forEach(function (v) {
       if (v.date > date || res[v.account] === undefined) return;
       var vd = vdate[v.account] || "";
-      if (v.date > vd || (v.date === vd && (+v.updated || 0) >= (vupd[v.account] || 0))) { vdate[v.account] = v.date; vupd[v.account] = +v.updated || 0; res[v.account] = +v.amount || 0; base[v.account] = v.date; }
+      if (v.date > vd || (v.date === vd && (+v.updated || 0) >= (vupd[v.account] || 0))) { vdate[v.account] = v.date; vupd[v.account] = +v.updated || 0; res[v.account] = +v.amount || 0; base[v.account] = v.date; vbank[v.account] = /^bk-/.test(String(v.id)); }
     });
     var af = allFlows(db), list = af.list;
     if (date > af.to) list = flows(db, addDays(af.from, -1), date);
     var end = date > af.to ? list.length : lowerBound(af.dates, addDays(date, 1));
-    // flows on a check's own date are already in it, unless they were logged after the check
-    var counts = function (f) { var b = base[f.account]; return f.date > b || (f.date === b && f.upd && vupd[f.account] && f.upd > vupd[f.account]); };
+    // flows on a check's own date are already in it, unless they were logged after the check; and a balance from the bank
+    // feed has every payment and move from the bank that day in it, however late its row was changed (checking what a
+    // payment was for, say)
+    var counts = function (f) { var b = base[f.account]; return f.date > b || (f.date === b && !(f.bank && vbank[f.account]) && f.upd && vupd[f.account] && f.upd > vupd[f.account]); };
     for (var i = 0; i < end; i++) { var f = list[i]; if (res[f.account] !== undefined && f.date <= date && counts(f)) res[f.account] = round(res[f.account] + f.amount); }
     return res;
   }
@@ -735,24 +749,45 @@
     };
     // 1. payday: sort the pay into pots (current period, from payday for 7 days)
     if (per.pay && !per.opening) {
-      payday(db, p, per).moves.forEach(function (m) { plan("pay:" + per.start + ":" + m.to, m.from, m.to, m.amount, "Payday: move " + money(m.amount) + " to " + accName(db, m.to), m.why, {payday: true}); });
+      var pdNow = payday(db, p, per);
+      pdNow.moves.forEach(function (m) { plan("pay:" + per.start + ":" + m.to, m.from, m.to, m.amount, "Payday: move " + money(m.amount) + " to " + accName(db, m.to), m.why, {payday: true}); });
+      // the payday screen's cover, from the pot that covers going over, counts as on its way while that screen still has
+      // moves to tick; once they're all done (it can come later, when a bill's real amount is logged), To do asks for it
+      var pc = pdNow.cover;
+      if (pc && !ticked(db, p, pc.key)) {
+        if (pdNow.moves.some(function (m) { return !ticked(db, p, "pay:" + per.start + ":" + m.to); })) { pend[pc.from] = (pend[pc.from] || 0) - pc.amount; pend[pc.to] = (pend[pc.to] || 0) + pc.amount; }
+        else plan(pc.key, pc.from, pc.to, pc.amount, "Move " + money(pc.amount) + " from " + accName(db, pc.from) + " to " + accName(db, pc.to), pc.why + ". Your next pay tops it back up.", {});
+      }
     }
     // 1b. money that came in after payday: its part of what's left goes on once it's in (a loan repayment once it's paid)
     periods(db, p, st, addDays(today, 1)).forEach(function (pk) {
       if (!pk.pay || pk.opening) return;
       payday(db, p, pk).later.forEach(function (m) {
         if (m.date > today || !m.loans.every(function (x) { var l = db.byId[x.id]; return !!l && loanPlan(db, l).some(function (r) { return r.date === x.date && r.paid; }); })) return;
-        plan(m.key, m.from, m.to, m.amount, "", m.names.join(" and ") + " came in after payday, so its part of what's left goes to " + accName(db, m.to) + " now.", {partial: true, later: true});
+        plan(m.key, m.from, m.to, m.amount, "", m.names.join(" and ") + (m.date > pk.start ? " came in after payday" : " came in") + ", so its part of what's left goes to " + accName(db, m.to) + " now.", {partial: true, later: true});
       });
     });
     // 2. paid from the wrong place, or over budget (all periods since tracking started)
     var qName = person(db, partnerOf(db, p)).name || "your partner";
     var backWhy = function (names, to, theirs, mine) { return theirs ? "Your share of " + names + " " + qName + " paid for is settled up from " + to + (mine ? ", and you paid for some from there too." : ".") : "You paid for " + names + " from " + to + "."; };
-    var lentWhy = function (names, to, from) { return qName + "'s share of " + names + " you paid from " + to + " comes back into " + from + " when you settle up."; };
+    // (when the main account can't spare it, the fallback pot puts the share back until you settle up)
+    var lentWhy = function (names, to, from) { return qName + "'s share of " + names + " you paid from " + to + " comes back into " + accName(db, main) + " when you settle up." + (from === accName(db, fb) && from !== accName(db, main) ? " Until then it comes from " + from + ", and your next pay tops the " + from + " back up." : ""); };
+    // what the budgets kept in the main account still have to spend before payday isn't spare, and nor is what its
+    // bills and payments take out before then
+    var stNow = budgetState(db, p, per), mainKeep = 0, flowsAhead = flows(db, today, addDays(per.next, -1)), mainOut = 0;
+    Object.keys(stNow).forEach(function (id) { var s = stNow[id]; if ((s.budget.account || main) === main) mainKeep += Math.max(0, s.left || 0); });
+    flowsAhead.forEach(function (f) { if (f.account === main) mainOut += f.amount; });
+    mainKeep = round(mainKeep); mainOut = round(Math.max(0, -mainOut));
     periods(db, p, st, addDays(today, 1)).forEach(function (pk) {
       reimbursements(db, p, pk, today).forEach(function (g) {
         if (g.kind === "back") plan(g.key, g.from, g.to, g.amount, "", backWhy(g.name, accName(db, g.to), g.theirs, g.mine), {partial: true, names: [g.name], theirs: !!g.theirs, mine: !!g.mine});
-        else if (g.kind === "lent") plan(g.key, g.from, g.to, g.amount, "", lentWhy(g.name, accName(db, g.to), accName(db, g.from)), {partial: true, lent: true, names: [g.name]});
+        else if (g.kind === "lent") {
+          // your partner's share of what a pot paid goes back into the pot from the main account, as long as the main account
+          // can spare it (beyond what its own budgets and bills still need); else from the fallback pot, if it has it
+          var lentLeft = round(g.amount - ticked(db, p, g.key)), src = g.from;
+          if (g.from === main && fb && fb !== g.to && lentLeft > 0.004 && avail(main) - mainKeep - mainOut - lentLeft < -0.004 && avail(fb) - lentLeft >= -0.004) src = fb;
+          plan(g.key, src, g.to, g.amount, "", lentWhy(g.name, accName(db, g.to), accName(db, src)), {partial: true, lent: true, names: [g.name]});
+        }
         else if (g.kind === "refund") plan(g.key, g.from, g.to, g.amount, "", "A " + g.name + " refund came into " + accName(db, g.from) + ".", {partial: true, refund: true, names: [g.name]});
         else plan(g.key, g.from, g.to, g.amount, "", "You went over your " + g.name + " budget" + (g.to === main ? "" : " paying from " + accName(db, g.to)) + ". Your next pay tops the " + accName(db, g.from) + " back up.", {partial: true, over: true, names: [g.name]});
       });
@@ -774,33 +809,63 @@
     });
     items = grouped;
     // 3. a pot that will run short before payday
-    var flowsAhead = flows(db, today, addDays(per.next, -1));
     var run = dict(); Object.keys(bal).forEach(function (a) { run[a] = avail(a); });
-    var warned = dict();
-    // what the budgets kept in the main account still have to spend before payday isn't spare
-    var stNow = budgetState(db, p, per), mainKeep = 0;
-    Object.keys(stNow).forEach(function (id) { var s = stNow[id]; if ((s.budget.account || main) === main) mainKeep += Math.max(0, s.left || 0); });
-    mainKeep = round(mainKeep);
-    flowsAhead.sort(function (a, c) { return a.date < c.date ? -1 : 1; }).forEach(function (f) {
+    // (on the same day, money going out is counted before money coming in: which the bank takes first isn't known)
+    var warned = dict(), ahead = flowsAhead.slice().sort(function (a, c) { return a.date < c.date ? -1 : a.date > c.date ? 1 : a.amount - c.amount; });
+    ahead.forEach(function (f, i) {
       if (run[f.account] === undefined || (db.byId[f.account] || {}).owner !== p) return;
       run[f.account] = round(run[f.account] + f.amount);
       if (run[f.account] < -0.004 && f.account !== main && !warned[f.account]) {
         warned[f.account] = true;
-        var need = round(-run[f.account]);
+        // enough for the lowest it goes before payday (more payments after this one), so it's one move, not one a payment
+        var low = run[f.account], r = low, lowF = f;
+        for (var j = i + 1; j < ahead.length; j++) if (ahead[j].account === f.account) { r = round(r + ahead[j].amount); if (r < low - 0.004) { low = r; lowF = ahead[j]; } }
         // the main account if it will have the money by then without touching what its budgets have left, else the
-        // fallback pot, else the main account anyway (a bill matters more); only shown once the money is actually there
-        var has = function (a, keep) { return (run[a] || 0) - keep - need >= -0.004 && avail(a) - keep - need >= -0.004; };
-        var src = has(main, mainKeep) ? main : fb && fb !== f.account && (run[fb] || 0) - need >= -0.004 ? fb : (run[main] || 0) - need >= -0.004 ? main : "";
-        if (src && avail(src) - need >= -0.004) {
-          plan("fill:" + f.account + ":" + f.date, src, f.account, need, "Move " + money(need) + " from " + accName(db, src) + " to " + accName(db, f.account), f.what + " on " + nice(f.date) + " needs it." + (src === fb ? " Your next pay tops the " + accName(db, fb) + " back up." : ""), {fill: true});
-          run[src] = round(run[src] - need); run[f.account] = 0;
-        } else if (!src) {
+        // fallback pot, else what the main account can spare and the rest from the fallback pot, else all the fallback pot
+        // has and the rest from the main account anyway (a bill matters more); only shown once the money is actually there.
+        // (when nowhere has enough for the lowest it goes, then enough for this payment)
+        var need, parts, has = function (a, keep) { return (run[a] || 0) - keep - need >= -0.004 && avail(a) - keep - need >= -0.004; };
+        var pick = function () {
+          if (has(main, mainKeep)) return [[main, need]];
+          if (fb && fb !== f.account && (run[fb] || 0) - need >= -0.004) return [[fb, need]];
+          var sp = round(Math.max(0, Math.min(run[main] || 0, avail(main)) - mainKeep)), fh = fb && fb !== f.account ? Math.max(0, Math.min(run[fb] || 0, avail(fb))) : 0;
+          if (sp > 0.004 && sp + fh - need >= -0.004) return [[main, sp], [fb, round(need - sp)]];
+          // (and last, all the fallback pot has with the rest from the main account, or the main account on its own)
+          var mh = Math.max(0, Math.min(run[main] || 0, avail(main)));
+          if (fh > 0.004 && mh + fh - need >= -0.004) return [[main, round(need - fh)], [fb, round(fh)]];
+          return (run[main] || 0) - need >= -0.004 ? [[main, need]] : null;
+        };
+        need = round(-low); parts = pick();
+        if (!parts && low < run[f.account] - 0.004) { need = round(-run[f.account]); parts = pick(); lowF = f; }
+        var forWhat = f.what + " on " + nice(f.date) + (lowF !== f ? " and " + lowF.what + " on " + nice(lowF.date) + " need it." : " needs it.");
+        if (parts && parts.every(function (x) { return avail(x[0]) - x[1] >= -0.004; })) {
+          parts.forEach(function (x, k) {
+            var src = x[0], amt = x[1];
+            plan("fill:" + f.account + ":" + f.date + (k ? ":" + src : ""), src, f.account, amt, "Move " + money(amt) + " from " + accName(db, src) + " to " + accName(db, f.account), forWhat + (src === fb ? " Your next pay tops the " + accName(db, fb) + " back up." : parts.length > 1 ? " The rest comes from " + accName(db, fb) + "." : ""), {fill: true});
+            run[src] = round(run[src] - amt); run[f.account] = round(run[f.account] + amt);
+          });
+        } else if (!parts) {
           // "Got it" saves a move with this key: the warning stays away (a new date or pot makes a new one)
           if (!ticked(db, p, "short:" + f.account + ":" + f.date)) items.push({key: "short:" + f.account + ":" + f.date, type: "warn", amount: need, what: accName(db, f.account) + " will be " + money(need) + " short", why: f.what + " on " + nice(f.date) + ", and there isn't enough spare money to cover it yet."});
           run[f.account] = 0;
         }
       }
     });
+    // 3b. the main account itself going under before payday (your partner's share of something you paid until you settle
+    // up, a bill from it that came in higher): only the fallback pot can cover that, and the next pay tops it back up
+    if (fb && bal[main] !== undefined) {
+      // (with what you're due to pay your partner back before payday, which you pay from it)
+      var outM = ahead.filter(function (f) { return f.account === main; }).map(function (f) { return {date: f.date, amount: f.amount}; });
+      db.loans.forEach(function (l) { if (l.borrower === p) loanPlan(db, l).forEach(function (r) { if (!r.paid && r.date < per.next) outM.push({date: maxS(r.date, today), amount: -r.left}); }); });
+      outM.sort(function (a, c) { return a.date < c.date ? -1 : a.date > c.date ? 1 : 0; });
+      var lowM = avail(main), lowD = today, runM = lowM;
+      outM.forEach(function (f) { runM = round(runM + f.amount); if (runM < lowM - 0.004) { lowM = runM; lowD = f.date; } });
+      if (lowM < -0.004) {
+        var needM = round(-lowM), canM = round(Math.min(needM, Math.max(0, avail(fb)))), whenM = lowD === today ? " is " + money(needM) + " under" : " would be " + money(needM) + " under on " + nice(lowD);
+        if (canM > 0.004) plan("fill:" + main + ":" + lowD, fb, main, canM, "Move " + money(canM) + " from " + accName(db, fb) + " to " + accName(db, main), accName(db, main) + whenM + ". Your next pay tops the " + accName(db, fb) + " back up.", {fill: true});
+        else if (!ticked(db, p, "short:" + main + ":" + lowD)) items.push({key: "short:" + main + ":" + lowD, type: "warn", amount: needM, what: accName(db, main) + whenM, why: "There isn't enough in your " + accName(db, fb) + " to cover it yet."});
+      }
+    }
     // 4. loan repayments due
     db.loans.forEach(function (l) {
       if (l.lender !== p && l.borrower !== p) return;
@@ -841,8 +906,11 @@
     // money that only comes into the pay's account later in the period (a loan repayment on the 28th, a second income)
     // isn't there on payday: the part of what's left for the remainder (a Cash ISA, say) that it pays for is moved once
     // it's in (later: a To do move then), rather than on payday, leaving the account overdrawn until it comes
+    // (a repayment due on payday itself isn't there yet either when payday's moves are made: it's only in once it's paid)
     var late = 0, lateDate = "", lateNames = [], lateLoans = [];
-    pl.lines.forEach(function (l) { if (l.kind === "in" && l.account === payAcc && l.date && l.date > per.start) { late += l.amount; if (l.date > lateDate) lateDate = l.date; if (lateNames.indexOf(l.name) < 0) lateNames.push(l.name); if (l.loan) lateLoans.push({id: l.id, date: l.date}); } });
+    // (named as you'd say it: "Sophie's Sofa repayment", "Sophie's Rent share", "Side income")
+    var lateName = function (l) { var it = db.byId[l.id] || {}; return l.loan ? person(db, it.borrower).name + "'s " + it.name + " repayment" : db.transfers.indexOf(it) >= 0 ? person(db, it.from).name + "'s " + (it.name || it.purpose || "payment") : l.name; };
+    pl.lines.forEach(function (l) { if (l.kind === "in" && l.account === payAcc && l.date && (l.date > per.start || (l.loan && l.date >= per.start))) { late += l.amount; if (l.date > lateDate) lateDate = l.date; var nm = lateName(l); if (lateNames.indexOf(nm) < 0) lateNames.push(nm); if (l.loan) lateLoans.push({id: l.id, date: l.date}); } });
     var remAcc = pl.remainderBudget ? pl.remainderBudget.account || main : "", remMove = remAcc && remAcc !== payAcc ? moves.filter(function (m) { return m.to === remAcc; })[0] : null, later = [];
     if (remMove && late > 0.004) {
       var cut = round(Math.min(remMove.amount, late)); remMove.amount = round(remMove.amount - cut); if (!(remMove.amount > 0.004)) moves.splice(moves.indexOf(remMove), 1);
@@ -852,7 +920,17 @@
     var keeps = round(landed - moves.concat(later).reduce(function (t, m) { return t + m.amount; }, 0)), cover = null, uncovered = 0;
     // the pay doesn't stretch to everything: the pot that covers going over fills the whole gap (so the main
     // account still has its own budgets), as far as the money in it goes; the next pay tops it back up
-    var fb = fallbackOf(db, p), gap = round(Math.max(pl.shortfall || 0, -keeps));
+    var fb = fallbackOf(db, p), gap0 = round(Math.max(pl.shortfall || 0, -keeps, 0)), gap = gap0, soon = 0;
+    // money still to come that's more than what was held back for it: until it's in, the account has that much less, so
+    // the pot that covers going over also covers what the account needs before then (its bills until then, catching it
+    // up, and its budgets' share of the days until then), so it never goes under; the money that comes in is left over for next payday
+    var wait = round(late - later.reduce(function (t, m) { return t + m.amount; }, 0));
+    if (wait > 0.004) {
+      var frac = Math.min(1, diff(per.start, lateDate) / Math.max(1, diff(per.start, per.next))), kept = payAcc === main ? pl.keptMain || 0 : 0, before = kept * frac;
+      pl.lines.forEach(function (l) { if (l.account !== payAcc || l.kind === "in") return; if (l.kind === "spend") before += l.amount * frac; else if (l.kind === "bill" && (!l.date || l.date < lateDate)) before += l.amount; });
+      soon = round(Math.max(0, before - (keeps + gap0 - wait + kept)));
+      gap = round(gap0 + soon);
+    }
     if (gap > 0.004) {
       var st = startOf(db, p), fbBal = 0;
       if (fb) { fbBal = (per.start === st ? startBalances(db, p) : balances(db, addDays(per.start, -1)))[fb] || 0; fbBal = round(Math.max(0, fbBal + (need[fb] > 0 ? need[fb] : 0))); }
@@ -861,7 +939,8 @@
       uncovered = round(gap - amt);
     }
     var estimate = pl.lines.some(function (l) { return l.estimate; });
-    return {period: per, pay: pay, payAccount: payAcc, moves: moves, later: later, cover: cover, uncovered: uncovered, already: already, plan: pl, keeps: keeps, estimate: estimate};
+    // soon: how much of the gap is only until that money comes in (soonFor: what it is, and when it's due)
+    return {period: per, pay: pay, payAccount: payAcc, moves: moves, later: later, cover: cover, uncovered: uncovered, already: already, plan: pl, keeps: keeps, estimate: estimate, soon: soon, soonFor: soon > 0.004 ? {names: lateNames, date: lateDate} : null};
   }
 
   // ---------- between partners ----------
@@ -904,10 +983,30 @@
     return {partner: q, owedToMe: owed > 0 ? owed : 0, iOwe: owed < 0 ? -owed : 0, net: owed, month: month};
   }
 
+  // what between() says is owed (+ your partner owes you) at the end of a day, from running totals worked out once, so
+  // asking for it on every payday back to the start costs nothing: split payments and settling up count from their day,
+  // shared bills and regular payments between you once their calendar month is over
+  function owedIndex(db, p) {
+    return memo(db, "owix|" + p, function () {
+      var q = partnerOf(db, p), st = maxS(startOf(db, p), startOf(db, q)), hz = addDays(maxS(db.today || st, st), 400), now = [], month = [];
+      db.transactions.forEach(function (x) { if (!x.split || x.date < st) return; if (x.person === p) now.push([x.date, round(shareOf(db, x.split, q, +x.amount, x.person))]); if (x.person === q) now.push([x.date, -round(shareOf(db, x.split, p, +x.amount, x.person))]); });
+      db.settlements.forEach(function (s) { if (s.loan || s.date < st) return; if (s.from === q && s.to === p) now.push([s.date, -(+s.amount)]); if (s.from === p && s.to === q) now.push([s.date, +s.amount]); });
+      db.bills.forEach(function (b) { if (!b.split || (b.person !== p && b.person !== q)) return; occurrences(db, b, st, hz).forEach(function (o) { month.push([o.date, (b.person === p ? 1 : -1) * round(shareOf(db, b.split, b.person === p ? q : p, o.amount, b.person))]); }); });
+      db.transfers.forEach(function (t) { var sign = t.from === q && t.to === p ? -1 : t.from === p && t.to === q ? 1 : 0; if (sign) occurrences(db, t, st, hz).forEach(function (o) { month.push([o.date, sign * o.amount]); }); });
+      var pack = function (list) { list.sort(function (a, c) { return a[0] < c[0] ? -1 : a[0] > c[0] ? 1 : 0; }); var dates = [], cum = [0]; list.forEach(function (x, i) { dates.push(x[0]); cum.push(cum[i] + x[1]); }); return {dates: dates, cum: cum}; };
+      return {hz: hz, now: pack(now), month: pack(month)};
+    });
+  }
+  function owedAt(db, p, date) {
+    var ix = owedIndex(db, p); if (date >= ix.hz) return between(db, p, date).net;
+    var o = ix.now.cum[lowerBound(ix.now.dates, addDays(date, 1))] + ix.month.cum[lowerBound(ix.month.dates, date.slice(0, 8) + "01")];
+    return Math.abs(o) < 0.005 + 1e-7 ? 0 : round(o);
+  }
+
   // ---------- today ----------
   function today(db, p, date) {
     var per = periodAt(db, p, date), daysLeft = Math.max(1, diff(date, per.next)), plan = planFor(db, p, per);
-    var stt = budgetState(db, p, per), bal = balances(db, date), tiles = [], safe = 0, status = "On track";
+    var stt = budgetState(db, p, per), bal = balances(db, date), tiles = [], safe = 0, status = "On track", overs = [];
     var from0 = maxS(per.start, startOf(db, p)), dayNo = diff(from0, date) + 1, days = Math.max(1, diff(from0, per.next));
     budgetsOf(db, p, per).forEach(function (b) {
       var s = stt[b.id]; if (!s || !s.current) return;
@@ -921,9 +1020,20 @@
       } else { tile.day = null; tile.pace = round(s.left); }
       tile.paceMark = Math.round(Math.min(1, dayNo / days) * 100);
       if (tile.pace < -0.5 && mode !== "oneoff") status = "A bit ahead";
-      if (s.left < -0.004) status = "Over budget";
+      if (s.left < -0.004) overs.push({id: b.id, name: b.name, over: round(-s.left)});
       tiles.push(tile);
     });
+    // a budget gone over that's been covered (the move from the pot that covers going over is ticked) isn't a worry:
+    // it's said as that, and each one says what covered it
+    if (overs.length) {
+      var rbs = reimbursements(db, p, per, date);
+      overs.forEach(function (o) {
+        var gs = rbs.filter(function (g) { return g.kind === "over" && g.key.indexOf("cover:" + o.id + ":") === 0; });
+        o.covered = gs.length > 0 && gs.every(function (g) { return ticked(db, p, g.key) >= g.amount - 0.004; });
+        if (gs.length) o.from = accName(db, gs[0].from);
+      });
+      status = overs.every(function (o) { return o.covered; }) ? "Over, but covered" : "Over budget";
+    }
     var cash = 0, main = mainOf(db, p);
     // cap by money actually there (spending accounts minus what's still due before payday)
     var spendAccs = dict(); tiles.forEach(function (t) { var b = db.byId[t.id]; if (t.day !== null) spendAccs[b.account || main] = true; });
@@ -934,9 +1044,13 @@
     var cashFree = round(Math.max(0, cash + committed));
     var cap = round(cashFree / daysLeft);
     if (safe > cap) { safe = cap; status = cashFree <= 0 ? "No spare cash" : status; }
-    var nxt = payDates(db, p, addDays(date, 1), addDays(date, 70))[0] || per.next;
-    return {date: date, period: per, plan: plan, daysLeft: daysLeft, safe: round(safe), status: status, tiles: tiles, cashFree: cashFree, nextPay: nxt,
-      nextPayAmount: (planFor(db, p, periodAt(db, p, nxt)).lines.filter(function (l) { return l.isPay; })[0] || {}).amount || 0,
+    var nxt = payDates(db, p, addDays(date, 1), addDays(date, 70))[0] || per.next, nplan = planFor(db, p, periodAt(db, p, nxt));
+    // what's spare in the main account now (beyond what its budgets and bills still need) goes where whatever's left
+    // goes on payday: said when that's somewhere else, a Cash ISA say
+    var lo = nplan.lines.filter(function (l) { return l.leftover; })[0], rl = nplan.lines.filter(function (l) { return l.remainder; })[0], spare = null;
+    if (lo && rl && rl.account !== main && rl.amount > 0.004) spare = {amount: round(Math.min(lo.amount, rl.amount)), to: rl.account, toName: accName(db, rl.account), date: nxt};
+    return {date: date, period: per, plan: plan, daysLeft: daysLeft, safe: round(safe), status: status, overs: overs, tiles: tiles, cashFree: cashFree, nextPay: nxt,
+      nextPayAmount: (nplan.lines.filter(function (l) { return l.isPay; })[0] || {}).amount || 0, spare: spare,
       todo: todo(db, p, date), coming: coming(db, p, date, 14)};
   }
   function coming(db, p, date, days) {
@@ -1217,7 +1331,7 @@
   function loans(db, p, date) {
     return db.loans.filter(function (l) { return l.lender === p || l.borrower === p; }).map(function (l) {
       var paid = loanPaid(db, l, date), left = round((+l.amount || 0) - paid);
-      return {id: l.id, name: l.name, lender: l.lender, borrower: l.borrower, amount: +l.amount || 0, paid: paid, left: left, pct: l.amount ? Math.round(paid / l.amount * 100) : 0, plan: loanPlan(db, l).filter(function (r) { return !r.paid; }).map(function (r) { return Object.assign({}, r, {amount: r.left}); })};
+      return {id: l.id, name: l.name, lender: l.lender, borrower: l.borrower, amount: +l.amount || 0, notes: String(l.notes || ""), paid: paid, left: left, pct: l.amount ? Math.round(paid / l.amount * 100) : 0, plan: loanPlan(db, l).filter(function (r) { return !r.paid; }).map(function (r) { return Object.assign({}, r, {amount: r.left}); })};
     });
   }
 
@@ -1258,7 +1372,7 @@
     budgetState: budgetState, balances: balances, flows: flows, todo: todo, between: between, today: today, coming: coming,
     calendar: calendar, pots: pots, monthView: monthView, year: year, goals: goals, lisa: lisa, checks: checks, netWorth: netWorth, loans: loans,
     yearly: yearly, yearReview: yearReview, taxYearStart: taxYearStart,
-    summary: summary, shareOf: shareOf, myShare: myShare, amountAt: amountAt, setting: setting, partnerOf: partnerOf, mainOf: mainOf, fallbackOf: fallbackOf,
+    summary: summary, shareOf: shareOf, myShare: myShare, owedAt: owedAt, amountAt: amountAt, setting: setting, partnerOf: partnerOf, mainOf: mainOf, fallbackOf: fallbackOf,
     accountsOf: accountsOf, accName: accName, ticked: ticked, person: person, startOf: startOf, moveDate: moveDate, budgetsOf: budgetsOf, budgetsIn: budgetsOf, reimbursements: reimbursements, startBalances: startBalances,
     money: money, nice: nice, describe: describe, addDays: addDays, diff: diff, parseDate: parseDate, isIso: isIso, round: round
   };

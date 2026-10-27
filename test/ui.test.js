@@ -60,7 +60,7 @@ const fails = [], check = (name, cond, extra) => { if (cond) console.log("ok", n
     await page.goto(links.ethan); await page.waitForFunction(() => /Hi Ethan/.test(document.querySelector("#top").textContent), null, {timeout: 8000});
     await page.evaluate(() => { document.querySelector("#sheets").innerHTML = ""; window.BudgieApp.go("payday"); }); await page.waitForTimeout(100);
     const pdText = T(await page.textContent("main"));
-    check("the payday screen says what waits for money that comes in after payday", /£200\.00 more goes to your Cash ISA once Sophie pays back: Sofa has come in, after payday/.test(pdText), pdText.slice(0, 400));
+    check("the payday screen says what waits for money that comes in after payday", /£200\.00 more goes to your Cash ISA once Sophie's Sofa repayment has come in, after payday/.test(pdText), pdText.slice(0, 400));
     await page.context().close();
   }
 
@@ -484,6 +484,146 @@ const fails = [], check = (name, cond, extra) => { if (cond) console.log("ok", n
     const ex3 = (await (await page.request.get("http://localhost:" + PORT + "/dump?exceptions")).json()).filter(r => r.id === "x-" + occ3.replace("@", "-") + "-amount");
     check("an empty real amount isn't saved as £0", !ex3.some(r => +r.amount === 0), ex3);
     await page.context().close();
+  }
+
+  // ===== review 2026-10-27 (1.4.12) =====
+  const kE12 = JSON.parse(Buffer.from(links.ethan.split("#connect=")[1], "base64url").toString()).k;
+  const hiE = p => p.waitForFunction(() => /Hi Ethan/.test(document.querySelector("#top").textContent), null, {timeout: 8000});
+  // a payday move ticked after you've checked that pot's balance since payday is dated the day it's ticked, so it counts
+  // on top of that balance (dated payday, it would count as already in it); one with no check since stays on payday
+  {
+    page = await newPage("2027-01-30");
+    await page.goto(links.ethan); await hiE(page);
+    await page.evaluate(() => { document.querySelector("#sheets").innerHTML = ""; window.BudgieApp.go("pots"); }); await page.waitForTimeout(100);
+    await page.click('[data-a="potcheck"][data-v="e-bills"]'); await page.fill("#potBal", "12.34"); await page.click('[data-a="potsave"]'); await page.waitForTimeout(1500);
+    await page.context().close();
+    page = await newPage("2027-02-01");
+    await page.goto(links.ethan); await hiE(page);
+    await page.evaluate(() => { document.querySelector("#sheets").innerHTML = ""; window.BudgieApp.go("payday"); }); await page.waitForTimeout(150);
+    for (const to of ["e-bills", "e-lisa"]) { const sel = 'input[data-c="paytick"][data-v^="pay:2027-01-28:' + to + '|"]'; if (await page.$(sel)) { await page.click(sel); await page.waitForTimeout(200); } }
+    await page.waitForTimeout(1500);
+    const mv = (await (await page.request.get("http://localhost:" + PORT + "/dump?moves")).json()).filter(r => r.person === "ethan" && /^pay:2027-01-28:e-(bills|lisa)$/.test(r.key)).map(r => [r.key, r.date]).sort();
+    check("a payday move ticked after a balance check of that pot is dated the day it's ticked", JSON.stringify(mv) === JSON.stringify([["pay:2027-01-28:e-bills", "2027-02-01"], ["pay:2027-01-28:e-lisa", "2027-01-28"]]), mv);
+    await page.context().close();
+  }
+  // payday before money that comes later in the month (Sophie's repayment on the 28th), in a month too tight to hold
+  // it back from the Cash ISA: the Emergency pot covers Main until then, and the payday screen says how much is only that
+  {
+    page = await newPage("2026-12-24");
+    await page.request.post("http://localhost:" + PORT + "/exec", {data: JSON.stringify({key: kE12, ops: [
+      {op: "put", table: "budgets", row: {id: "e-bed12", person: "ethan", name: "Bed", amount: 2600, mode: "oneoff", account: "e-car", start: "2026-12-20", end: "2027-01-20"}},
+      {op: "put", table: "transactions", row: {id: "t-fun12", date: "2026-12-20", person: "ethan", amount: 600, budget: "e-fun", account: "e-main"}}]})});
+    await page.goto(links.ethan); await hiE(page);
+    await page.evaluate(() => { document.querySelector("#sheets").innerHTML = ""; window.BudgieApp.go("payday"); }); await page.waitForTimeout(150);
+    const t12 = T(await page.textContent("main"));
+    check("the payday screen says how much of the gap is only until money comes in later", /of it is only until Sophie's Sofa repayment comes in on Mon 28 Dec\./.test(t12), t12.slice(0, 500));
+    await page.context().close();
+  }
+
+  // what you owe your partner at payday stays in Main for settling up, and the payday screen says so
+  {
+    const kS12 = JSON.parse(Buffer.from(links.sophie.split("#connect=")[1], "base64url").toString()).k;
+    page = await newPage("2027-02-25");
+    await page.request.post("http://localhost:" + PORT + "/exec", {data: JSON.stringify({key: kS12, ops: [{op: "put", table: "transactions", row: {id: "t-owe12", date: "2027-02-20", person: "sophie", amount: 2000, budget: "s-food", account: "s-main", split: "half"}}]})});
+    await page.goto(links.ethan); await hiE(page);
+    await page.evaluate(() => { document.querySelector("#sheets").innerHTML = ""; window.BudgieApp.go("payday"); }); await page.waitForTimeout(150);
+    const t13 = T(await page.textContent("main"));
+    check("the payday screen says what you owe stays in Main for settling up", /£[\d,]+\.\d\d you owe Sophie stays in your Main account for settling up\./.test(t13), t13.slice(0, 600));
+    await page.context().close();
+  }
+
+  // money owed both ways shows on the Debts screen for both of you, with what a loan is made of when its notes list it
+  {
+    const kS13 = JSON.parse(Buffer.from(links.sophie.split("#connect=")[1], "base64url").toString()).k;
+    page = await newPage("2027-02-26");
+    await page.request.post("http://localhost:" + PORT + "/exec", {data: JSON.stringify({key: kS13, ops: [{op: "put", table: "loans", row: {id: "l-dress12", lender: "sophie", borrower: "ethan", name: "Clothes", amount: 50, date: "2027-02-20", notes: "Dress £30; Shoes £20"}}]})});
+    await page.goto(links.ethan); await hiE(page);
+    await page.evaluate(() => { document.querySelector("#sheets").innerHTML = ""; window.BudgieApp.go("debts"); }); await page.waitForTimeout(150);
+    const t14 = T(await page.textContent("main"));
+    check("Ethan's Debts screen shows what Sophie lent him and what he lent her", /Clothes£50\.00You owe Sophie/.test(t14) && /Sofa£[\d,.]+Sophie owes you/.test(t14), t14.slice(0, 400));
+    check("and the parts a loan's notes list", /Dress £30\s*Shoes £20/.test(await page.innerText('[data-v="loans:l-dress12"]')), await page.innerText('[data-v="loans:l-dress12"]'));
+    await page.context().close();
+  }
+
+  // Between you two counts the loans too, from either side: what's left each way and the next repayment
+  {
+    page = await newPage("2026-11-02");
+    await page.goto(links.ethan); await hiE(page);
+    await page.evaluate(() => { document.querySelector("#sheets").innerHTML = ""; window.BudgieApp.go("partner"); }); await page.waitForTimeout(150);
+    const t15 = T(await page.textContent("main"));
+    check("Ethan's Between you two says what Sophie owes him in loans, and when the next repayment is", /Sophie owes you £600\.00 in loans ?Next £200\.00 on Mon 28 Dec/.test(t15) && /You owe Sophie £[\d,]+\.\d\d in loans/.test(t15) && !/You're all square/.test(t15), t15.slice(t15.indexOf("Between"), t15.indexOf("Between") + 300));
+    check("and the shared bills line says it's only about those", /(All square on shared bills|owes you £[\d,.]+ for shared bills|You owe Sophie £[\d,.]+ for shared bills)/.test(t15), t15.slice(t15.indexOf("Between"), t15.indexOf("Between") + 200));
+    const ib = await page.$('[data-a="info"][data-v="between"]'); if (ib) { await ib.click(); await page.waitForTimeout(100); }
+    check("how it's worked out is behind the (i)", /Shared bills are split by your rules/.test(await page.textContent("#sheets")));
+    await page.context().close();
+    page = await newPage("2026-11-02");
+    await page.goto(links.sophie); await page.waitForFunction(() => /Hi Sophie/.test(document.querySelector("#top").textContent), null, {timeout: 8000});
+    await page.evaluate(() => { document.querySelector("#sheets").innerHTML = ""; window.BudgieApp.go("partner"); }); await page.waitForTimeout(150);
+    const t16 = T(await page.textContent("main"));
+    check("Sophie's says what she owes Ethan and when", /You owe Ethan £600\.00 in loans ?Next £200\.00 on Mon 28 Dec/.test(t16) && /Ethan owes you £[\d,]+\.\d\d in loans/.test(t16), t16.slice(t16.indexOf("Between"), t16.indexOf("Between") + 300));
+    await page.context().close();
+  }
+  // Today in the short first month: it says so, and where Main's spare money goes on payday; tapping the hero opens
+  // the pots, each one now against where it should be
+  {
+    page = await newPage("2026-10-28");
+    await page.goto(links.ethan); await hiE(page);
+    await page.evaluate(() => { document.querySelector("#sheets").innerHTML = ""; window.BudgieApp.go("today"); }); await page.waitForTimeout(150);
+    await page.evaluate(() => { document.querySelector("#sheets").innerHTML = ""; });
+    const hero = T(await page.textContent(".hero"));
+    check("the hero says it's the short first month", /Your short first month, until payday\./.test(hero), hero);
+    check("and where the spare in Main goes", /£[\d,]+\.\d\d spare in your Main account goes to your Cash ISA on payday\./.test(hero), hero);
+    check("the weekly note is behind an (i), not always on show", !/isn't counted as over/.test(T(await page.textContent("main"))) && !!(await page.$('[data-a="info"][data-v="pace"]')));
+    await page.setViewportSize({width: 360, height: 800}); await page.waitForTimeout(100);
+    const vals = await page.$$eval(".tile .v", els => els.map(v => [v.textContent, Math.round(v.getBoundingClientRect().height), parseFloat(getComputedStyle(v).fontSize)]));
+    check("each Today tile's value is on one line", vals.length && vals.every(v => v[1] < v[2] * 1.6), vals);
+    await page.click(".hero"); await page.waitForTimeout(150);
+    const pots = T(await page.textContent("main"));
+    check("tapping the hero opens the pots", /What should be where|Should be across/.test(T(await page.textContent("#top")) + pots), pots.slice(0, 120));
+    check("each pot says how far it is from where it should be", /Should be £[\d,]+\.\d\d: £[\d,]+\.\d\d (below|above), see To do|Where it should be/.test(pots) && (await page.$$('[data-a="potcheck"]')).length === (pots.match(/Should be £[\d,]+\.\d\d: |Where it should be/g) || []).length, pots.slice(0, 600));
+    await page.context().close();
+  }
+  // Money: a "what's left" budget with nothing this month says why, and what next payday puts in
+  {
+    page = await newPage("2026-10-28");
+    await page.goto(links.ethan); await hiE(page);
+    await page.evaluate(() => { document.querySelector("#sheets").innerHTML = ""; window.BudgieApp.go("money"); }); await page.waitForTimeout(150);
+    const t17 = T(await page.textContent("main"));
+    check("the Cash ISA's £0 this month is explained, with what goes in on payday", /Nothing this month: it's a short first month\. £[\d,]+\.\d\d goes in tomorrow/.test(t17), t17.slice(t17.indexOf("Savings"), t17.indexOf("Savings") + 300));
+    await page.context().close();
+  }
+  // going over a budget, once the move that covers it is ticked, isn't "Over budget" any more: it says what it was
+  {
+    page = await newPage("2026-10-27");
+    await page.request.post("http://localhost:" + PORT + "/exec", {data: JSON.stringify({key: kE12, ops: [{op: "put", table: "transactions", row: {id: "t-over12", date: "2026-10-27", person: "ethan", amount: 40, budget: "e-fun", account: "e-main"}}]})});
+    await page.goto(links.ethan); await hiE(page);
+    await page.evaluate(() => { document.querySelector("#sheets").innerHTML = ""; window.BudgieApp.go("today"); }); await page.waitForTimeout(150);
+    check("over a budget and not covered yet: Over budget", T(await page.textContent(".hero .pill")) === "Over budget", T(await page.textContent(".hero .pill")));
+    const cov = await page.$('input[data-c="tick"][aria-label*="from Emergency pot to Main account"]');
+    if (cov) { await cov.click(); await page.waitForTimeout(400); }
+    await page.evaluate(() => { document.querySelector("#sheets").innerHTML = ""; });
+    check("once covered, it names what went over instead", T(await page.textContent(".hero .pill")) === "Fun covered", T(await page.textContent(".hero .pill")));
+    await page.click(".hero"); await page.waitForTimeout(150);
+    check("and the pots say what it was and what covered it", /You went £[\d,]+\.\d\d over your Fun budget\. Your Emergency pot covered it/.test(T(await page.textContent("main"))), T(await page.textContent("main")).slice(0, 300));
+    await page.context().close();
+  }
+  // the category buttons on Add fit at 320px and 360px with Larger text, long names and all
+  {
+    const rq = await browser.newContext();
+    await rq.request.post("http://localhost:" + PORT + "/exec", {data: JSON.stringify({key: kE12, ops: ["Eating out", "Subscriptions", "Christmas presents", "Haircuts & beauty", "Household bits"].map((n, i) => ({op: "put", table: "budgets", row: {id: "e-fit12" + i, person: "ethan", name: n, amount: 30, account: "e-main", start: "2027-02-01"}}))})});
+    await rq.close();
+    for (const width of [320, 360]) {
+      const ctx = await browser.newContext({viewport: {width, height: 760}, deviceScaleFactor: 2, isMobile: true, hasTouch: true, locale: "en-GB", timezoneId: "Europe/London", serviceWorkers: "block"});
+      page = await ctx.newPage(); await page.clock.install({time: new Date("2027-03-02T19:30:00")});
+      await page.goto(links.ethan); await hiE(page);
+      await page.evaluate(() => window.BudgieApp.go("themes")); await page.waitForTimeout(80); await page.click('[data-a="tsize"][data-v="larger"]'); await page.waitForTimeout(100);
+      await page.evaluate(() => { document.querySelector("#sheets").innerHTML = ""; window.BudgieApp.go("add"); }); await page.waitForTimeout(150);
+      const off = await page.$$eval(".budtile", bs => bs.flatMap(b => { const bb = b.getBoundingClientRect(); return [...b.querySelectorAll("span,svg")].filter(s => { const r = s.getBoundingClientRect(); return r.left < bb.left + 1 || r.right > bb.right - 1 || s.scrollWidth > s.clientWidth + 1; }).map(s => s.textContent); }));
+      const more = await page.evaluate(() => { const b = document.querySelector(".budtile.others"); return b ? getComputedStyle(b).display + " " + getComputedStyle(b).flexDirection : [...document.querySelectorAll(".budtile")].map(x => x.textContent).join(","); });
+      check("Add's category buttons fit at " + width + "px with Larger text", off.length === 0 && (await page.$$(".budtile")).length >= 6, off);
+      check("and the More button is laid out like the others at " + width + "px", more === "flex column", more);
+      await ctx.close();
+    }
   }
 
   console.log(errs.length ? "ERRORS:\n" + errs.join("\n") : "No errors");
