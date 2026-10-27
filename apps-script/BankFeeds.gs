@@ -868,9 +868,18 @@ function bankApply_(p, data, windowFrom, payCarry) {
     // every planned item a payment could be, each with how alike they are (lower is more alike: the same name first,
     // then the nearer day, then the amount to the penny)
     var bankX = Object.create(null); db.exceptions.forEach(function (x) { if (String(x.id) === "x-" + x.item + "-" + x.date + "-bank-" + p) bankX[x.item + "|" + x.date] = true; });
+    // the day an item was planned for: with your own changes to its date, not the bank feed's own (the day it went out),
+    // so which payment is which bill is weighed the same however often it's read
+    var bankDay = function (x) { return String(x.id) === "x-" + x.item + "-" + x.date + "-bankday-" + p; };
+    var planDay = function (o) {
+      var d = o.orig;
+      ((o.item && db.byItem.exceptions[o.item.id]) || []).forEach(function (x) { if (x.date === o.orig && String(x.action || "").toLowerCase() === "move" && x.newDate && !bankDay(x)) d = x.newDate; });
+      return d;
+    };
     var plannedCands = function (t, needName) {
       var toPartner = namesPartner(t), out = [], words = bankMerchantKey_(t.name).split(" ").filter(function (w) { return w.length > 2; });
-      var a = t.amount, win = function (item) { return D.occurrences(db, item, D.addDays(t.date, -3), D.addDays(t.date, 4)); };
+      var a = t.amount, lo = D.addDays(t.date, -3), hi = D.addDays(t.date, 4);
+      var win = function (item) { return D.occurrences(db, item, D.addDays(t.date, -10), D.addDays(t.date, 11)).filter(function (o) { var d = planDay(o); return d >= lo && d < hi; }); };
       db.bills.forEach(function (b) {
         if (b.person !== p) return;
         var bw = bankMerchantKey_(b.name).split(" "), nameHit = words.some(function (w) { return bw.indexOf(w) >= 0; });
@@ -879,11 +888,11 @@ function bankApply_(p, data, windowFrom, payCarry) {
           // (an amount the bank feed itself set for that date, from the payment an earlier read took for it, isn't what
           // was expected: weighed against it, that payment would keep the bill when the bill's own payment comes in)
           var base = D.amountAt(db, b, o.orig), exact = near(a, base) || (!bankX[b.id + "|" + o.orig] && near(a, o.amount));
-          if (exact || (b.variable && nameHit && Math.abs(a - base) <= base * 0.5)) out.push({kind: "bill", item: b, occ: o, score: (nameHit ? 0 : 10) + Math.abs(D.diff(o.date, t.date)) + (exact ? 0 : 1 + Math.abs(a - base) / base)});
+          if (exact || (b.variable && nameHit && Math.abs(a - base) <= base * 0.5)) out.push({kind: "bill", item: b, occ: o, score: (nameHit ? 0 : 10) + Math.abs(D.diff(planDay(o), t.date)) + (exact ? 0 : 1 + Math.abs(a - base) / base)});
         });
       });
       if (needName) return out;
-      db.transfers.forEach(function (tr) { if (tr.from === p) win(tr).forEach(function (o) { if (near(a, o.amount)) out.push({kind: "transfer", occ: o, score: (toPartner ? 0 : 10) + Math.abs(D.diff(o.date, t.date)) + 0.001}); }); });
+      db.transfers.forEach(function (tr) { if (tr.from === p) win(tr).forEach(function (o) { if (near(a, o.amount)) out.push({kind: "transfer", occ: o, score: (toPartner ? 0 : 10) + Math.abs(D.diff(planDay(o), t.date)) + 0.001}); }); });
       // a payment between you two logged by your partner only counts if the bank names them (else a made-up one could
       // hide one of your payments)
       db.settlements.forEach(function (s) { if (s.from === p && near(a, +s.amount) && Math.abs(D.diff(s.date, t.date)) <= 2 && (/^(|sheet)$/.test(String(s.by || "")) || s.by === p || toPartner)) out.push({kind: "settlement", occ: {key: "set:" + s.id}, score: (toPartner ? 0 : 10) + Math.abs(D.diff(s.date, t.date)) + 0.002}); });
@@ -908,17 +917,18 @@ function bankApply_(p, data, windowFrom, payCarry) {
         var a = -t.amount;
         db.income.forEach(function (i) {
           if (i.person !== p || !i.isPay) return;
-          D.occurrences(db, i, D.addDays(t.date, -3), D.addDays(t.date, 4)).forEach(function (o) {
+          D.occurrences(db, i, D.addDays(t.date, -10), D.addDays(t.date, 11)).forEach(function (o) {
+            var pd = planDay(o); if (pd < D.addDays(t.date, -3) || pd >= D.addDays(t.date, 4)) return;
             var base = D.amountAt(db, i, o.orig);
             if (payFrom && o.date < payFrom) return;
             if (!(base > 0) || Math.abs(a - base) > base * 0.5) return;   // only something pay-sized counts as the pay
-            payPairs.push({t: t, i: i, o: o, score: Math.abs(a - base) / base + 0.05 * Math.abs(D.diff(o.date, t.date))});
+            payPairs.push({t: t, i: i, o: o, score: Math.abs(a - base) / base + 0.05 * Math.abs(D.diff(pd, t.date))});
           });
         });
       });
       payPairs.sort(function (x, y) { return x.score - y.score || (x.t.date < y.t.date ? -1 : x.t.date > y.t.date ? 1 : 0); });
       var took = {};
-      payPairs.forEach(function (x) { if (took[x.o.key] || payPick[x.t.id]) return; took[x.o.key] = true; payPick[x.t.id] = {i: x.i, o: x.o}; });
+      payPairs.forEach(function (x) { if (took[x.o.key] || payPick[x.t.id]) return; took[x.o.key] = true; payPick[x.t.id] = {i: x.i, o: x.o, t: x.t}; });
     };
     var payIn = function (t) { var pk = payPick[t.id]; return pk && !usedOcc[pk.o.key] ? pk : null; };
     // the bank's own change to one date: its id names the person, and one with that id for another item isn't used
@@ -928,12 +938,43 @@ function bankApply_(p, data, windowFrom, payCarry) {
       if (ex) { if (!same(+ex.amount, amount)) update("exceptions", id, {amount: amount, deleted: false}); }
       else create("exceptions", {id: id, item: itemId, date: orig, action: "amount", amount: amount, note: note});
     };
+    // a planned bill or payment to your partner that went out on another day than planned (a day early, say) is moved
+    // to that day: the balance the bank gives already has it taken off, so it isn't taken off again on the day it was
+    // planned (which made a pot look short until then). Only within the same pay period, so no payday's moves change.
+    var dayChange = function (o, date) {
+      var it = o.item; if (!it || !it.id || !date) return;
+      var id = "x-" + it.id + "-" + o.orig + "-bankday-" + p, ex = byId_("exceptions", id), plan = planDay(o);
+      if (ex && ex.item !== it.id) { Logger.log("Bank feed skipped " + id + ": that id is already used for something else."); return; }
+      var live = !!ex && !bankTrue_(ex.deleted), pa = D.periodAt(db, p, plan), pb = D.periodAt(db, p, date);
+      if (date === plan || !pa || !pb || pa.start !== pb.start) { if (live) update("exceptions", id, {deleted: true}); return; }
+      if (ex) { if (!live || String(ex.action) !== "move" || String(ex.newDate) !== date) update("exceptions", id, {action: "move", newDate: date, deleted: false}); }
+      else create("exceptions", {id: id, item: it.id, date: o.orig, action: "move", newDate: date, note: "paid that day, from " + label});
+    };
 
     // each payment once, even if the read listed it twice (under a Space as well as the account, say, or in two
     // windows that meet on its time): a second copy would find its bill already used and come in as a payment too
     var last = {}; data.txns.forEach(function (t, i) { if (t && t.id) last[t.id] = i; });
     var txList = data.txns.filter(function (t, i) { return t && t.id && last[t.id] === i; }).sort(function (x, y) { return x.date < y.date ? -1 : x.date > y.date ? 1 : 0; });
     payScan(txList.concat((payCarry || []).filter(function (x) { return x && x.id && x.date && !bankHas_(last, x.id); }).map(function (x) { return {id: String(x.id), acc: x.acc, date: String(x.date), amount: +x.amount, name: String(x.name || "")}; })));
+    // Pay that came in early (the day before payday, say) starts the new pay period the day it came in: its day is moved
+    // there, as a bill's is, and the rest of this read (payday's moves into your pots that same day) is weighed with it
+    // there. Pay that comes in late isn't moved: the period had already started, and what was ticked on payday stays.
+    var payDays = [];
+    Object.keys(payPick).forEach(function (tid) {
+      var pk = payPick[tid], o = pk.o, it = o.item, date = pk.t && pk.t.date; if (!it || !it.id || !date) return;
+      var id = "x-" + it.id + "-" + o.orig + "-bankday-" + p, ex = byId_("exceptions", id), live = !!ex && !bankTrue_(ex.deleted), plan = planDay(o);
+      if (ex && ex.item !== it.id) { Logger.log("Bank feed skipped " + id + ": that id is already used for something else."); return; }
+      if (date >= plan) { if (live) { update("exceptions", id, {deleted: true}); payDays.push({id: id}); } return; }
+      if (live && String(ex.action) === "move" && String(ex.newDate) === date) return;
+      var row = {id: id, item: it.id, date: o.orig, action: "move", newDate: date, note: "came in that day, from " + label};
+      if (ex) update("exceptions", id, {action: "move", newDate: date, deleted: false}); else create("exceptions", row);
+      payDays.push({id: id, row: row});
+    });
+    if (payDays.length) {
+      var tabs = allTables_(), gone = {}; payDays.forEach(function (x) { gone[x.id] = true; });
+      tabs.exceptions = tabs.exceptions.filter(function (x) { return !gone[x.id]; }).concat(payDays.filter(function (x) { return x.row; }).map(function (x) { return x.row; }));
+      db = Budgie.load(tabs, today);
+    }
     // (the same payments the loop below would ask about a planned item: money out, not a move, no row yet)
     var lisaAcc = D.accountsOf(db, p).filter(function (a) { return a.kind === "lisa"; })[0], isaAcc = D.accountsOf(db, p).filter(function (a) { return a.kind === "isa"; })[0];
     var planPairs = [];
@@ -1033,6 +1074,7 @@ function bankApply_(p, data, windowFrom, payCarry) {
           if (po) {
             usedOcc[po.occ.key] = true;
             if (po.kind === "bill" && !same(t.amount, po.occ.amount)) exception(po.item.id, po.occ.orig, t.amount, "from " + label);
+            if (po.kind === "bill" || po.kind === "transfer") dayChange(po.occ, t.date);
             return;
           }
         }

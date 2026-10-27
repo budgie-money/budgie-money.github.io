@@ -54,7 +54,7 @@ The code is `apps-script/BankFeeds.gs`. Its tests are `test/bank.test.js`, which
 4. To stop it for good, revoke the token in the developer portal. Budgie's Disconnect deletes its copy, but Starling has no way for Budgie to revoke it.
 
 ## What is and isn't imported
-- **Ids:** bank rows use `bk-…`, and bank changes to one date use `x-<item>-<date>-bank-<person>`. If someone else already used an id, that row is skipped and logged, and the rest of the import carries on.
+- **Ids:** bank rows use `bk-…`, and bank changes to one date use `x-<item>-<date>-bank-<person>` (amount) and `x-<item>-<date>-bankday-<person>` (day). If someone else already used an id, that row is skipped and logged, and the rest of the import carries on.
 - **Card and other payments** become `transactions` with `review: true`.
   - Payments dated before your Budgie start date are history, so they get `review: false`.
   - A payment matching one already logged is linked instead of added:
@@ -73,6 +73,8 @@ The code is `apps-script/BankFeeds.gs`. Its tests are `test/bank.test.js`, which
   - A payment between you that your partner logged only counts if the bank's name for it has your partner's Budgie id in it (e.g. "SOPHIE …"). Their display name isn't used, because they can change it.
   - Only your own payday ticks stop a bank pot move coming in. Your partner's rows never do.
   - A bill that came to a different amount becomes an `amount` exception.
+  - A bill (or a regular payment to your partner) that went out on another day than planned, inside the same pay period, becomes a `move` exception to that day (`x-<item>-<date>-bankday-<person>`), so the bank's balance, which already has it taken off, doesn't have it taken off again on the planned day. Which payment is which bill is still weighed against the planned day, and the move is taken off again if a later read finds the bill's own payment on its day.
+  - Pay that comes in early (the day before payday) is moved the same way, so the new pay period starts the day it came in, and the rest of that read (payday's moves into the pots that morning) is weighed with it there. Pay that comes in late isn't moved: the period has already started, and what was ticked on payday stays.
   - A card payment only counts as a bill if the names share a word (e.g. "Phone").
   - Each bill, regular transfer or logged payment between you goes to the payment most like it over the whole read (the same name first, then the nearer day), so £20 to a friend a couple of days before a £20 bill isn't taken for the bill.
 - **Pay** at a different amount becomes an `amount` exception. Money only counts as the pay if it's within 50% of the expected pay and within 3 days, and never if the bank's name for it has your partner's Budgie id in it, or it's a Monzo top-up (`is_load`) or a move from a pot or Space. Each payday goes to the money in most like it over the whole read (the amount expected, on the day), so a pay-sized transfer from savings the day before can't take its place. A payday whose pay could be before the start of a read keeps what the earlier read found. A first import read in parts carries the last week's money in from one part to the next, so a payday where a part stopped still goes to the money most like the pay on either side. Other money in is ignored, except card refunds.

@@ -1,7 +1,7 @@
 /* Budgie app: screens, syncing and offline queue. The maths lives in engine.js. */
 (function () {
   "use strict";
-  var B = window.Budgie, TH = window.BudgieThemes, APP_VERSION = "1.4.14";
+  var B = window.Budgie, TH = window.BudgieThemes, APP_VERSION = "1.4.16";
   var $ = function (s) { return document.querySelector(s); };
   var esc = function (s) { return String(s === undefined || s === null ? "" : s).replace(/[&<>"']/g, function (c) { return {"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]; }); };
   // wiped: Budgie's copy at the old address has been wiped (it's moving across), so nothing is saved here again
@@ -216,6 +216,8 @@
     pace: ["Paced week by week", "Budgets like Food are paced week by week, so a big shop at the start of a week isn't counted as over."],
     between: ["How it's worked out", "Shared bills are split by your rules and settled by month. Split payments count straight away. Money lent between you is paid back as each loan says."],
     sheet: ["Your budget tab", "Your official budget is your budget tab in the Google Sheet. It fills itself in from the same rules, so the app and the sheet always agree."],
+    bankmap: ["Which is which", "Tell Budgie which of its accounts each one is. Moves between them tick off your payday list by themselves."],
+    modes: ["How budgets work", "Day to day builds up each day. Weekly is paced week by week, good for food shops. One-offs have no daily pace. Saving is moved on payday. Whatever is left gets what's left after everything else."],
     pots: ["Where this comes from", "Budgie works out what should be in each one from your rules and what you've logged. Tap one if your bank app shows something different, and tell Budgie what it says."]
   };
   function infoBtn(k) { return '<button type="button" class="info" data-a="info" data-v="' + k + '" aria-label="' + esc(INFO[k][0]) + '">' + icon("info", 18) + "</button>"; }
@@ -242,6 +244,39 @@
     var inner = '<span class="grow"><span class="what">' + what + "</span>" + (why ? '<span class="why">' + why + "</span>" : "") + "</span>" + (right || "");
     return act ? '<button type="button" class="li" data-a="' + act + '" data-v="' + esc(val || "") + '">' + inner + chev() + "</button>" : '<div class="li">' + inner + "</div>";
   };
+  // A group of buttons is never ragged: each .fit group takes the first of these in which every label fits on one
+  // line: all side by side; equal lines of three or two (only when they come out even); or one under another.
+  // data-lead puts the first one on a line of its own, above the rest side by side or in even lines.
+  function fitRows() {
+    var groups = document.querySelectorAll(".fit");
+    for (var gi = 0; gi < groups.length; gi++) {
+      var g = groups[gi], kids = [].filter.call(g.children, function (k) { return k.getClientRects().length > 0; }), n = kids.length;
+      if (!n || !g.getClientRects().length) continue;
+      var gap = parseFloat(getComputedStyle(g).columnGap) || 0, lead = g.hasAttribute("data-lead") && n > 2, plans = [[n]];
+      var even = function (m, k) { var r = []; for (var i = 0; i < m / k; i++) r.push(k); return r; };
+      if (lead) plans.push([1, n - 1]);
+      [3, 2].forEach(function (k) { if (k < n && n % k === 0) plans.push(even(n, k)); if (lead && k < n - 1 && (n - 1) % k === 0) plans.push([1].concat(even(n - 1, k))); });
+      plans.push(even(n, 1));
+      g.classList.remove("loose");
+      for (var pi = 0; pi < plans.length; pi++) {
+        var i = 0;
+        plans[pi].forEach(function (c) { for (var j = 0; j < c; j++, i++) kids[i].style.flex = "0 0 calc((100% - " + (c - 1) * gap + "px) / " + c + " - .1px)"; });
+        if (kids.every(roomFor)) break;
+        if (pi === plans.length - 1) g.classList.add("loose"); // (one under another and still too long: it wraps)
+      }
+    }
+  }
+  // a label has room when it stays inside the button's padding (it may use a few pixels of it)
+  function roomFor(k) {
+    var cs = getComputedStyle(k), r = document.createRange(); r.selectNodeContents(k);
+    return k.scrollWidth <= k.clientWidth && r.getBoundingClientRect().width <= k.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight) + 4;
+  }
+  var fitSoon = 0;
+  new MutationObserver(function () { fitRows(); }).observe(document.body, {childList: true, subtree: true});
+  window.addEventListener("resize", function () { cancelAnimationFrame(fitSoon); fitSoon = requestAnimationFrame(fitRows); });
+  try { document.fonts.ready.then(fitRows); document.fonts.addEventListener("loadingdone", fitRows); } catch (e) {}
+  // a short name for tight places (the tab bar, a button): the first name
+  var shortName = function (n) { return String(n || "").trim().split(/\s+/)[0]; };
   var num = function (n, cls) { return '<span class="num ' + (cls || "") + '">' + n + "</span>"; };
   var accOptions = function (sel, owner, kinds) {
     return B.accountsOf(db(), owner || me()).filter(function (a) { return !kinds || kinds.test(a.kind || "pot"); }).map(function (a) { return '<option value="' + esc(a.id) + '"' + (a.id === sel ? " selected" : "") + ">" + esc(a.name) + "</option>"; }).join("");
@@ -291,7 +326,7 @@
     var b = function (s, label, ic, on) { return '<button type="button" data-a="tab" data-v="' + s + '"' + (on ? ' aria-current="page"' : "") + ">" + icon(ic, 24) + esc(label) + "</button>"; };
     $("#nav").innerHTML = '<div class="in">' + b("today", "Today", "home", cur === "today") + b("money", "Money", "chart", cur === "money") +
       '<button type="button" data-a="tab" data-v="add" aria-label="Add a payment"' + (cur === "add" ? ' aria-current="page"' : "") + '><span class="plus">' + icon("plus", 26) + "</span></button>" +
-      b("partner", person(partner()).name || "Partner", "people", cur === "partner") + b("more", "More", "grid", inMore && cur !== "today" && cur !== "money" && cur !== "add" && cur !== "partner") + "</div>";
+      b("partner", shortName(person(partner()).name) || "Partner", "people", cur === "partner") + b("more", "More", "grid", inMore && cur !== "today" && cur !== "money" && cur !== "add" && cur !== "partner") + "</div>";
   }
   // a background refresh (sync, coming back to the app) mustn't wipe a half-filled form or close the keyboard
   function formBusy() {
@@ -322,7 +357,7 @@
     return card('<h2 style="font-size:22px">Welcome to Budgie</h2><p class="muted">Budgie works from your own Google Sheet. Open the connect link from your sheet on this phone, or paste it here.</p>' +
       '<label class="f">Connect link<input id="connectLink" type="url" placeholder="https://budgie-money.github.io/#connect=…" autocomplete="off"></label>' +
       '<button type="button" class="btn wide" style="margin-top:12px" data-a="connect">Connect</button>' + (S.lastError ? '<p class="bad small">' + esc(S.lastError) + "</p>" : "")) +
-      card('<h2>Just looking?</h2><p class="muted">Try Budgie with a made-up household. Nothing is saved.</p><button type="button" class="btn ghost wide" data-a="demo" data-v="on">Show me with sample data</button>');
+      card('<h2>Just looking?</h2><p class="muted">Try Budgie with a made-up household. Nothing is saved.</p><button type="button" class="btn ghost wide" data-a="demo" data-v="on">Show me sample data</button>');
   };
 
   // ----- Today
@@ -439,7 +474,7 @@
     };
     var nPay = d.transactions.filter(function (x) { return x.person === p && x.date >= per.start && x.date < per.next; }).length;
     html += sec(["in"], "Money in") + sec(["bill"], "Bills") + sec(["spend"], "Spending") +
-      (nPay ? '<button type="button" class="btn ghost wide" style="margin-top:10px" data-a="payments" data-v="' + esc(per.start) + '|">See all ' + nPay + " payment" + (nPay === 1 ? "" : "s") + " in " + esc(per.name) + "</button>" : "") + sec(["save", "topup"], "Savings");
+      (nPay ? '<button type="button" class="btn ghost wide" style="margin-top:10px" data-a="payments" data-v="' + esc(per.start) + '|">See all ' + nPay + " payment" + (nPay === 1 ? "" : "s") + "</button>" : "") + sec(["save", "topup"], "Savings");
     if (pl.shortfall > 0.004) html += card('<div class="bad" style="font-weight:700">Short by ' + M(pl.shortfall) + "</div>");
     html += '<p class="small muted" style="margin:12px 4px">The same as your <b>' + esc(person().name) + ' budget</b> tab in the Google Sheet.' + infoBtn("sheet") + "</p>";
     return html;
@@ -497,14 +532,14 @@
       return '<button type="button" class="budtile" data-a="addbud" data-v="' + esc(b.id) + '" aria-pressed="' + (a.budget === b.id) + '">' + icon(budIcon(b.name), 22) + budLabel(b) + "</button>";
     }).join("") + (buds.length > shownN ? '<button type="button" class="budtile others" data-a="addmorebud">' + icon("grid", 22) + "<span>More</span></button>" : "") + "</div>";
     // the details, as one line of things you can tap
-    var q = person(partner()).name || "partner", accName = B.accName(d, a.account);
+    var q = shortName(person(partner()).name) || "partner", accName = B.accName(d, a.account);
     var bits = ['<button type="button" class="detail" data-a="addfrom">' + "From " + esc(accName) + "</button>",
       '<button type="button" class="detail" data-a="adddatepick">' + esc(date === todayIso() ? "Today" : date === B.addDays(todayIso(), -1) ? "Yesterday" : B.nice(date)) + "</button>"];
     if (partner()) bits.push('<button type="button" class="detail' + (a.split ? " on" : "") + '" data-a="addsplit2" aria-pressed="' + !!a.split + '">' + (a.split ? "Split with " + esc(q) : "Not split") + "</button>");
     bits.push('<button type="button" class="detail" data-a="addnotepick">' + (a.note ? "“" + esc(a.note.length > 18 ? a.note.slice(0, 17) + "…" : a.note) + "”" : "Add a note") + "</button>");
-    html += '<div class="details">' + bits.join("") + "</div>";
+    html += '<div class="details fit" data-lead>' + bits.join("") + "</div>";
     html += '<button type="button" class="btn wide logit" data-a="addsave">Log it</button>';
-    html += '<p style="text-align:center;margin:14px 0 0"><button type="button" class="linkbtn" data-a="addmode" data-v="bill">A bill came in? Log its real amount</button></p>';
+    html += '<p style="text-align:center;margin:14px 0 0"><button type="button" class="linkbtn" data-a="addmode" data-v="bill">Log a bill\'s real amount</button></p>';
     return html;
   };
   function addBillScreen(amount) {
@@ -516,7 +551,7 @@
     if (a.bill && !shown.some(function (b) { return b.id === a.bill; })) a.bill = "";
     var html = '<p class="small muted" style="margin:0 4px 10px">The real amount of a bill that changes, like energy. It replaces the estimate (and re-splits it if it\'s shared).</p>' + amount;
     if (!myBills.length) return html + '<p class="empty">You don\'t have any bills yet.</p><button type="button" class="btn dash" data-a="new" data-v="bills">Add a bill</button>';
-    html += '<div style="font-weight:700;margin:14px 4px 8px">Which bill</div><div class="chips">' + shown.map(function (b) { return '<button type="button" class="chip" data-a="addpick" data-v="bill:' + esc(b.id) + '" aria-pressed="' + (a.bill === b.id) + '">' + esc(b.name) + "</button>"; }).join("") +
+    html += '<div style="font-weight:700;margin:14px 4px 8px">Which bill</div><div class="chips fit">' + shown.map(function (b) { return '<button type="button" class="chip" data-a="addpick" data-v="bill:' + esc(b.id) + '" aria-pressed="' + (a.bill === b.id) + '">' + esc(b.name) + "</button>"; }).join("") +
       (!showAll ? '<button type="button" class="chip" data-a="addallbills" style="border-style:dashed">Another bill…</button>' : "") + "</div>";
     html += '<div class="details" style="margin-top:12px"><button type="button" class="detail" data-a="adddatepick">' + esc((a.date || todayIso()) === todayIso() ? "Today" : B.nice(a.date)) + "</button></div>";
     html += '<button type="button" class="btn wide logit" data-a="addsave">Save the bill</button>';
@@ -552,7 +587,7 @@
     var bills = lns.length ? " for shared bills" : "", line = bt.owedToMe > 0.004 ? esc(qp.name) + " owes you " + M(bt.owedToMe) + bills : bt.iOwe > 0.004 ? "You owe " + esc(qp.name) + " " + M(bt.iOwe) + bills : lns.length ? "All square on shared bills" : "You're all square";
     html += '<h2 class="h2">Between you two' + infoBtn("between") + "</h2>" + card('<div class="row"><span style="font-weight:800;font-size:18px">' + line + "</span></div>" + loanLines +
       (mo && (mo.bills || mo.paidIn || mo.paidOut) ? '<div class="banner small">This month so far: shared bills ' + M(mo.bills) + ". " + (mo.theirShare ? esc(qp.name) + "'s share " + M(mo.theirShare) + ", paid " + M(mo.paidIn) + ". " : "") + (mo.myShare ? "Your share " + M(mo.myShare) + ", paid " + M(mo.paidOut) + "." : "") + "</div>" : "") +
-      (bt.owedToMe > 0.004 ? '<button type="button" class="btn ghost sm" style="margin-top:10px" data-a="settle" data-v="in">' + esc(qp.name) + " has paid me</button>" : bt.iOwe > 0.004 ? '<button type="button" class="btn ghost sm" style="margin-top:10px" data-a="settle" data-v="out">I\'ve paid ' + esc(qp.name) + "</button>" : ""));
+      (bt.owedToMe > 0.004 ? '<button type="button" class="btn ghost sm" style="margin-top:10px" data-a="settle" data-v="in">' + esc(shortName(qp.name)) + " has paid me</button>" : bt.iOwe > 0.004 ? '<button type="button" class="btn ghost sm" style="margin-top:10px" data-a="settle" data-v="out">I\'ve paid ' + esc(shortName(qp.name)) + "</button>" : ""));
     B.loans(d, p, now).forEach(function (l) {
       if (l.left <= 0.004) return;
       var next = l.plan[0];
@@ -587,8 +622,8 @@
     var pd = B.payday(d, p, per), pay = pd.pay, html = "";
     var payOcc = pay && pay.occ ? pay.occ.split("@") : null;
     html += '<section class="hero card"><div class="small" style="opacity:.92">' + (upcoming ? "Next payday: " : "Payday: ") + esc(B.nice(per.start)) + '</div><div class="big">' + (pay ? M(pay.amount) : "–") + "</div>" +
-      (pay && payOcc ? '<button type="button" class="btn sm" style="background:color-mix(in srgb, var(--hero-ink) 18%, transparent);color:var(--hero-ink)" data-a="payedit" data-v="' + esc(pay.occ) + '">' + (pay.actual ? "Change the amount" : "Paid a different amount?") + "</button>" : "") +
-      '<div class="small" style="opacity:.92;margin-top:8px">Change it and everything below re-sorts. What\'s left (' + esc(remainderName(pd.plan)) + ") goes up or down.</div></section>";
+      (pay && payOcc ? '<button type="button" class="btn sm" style="background:color-mix(in srgb, var(--hero-ink) 18%, transparent);color:var(--hero-ink)" data-a="payedit" data-v="' + esc(pay.occ) + '">' + (pay.actual ? "Change the amount" : "Paid a different amount?") + "</button>" : "") + "</section>";
+    S.ui.payLeft = remainderName(pd.plan);
     var rows = pd.moves.map(function (m) {
       var key = "pay:" + per.start + ":" + m.to, done = !!B.ticked(d, p, key);
       return '<label class="li" style="cursor:pointer"><input type="checkbox" class="tick" data-c="paytick" data-v="' + esc(key) + "|" + esc(m.from) + "|" + esc(m.to) + "|" + m.amount + '"' + (done ? " checked" : "") + (upcoming ? " disabled" : "") + '><span class="grow"><span class="what">' + esc(B.accName(d, m.to)) + '</span><span class="why">' + esc(MT(m.why)) + "</span></span>" + num(M(m.amount)) + "</label>";
@@ -632,7 +667,7 @@
     }).join("");
     if (!list.length) html += '<p class="empty">No payments logged ' + (bud ? "for this " : "this ") + "month yet.</p>";
     else html += '<div class="row" style="margin:14px 4px 0;font-weight:700"><span>Total</span>' + num(M(tot)) + "</div>";
-    html += '<div class="row" style="margin-top:14px"><button type="button" class="btn ghost sm" data-a="paymonth" data-v="-1">Earlier month</button>' + (per.next <= todayIso() ? '<button type="button" class="btn ghost sm" data-a="paymonth" data-v="1">Later month</button>' : "") + "</div>";
+    html += '<div class="row fit" style="margin-top:14px;gap:10px"><button type="button" class="btn ghost sm" data-a="paymonth" data-v="-1">Earlier month</button>' + (per.next <= todayIso() ? '<button type="button" class="btn ghost sm" data-a="paymonth" data-v="1">Later month</button>' : "") + "</div>";
     return html;
   };
   function paymentSheet(id) {
@@ -684,11 +719,11 @@
     }
     var monthName = first.toLocaleDateString("en-GB", {month: "long", year: "numeric"});
     var html = card('<div class="row" style="align-items:center"><button type="button" class="round" data-a="cal" data-v="-1" aria-label="Earlier month">' + icon("back", 18) + '</button><b>' + esc(monthName) + '</b><button type="button" class="round" data-a="cal" data-v="1" aria-label="Later month" style="transform:scaleX(-1)">' + icon("back", 18) + "</button></div>" +
-      '<div class="cal">' + ["M", "T", "W", "T", "F", "S", "S"].map(function (x) { return '<span class="h">' + x + "</span>"; }).join("") + cells + '</div><p class="tiny muted" style="margin:8px 0 0">Tap a day to see what\'s due. Green dots are money coming in.</p>');
+      '<div class="cal">' + ["M", "T", "W", "T", "F", "S", "S"].map(function (x) { return '<span class="h">' + x + "</span>"; }).join("") + cells + '</div><p class="tiny muted" style="margin:8px 0 0">Green dots are money coming in.</p>');
     var mine = d.bills.filter(function (b) { return b.person === p; }), subs = 0;
     mine.forEach(function (b) { if (/sub/i.test(b.category || "")) { B.occurrences(d, b, now, B.addDays(now, 365)).forEach(function (o) { subs += o.amount; }); } });
     var nextOf = function (it) { var o = B.occurrences(d, it, now, B.addDays(now, 400))[0]; return o ? B.nice(o.date) : "no more dates"; };
-    html += '<div class="row" style="margin:16px 4px 4px"><h2 style="font-size:17px">Your bills</h2><span class="tiny muted">Tap one to change it</span></div>';
+    html += '<h2 class="h2">Your bills</h2>';
     html += card('<div class="list">' + mine.map(function (b) { return li(esc(b.name) + (b.split ? ' <span class="tiny muted">shared</span>' : ""), esc(B.describe(b)) + " · next " + esc(nextOf(b)), num(M(B.amountAt(d, b, now))), "edit", "bills:" + b.id); }).join("") + "</div>" +
       (subs ? '<div class="row" style="padding-top:10px;border-top:1px solid var(--line2);font-weight:700"><span>Subscriptions over a year</span>' + num(M0(subs)) + "</div>" : ""), "flush");
     html += '<button type="button" class="btn dash" data-a="new" data-v="bills">Add a bill</button>';
@@ -827,7 +862,7 @@
         (L.expectedBonus && L.expectedBonus.length ? '<div class="small" style="margin-top:6px">Bonus on its way: about <b>' + M(L.expectedBonusTotal || L.expectedBonus.reduce(function (t, x) { return t + x.amount; }, 0)) + "</b>" + (L.expectedBonus[0].due ? (L.expectedBonus[0].due < now ? ", the first was due by " : ", the first by ") + esc(B.nice(L.expectedBonus[0].due)) : "") + ". Moneybox claims it for you.</div>" : "") +
         '<div style="margin-top:12px"><div class="row small"><span style="font-weight:600">This tax year (6 Apr to 5 Apr)</span><span class="num">' + M0(L.paidThisYear) + " of £4,000</span></div>" + '<div style="margin-top:6px">' + bar(L.paidThisYear / 40) + '</div><div class="small muted" style="margin-top:4px">' + M0(L.allowanceLeft) + " left you can pay in · bonus on this year's payments about " + M(L.bonusThisYear) + "</div>" +
         (L.planned ? '<div class="small" style="margin-top:8px">On course for ' + M0(L.onCourse) + " by 5 April" + (L.overBy ? '. <span class="warn">That\'s ' + M(L.overBy) + " over the £4,000 limit, and your provider turns away anything over it. Pay in a little less before then.</span>" : L.onCourse >= 3999.5 ? '. <span class="good">That\'s the full £1,000 bonus.</span>' : ".") + "</div>" : "") +
-        (a.owner === me() && (L.paidBefore || !Mo.flows.length) ? '<button type="button" class="btn ghost sm" style="margin-top:8px" data-a="lisapaid" data-v="' + esc(a.id) + '">' + (L.paidBefore ? "Paid in before Budgie: " + M0(L.paidBefore) : "Add what you paid in before Budgie") + "</button>" : "") + "</div>");
+        (a.owner === me() && (L.paidBefore || !Mo.flows.length) ? '<button type="button" class="btn ghost sm" style="margin-top:8px" data-a="lisapaid" data-v="' + esc(a.id) + '">' + (L.paidBefore ? "Paid in before Budgie: " + M0(L.paidBefore) : "Add what's already paid in") + "</button>" : "") + "</div>");
     });
     if (mineFirst.length > 1) html += card('<div class="row"><span style="font-weight:700">Together</span>' + num(M0(together)) + "</div>");
     html += '<div class="banner small"><b>The rules Budgie keeps an eye on.</b> Up to £4,000 a year, plus a 25% government bonus (up to £1,000). For a first home up to £450,000. Taking money out for anything else costs 25%. The government plans to replace the LISA with a new first-time-buyer account from April 2028; existing LISAs carry on for now.</div>';
@@ -844,19 +879,18 @@
     var monthlyIn = 0; d.budgets.forEach(function (b) { if (b.mode === "saving" && String(raw.accounts || "").indexOf(b.account) >= 0) monthlyIn += B.amountAt(d, b, now) * ((d.byId[b.account] || {}).kind === "lisa" ? 1.25 : 1); });
     var monthsTo = monthlyIn > 0 ? Math.max(0, Math.ceil((need - g.saved) / monthlyIn)) : null, ready = monthsTo !== null ? new Date(new Date().getFullYear(), new Date().getMonth() + monthsTo, 1).toLocaleDateString("en-GB", {month: "short", year: "numeric"}) : "";
     var ltv = Math.round(borrow / price * 100);
-    var chips = function (list, cur, act, fmt) { return '<div class="chips" style="margin-top:6px">' + list.map(function (v) { return '<button type="button" class="chip" data-a="' + act + '" data-v="' + v + '" aria-pressed="' + (v === cur) + '">' + fmt(v) + "</button>"; }).join("") + "</div>"; };
+    var chips = function (list, cur, act, fmt, lead) { return '<div class="chips fit" style="margin-top:6px"' + (lead ? " data-lead" : "") + ">" + list.map(function (v) { return '<button type="button" class="chip" data-a="' + act + '" data-v="' + v + '" aria-pressed="' + (v === cur) + '">' + fmt(v) + "</button>"; }).join("") + "</div>"; };
     var html = card('<div class="small muted">Your first home' + (g.parts.length > 1 ? ", together" : "") + '</div><div style="font-size:24px;font-weight:800;font-family:var(--head)">' + (ready ? "Ready around " + esc(ready) : M0(g.saved) + " saved") + "</div>" +
       '<div style="margin:10px 0 6px">' + bar(need ? g.saved / need * 100 : 0) + '</div><div class="small">' + M0(g.saved) + " saved of " + M0(need) + " needed</div>" +
       (g.parts.length ? '<div class="small muted">' + g.parts.map(function (x) { return esc(x.owner === me() ? "Your " : person(x.owner).name + "'s ") + esc(x.name) + " " + M0(x.amount); }).join(" · ") + "</div>" : "") +
       (monthlyIn ? '<div class="small muted">Going in each month: about ' + M0(monthlyIn) + " including the LISA bonus</div>" : ""));
     html += card("<h2>Try the numbers</h2>" + '<div class="small muted" style="margin-top:8px">House price</div>' + chips([200000, 250000, 300000, 350000], price, "hprice", function (v) { return "£" + v / 1000 + "k"; }) +
-      '<div class="small muted" style="margin-top:12px">Deposit</div>' + chips([0, 10, 15, 25, 40], depPct, "hdep", function (v) { return v ? v + "%" : "Your goal"; }) +
+      '<div class="small muted" style="margin-top:12px">Deposit</div>' + chips([0, 10, 15, 25, 40], depPct, "hdep", function (v) { return v ? v + "%" : "Your goal"; }, true) +
       '<div class="two"><label class="f">Interest rate %<input type="number" step="0.1" inputmode="decimal" data-c="hrate" value="' + rate + '"></label><label class="f">Years<input type="number" inputmode="numeric" data-c="hterm" value="' + term + '"></label></div>' +
       '<div class="list" style="margin-top:10px">' + li("Deposit", Math.round(deposit / price * 100) + "% of the price", num(M0(deposit))) + li("Fees and moving", "Survey, solicitor, moving van", num(M0(fees))) + li("You need", "", num(M0(need))) +
       li("You borrow", ltv + "% loan to value" + (ltv <= 60 ? ": the cheapest rates" : ltv <= 75 ? ": good rates" : ltv <= 85 ? "" : ": fewer, pricier deals"), num(M0(borrow))) + li("Mortgage each month", rate + "% over " + term + " years", num(M0(monthly))) +
       li("Can you use your LISA?", price <= 450000 ? "Yes: the home is under £450,000" : "No: LISAs only work for homes up to £450,000", num(price <= 450000 ? "Yes" : "No", price <= 450000 ? "good" : "bad")) + "</div>" +
       '<p class="tiny muted" style="margin:10px 0 0">Estimates only. A mortgage broker will give you the real figures.</p>');
-    html += '<p class="tiny muted" style="margin:10px 4px">Once you have a mortgage, this becomes a mortgage tracker.</p>';
     return html;
   };
 
@@ -882,7 +916,7 @@
         l.plan.slice(0, 4).map(function (r) { return '<div class="row small" style="padding:4px 0"><span>' + esc(B.nice(r.date)) + "</span>" + num(M(r.amount)) + "</div>"; }).join("") + "</button>";
     });
     B.accountsOf(d, p).filter(function (a) { return a.kind === "credit"; }).forEach(function (a) { var v = B.balances(d, now)[a.id] || 0; html += card('<div class="row"><span style="font-weight:700">' + esc(a.name) + "</span>" + num(M(-v)) + '</div><div class="small muted">' + esc(a.purpose || "") + "</div>"); });
-    return (html || '<p class="empty">No debts or IOUs. Nice.</p>') + '<button type="button" class="btn dash" data-a="new" data-v="loans">Add money owed between you</button>';
+    return (html || '<p class="empty">No debts or IOUs. Nice.</p>') + '<button type="button" class="btn dash" data-a="new" data-v="loans">Add money owed</button>';
   };
 
   // ----- Insights
@@ -984,11 +1018,11 @@
   function ago(t) { var s = Math.round((Date.now() - t) / 1000); return s < 60 ? "just now" : s < 3600 ? Math.round(s / 60) + " min ago" : Math.round(s / 3600) + " h ago"; }
 
   SCREENS.themes = function () {
-    var p = S.prefs, html = card('<h2>Light or dark</h2><div class="seg" style="margin-top:10px" role="group">' + [["light", "Light"], ["dark", "Dark"], ["system", "Match phone"]].map(function (m) { return '<button type="button" data-a="tmode" data-v="' + m[0] + '" aria-pressed="' + (p.mode === m[0] && !p.special) + '">' + m[1] + "</button>"; }).join("") + "</div>" +
+    var p = S.prefs, html = card('<h2>Light or dark</h2><div class="seg" style="margin-top:10px" role="group">' + [["light", "Light"], ["dark", "Dark"], ["system", "Auto", "Match your phone"]].map(function (m) { return '<button type="button" data-a="tmode" data-v="' + m[0] + '"' + (m[2] ? ' aria-label="' + m[2] + '"' : "") + ' aria-pressed="' + (p.mode === m[0] && !p.special) + '">' + m[1] + "</button>"; }).join("") + "</div>" +
       '<h2 style="margin-top:16px">Colour</h2><div class="swatches">' + Object.keys(TH.COLOURS).map(function (k) { var c = TH.COLOURS[k]; return '<button type="button" data-a="tcolour" data-v="' + k + '" aria-label="' + c.name + '" aria-pressed="' + (p.colour === k && !p.special) + '" style="background:' + c.light + '"></button>'; }).join("") + "</div>");
     html += '<h2 class="h2">Special themes</h2>' + Object.keys(TH.SPECIAL).map(function (k) { var t = TH.SPECIAL[k]; return '<button type="button" class="theme-card" data-a="tspecial" data-v="' + k + '" aria-pressed="' + (p.special === k) + '"><span class="sw" style="background:' + t.vars.hero + ";border:3px solid " + t.vars.accent + '"></span><span class="grow"><span class="what" style="font-family:' + t.vars.head + '">' + esc(t.name) + '</span><span class="why">' + esc(t.note) + "</span></span></button>"; }).join("") +
       (p.special ? '<button type="button" class="btn ghost wide" style="margin-top:10px" data-a="tspecial" data-v="">Back to the standard look</button>' : "");
-    html += card('<h2>Text size</h2><div class="seg" style="margin-top:10px">' + [["small", "Small"], ["normal", "Normal"], ["large", "Large"], ["larger", "Larger"]].map(function (s) { return '<button type="button" data-a="tsize" data-v="' + s[0] + '" aria-pressed="' + ((p.size || "normal") === s[0]) + '">' + s[1] + "</button>"; }).join("") + "</div>" +
+    html += card('<h2>Text size</h2><div class="seg fit" style="margin-top:10px" role="group">' + [["small", "Small"], ["normal", "Normal"], ["large", "Large"], ["larger", "Larger"]].map(function (s) { return '<button type="button" data-a="tsize" data-v="' + s[0] + '" aria-pressed="' + ((p.size || "normal") === s[0]) + '">' + s[1] + "</button>"; }).join("") + "</div>" +
       '<label class="li check" style="margin-top:6px"><span class="grow"><span class="what">Easy read</span><span class="why">The Lexend font, simpler screens, fewer extra numbers</span></span><input type="checkbox" data-c="toggle" data-v="easy"' + (isEasy() ? " checked" : "") + "></label>");
     return html;
   };
@@ -1035,8 +1069,8 @@
     var rows = (b.accounts || []).map(function (x) {
       var unset = x.mappedTo === null || x.mappedTo === undefined, sug = unset ? guess(x) : "", cur = unset ? null : x.mappedTo, suggested = !!sug;
       if (suggested) S.ui.bankGuess[x.extId] = sug;
-      return '<div class="li" style="flex-wrap:wrap;gap:6px"><span class="grow" style="min-width:140px"><span class="what">' + esc(x.name) + '</span><span class="why">' + esc(({main: "Main account", pot: "Pot", space: "Space", credit: "Credit"})[x.kind] || "") + (x.balance !== undefined && x.balance !== null ? " · " + M(x.balance) : "") + (suggested ? ' · <span class="warn">looks like ' + esc(B.accName(d, sug)) + "</span>" : unset ? ' · <span class="warn">not matched yet</span>' : "") + "</span></span>" +
-        '<select data-c="bankmap" data-v="' + esc(x.extId) + '" aria-label="Which Budgie account is ' + esc(x.name) + '" style="min-height:44px;border-radius:10px;border:1px solid var(--line);background:var(--card);padding:0 8px;max-width:100%">' + (unset ? '<option value="" selected disabled>Choose…</option>' : "") + '<option value=""' + (cur === "" ? " selected" : "") + ">Ignore it</option>" + accs.map(function (a) { return '<option value="' + esc(a.id) + '"' + (cur === a.id ? " selected" : "") + ">" + esc(a.name) + "</option>"; }).join("") + "</select></div>";
+      return '<div class="li" style="flex-wrap:wrap;gap:6px"><span class="grow"><span class="what">' + esc(x.name) + '</span><span class="why">' + esc(({main: "Main account", pot: "Pot", space: "Space", credit: "Credit"})[x.kind] || "") + (x.balance !== undefined && x.balance !== null ? " · " + M(x.balance) : "") + (suggested ? ' · <span class="warn">looks like ' + esc(B.accName(d, sug)) + "</span>" : unset ? ' · <span class="warn">not matched yet</span>' : "") + "</span></span>" +
+        '<select data-c="bankmap" data-v="' + esc(x.extId) + '" aria-label="Which Budgie account is ' + esc(x.name) + '" style="flex:1 1 100%;min-width:0;min-height:44px;border-radius:10px;border:1px solid var(--line);background:var(--card);padding:0 8px;max-width:100%">' + (unset ? '<option value="" selected disabled>Choose…</option>' : "") + '<option value=""' + (cur === "" ? " selected" : "") + ">Ignore it</option>" + accs.map(function (a) { return '<option value="' + esc(a.id) + '"' + (cur === a.id ? " selected" : "") + ">" + esc(a.name) + "</option>"; }).join("") + "</select></div>";
     }).join("");
     var nGuess = Object.keys(S.ui.bankGuess).length;
     var reN = reviewRows().length;
@@ -1044,21 +1078,22 @@
         '<div class="small muted">' + (b.lastSync ? "Last checked " + esc(ago(b.lastSync)) + ". " : "") + "Budgie checks every 15 minutes." + (b.reapproveBy ? " Approve it again in the Monzo app by " + esc(B.nice(String(b.reapproveBy).slice(0, 10))) + "." : "") + "</div>" +
         (b.lastError ? '<p class="small bad">' + esc(b.lastError) + "</p>" : "") +
         (reN ? '<button type="button" class="btn wide" style="margin-top:12px" data-a="go" data-v="review">Check ' + reN + " new payment" + (reN === 1 ? "" : "s") + "</button>" : "") +
-        '<div class="two" style="margin-top:12px"><button type="button" class="btn ghost" data-a="banksync">Check now</button>' + (b.needsReconnect && b.provider === "monzo" ? '<button type="button" class="btn" data-a="bankmonzo2">Reconnect</button>' : "") + "</div>") +
-      (rows ? '<h2 class="h2">Which is which</h2><p class="small muted" style="margin:-4px 4px 6px">Tell Budgie which of its accounts each one is. Moves between them tick off your payday list by themselves.</p>' + card('<div class="list">' + rows + "</div>", "flush") + (nGuess ? '<button type="button" class="btn wide" style="margin-top:10px" data-a="bankguess">Match ' + (nGuess === 1 ? "it" : "all " + nGuess) + " the way Budgie suggests</button>" : "") : "") +
+        '<div class="two fit" style="margin-top:12px"><button type="button" class="btn ghost" data-a="banksync">Check now</button>' + (b.needsReconnect && b.provider === "monzo" ? '<button type="button" class="btn" data-a="bankmonzo2">Reconnect</button>' : "") + "</div>") +
+      (rows ? '<h2 class="h2">Which is which' + infoBtn("bankmap") + "</h2>" + card('<div class="list">' + rows + "</div>", "flush") + (nGuess ? '<button type="button" class="btn wide" style="margin-top:10px" data-a="bankguess">Match ' + (nGuess === 1 ? "it" : "all " + nGuess) + " as suggested</button>" : "") : "") +
       safety + '<button type="button" class="btn danger wide" style="margin-top:14px" data-a="bankoff">Disconnect ' + esc(bankName()) + "</button>";
   };
   // new payments from the bank: check what they were for
   SCREENS.review = function () {
-    var d = db(), list = reviewRows(), buds = spendBudgets(), q = person(partner()).name || "";
+    var d = db(), list = reviewRows(), buds = spendBudgets(), q = shortName(person(partner()).name);
     if (!list.length) return '<p class="empty">All checked. Nice.</p>';
-    var top = addBudgets(todayIso()).slice(0, 4);
-    return '<p class="small muted" style="margin:0 4px 10px">From ' + esc(bankName()) + ". Tap what each one was for. Budgie remembers, so next time it guesses right.</p>" + list.slice(0, 30).map(function (x) {
-      var opts = top.slice(); if (x.budget && !opts.some(function (b) { return b.id === x.budget; }) && d.byId[x.budget]) opts.unshift(d.byId[x.budget]);
+    var all = addBudgets(todayIso()), top = all.length > 4 ? all.slice(0, 3) : all;
+    return '<p class="small muted" style="margin:0 4px 10px">Tap what each one was for. Budgie remembers for next time.</p>' + list.slice(0, 30).map(function (x) {
+      // (what it's down as now is always one of them)
+      var opts = top.slice(); if (x.budget && !opts.some(function (b) { return b.id === x.budget; }) && d.byId[x.budget]) { if (all.length > 4) opts.pop(); opts.unshift(d.byId[x.budget]); }
       return card('<div class="row"><span style="font-weight:700">' + esc(x.note || "Payment") + "</span>" + num(M(x.amount)) + '</div><div class="small muted">' + esc(B.nice(x.date)) + " · " + esc(B.accName(d, x.account)) + "</div>" +
-        '<div class="chips" style="margin-top:8px">' + opts.map(function (b) { return '<button type="button" class="chip" data-a="revbud" data-v="' + esc(x.id) + "|" + esc(b.id) + '" aria-pressed="' + (x.budget === b.id) + '">' + esc(budName(b)) + "</button>"; }).join("") +
+        '<div class="chips fit" style="margin-top:8px">' + opts.map(function (b) { return '<button type="button" class="chip" data-a="revbud" data-v="' + esc(x.id) + "|" + esc(b.id) + '" aria-pressed="' + (x.budget === b.id) + '">' + esc(budName(b)) + "</button>"; }).join("") +
         (buds.length > opts.length ? '<button type="button" class="chip" style="border-style:dashed" data-a="revmore" data-v="' + esc(x.id) + '">Other…</button>' : "") + "</div>" +
-        '<div class="row" style="margin-top:8px;align-items:center">' + (partner() ? '<button type="button" class="detail' + (revSplit(x) ? " on" : "") + '" data-a="revsplit" data-v="' + esc(x.id) + '">' + (revSplit(x) ? "Split with " + esc(q) : "Not split") + "</button>" : "<span></span>") +
+        '<div class="row' + (partner() ? " fit" : "") + '" style="margin-top:8px;align-items:center;gap:8px">' + (partner() ? '<button type="button" class="detail' + (revSplit(x) ? " on" : "") + '" data-a="revsplit" data-v="' + esc(x.id) + '">' + (revSplit(x) ? "Split with " + esc(q) : "Not split") + "</button>" : "<span></span>") +
         '<button type="button" class="btn sm" data-a="revok" data-v="' + esc(x.id) + '"' + (x.budget ? "" : " disabled") + ">Right</button></div>");
     }).join("") + (list.some(function (x) { return x.budget; }) ? '<button type="button" class="btn ghost wide" style="margin-top:12px" data-a="revall">All the rest look right</button>' : "");
   };
@@ -1084,14 +1119,14 @@
     return '<p class="small muted" style="margin:0 4px 10px">Each app gets its own link that only lets it do its one job. Making a new link switches off the old one.</p>' + APPS.map(function (a) {
       var on = !!st[a[0]], made = S.ui.appLink && S.ui.appLink.app === a[0] ? S.ui.appLink.link : "";
       return card('<div class="row"><h2>' + a[1] + '</h2><span class="small ' + (on ? "good" : "muted") + '" style="font-weight:700">' + (on ? "Linked" : "Not linked") + '</span></div><p class="small muted">' + esc(a[2]) + "</p>" +
-        (made ? '<label class="f">Your link for ' + a[1] + '<input type="text" class="secret" readonly value="' + esc(made) + '" id="appLinkOut"></label><div class="two" style="margin-top:8px"><button type="button" class="btn" data-a="applinkcopy">Copy it</button><a class="btn ghost" style="display:flex;align-items:center;justify-content:center;text-decoration:none" href="' + a[3] + '" target="_blank" rel="noopener">Open ' + a[1] + '</a></div><p class="tiny muted" style="margin:8px 0 0">In ' + a[1] + ": " + esc(a[4]) + ", and paste it. Then clear your clipboard.</p>" :
-          '<div class="two" style="margin-top:8px"><button type="button" class="btn' + (on ? " ghost" : "") + '" data-a="applink" data-v="' + a[0] + '">' + (on ? "Make a new link" : "Link " + a[1]) + "</button>" + (on ? '<button type="button" class="btn danger" data-a="appunlink" data-v="' + a[0] + '">Unlink</button>' : "") + "</div>"));
+        (made ? '<label class="f">Your link for ' + a[1] + '<input type="text" class="secret" readonly value="' + esc(made) + '" id="appLinkOut"></label><div class="two fit" style="margin-top:8px"><button type="button" class="btn" data-a="applinkcopy">Copy it</button><a class="btn ghost fitlink" href="' + a[3] + '" target="_blank" rel="noopener">Open ' + a[1] + '</a></div><p class="tiny muted" style="margin:8px 0 0">In ' + a[1] + ": " + esc(a[4]) + ", and paste it. Then clear your clipboard.</p>" :
+          '<div class="two fit" style="margin-top:8px"><button type="button" class="btn' + (on ? " ghost" : "") + '" data-a="applink" data-v="' + a[0] + '">' + (on ? "Make a new link" : "Link " + a[1]) + "</button>" + (on ? '<button type="button" class="btn danger" data-a="appunlink" data-v="' + a[0] + '">Unlink</button>' : "") + "</div>"));
     }).join("");
   };
 
   SCREENS.emailset = function () {
     var on = /^true$/i.test(String(getSetting("email.sunday", ""))), to = getSetting("email.to", "");
-    return '<p class="small muted" style="margin:0 4px 10px">Every Sunday evening: your week, what\'s left until payday, bills coming up and anything to sort. Only what you\'d see in the app. Just after 6 April, your year in money too.</p>' +
+    return '<p class="small muted" style="margin:0 4px 10px">Every Sunday evening: your week, what\'s left until payday, bills coming up and anything to sort. Only what you\'d see in the app.</p>' +
       card('<label class="li check"><span class="grow"><span class="what">Send me the Sunday email</span></span><input type="checkbox" data-c="emailon"' + (on ? " checked" : "") + '></label><label class="f">Your email address<input type="email" id="emailTo" inputmode="email" autocomplete="email" value="' + esc(to) + '" placeholder="you@example.com"></label><button type="button" class="btn wide" style="margin-top:12px" data-a="emailsave">Save</button>');
   };
   SCREENS.sharing = function () {
@@ -1106,7 +1141,7 @@
     if (demoOn()) return card("<p>Show and tell is on, so nothing is synced. Turn it off in Settings to go back to your own data.</p>");
     var c = S.cfg || {};
     return card('<div class="list">' + li("Status", esc(syncLabel()), "") + li("Waiting to sync", S.data.queue.length + " change" + (S.data.queue.length === 1 ? "" : "s"), "") + li("Signed in as", esc(person().name || "?"), "") + "</div>" +
-      '<div class="two" style="margin-top:10px"><button type="button" class="btn" data-a="syncnow">Sync now</button><button type="button" class="btn ghost" data-a="syncfull">Full refresh</button></div>') +
+      '<div class="two fit" style="margin-top:10px"><button type="button" class="btn" data-a="syncnow">Sync now</button><button type="button" class="btn ghost" data-a="syncfull">Full refresh</button></div>') +
       '<div class="banner small">Your data lives in the <b>Budgie data</b> Google Sheet. Each tab is a table you can read, sort or back up. Your budget tab fills itself in. This phone keeps a copy so the app works offline.</div>' +
       card('<h2>Move to another phone</h2><p class="small muted">Open your connect link on the new phone. Keep it private: it lets anyone with it see your budget.</p><button type="button" class="btn danger sm" data-a="disconnect">Disconnect this phone</button>');
   };
@@ -1139,12 +1174,12 @@
   var FORMS = {
     bills: {title: "Bill", fields: function () { return [{k: "name", t: "text", l: "Name"}, {k: "amount", t: "money", l: "Amount"}].concat(SCHED()).concat([{k: "account", t: "account", l: "Comes out of"}, {k: "category", t: "select", l: "Type", o: [["home", "Home and flat bills"], ["subscription", "Subscription"], ["phone", "Phone"], ["car", "Car"], ["health", "Health"], ["work", "Work and fees"], ["insurance", "Insurance"], ["other", "Other"]]}, {k: "split", t: "split", l: "Shared with your partner?"}, {k: "variable", t: "check", l: "The amount changes each time (like energy)"}, {k: "setAside", t: "setaside"}, {k: "notes", t: "text", l: "Notes"}]); }, owner: "person"},
     income: {title: "Money coming in", fields: function () { return [{k: "name", t: "text", l: "Name"}, {k: "amount", t: "money", l: "Amount (after tax)"}].concat(SCHED()).concat([{k: "account", t: "account", l: "Goes into"}, {k: "isPay", t: "check", l: "This is my pay (it sets my pay periods)"}, {k: "notes", t: "text", l: "Notes"}]); }, owner: "person"},
-    budgets: {title: "Budget", fields: function () { return [{k: "name", t: "text", l: "Name"}, {k: "amount", t: "money", l: "Amount each pay period (leave empty for whatever is left)"}, {k: "mode", t: "select", l: "How it works", o: [["daily", "Day to day: builds up each day"], ["weekly", "Weekly: paced week by week (good for food shops)"], ["oneoff", "One-offs: no daily pace"], ["saving", "Saving: moved on payday"], ["remainder", "Whatever is left after everything else"]]}, {k: "account", t: "account", l: "Kept in", all: true}, {k: "carry", t: "check", l: "Carry anything unspent into next month"}, {k: "start", t: "date", l: "Starts (optional)"}, {k: "end", t: "date", l: "Ends (optional)"}]; }, owner: "person"},
-    accounts: {title: "Account", fields: function () { return [{k: "name", t: "text", l: "Name"}, {k: "kind", t: "select", l: "Kind", o: [["main", "Main account"], ["pot", "Pot or Space"], ["saving", "Savings pot"], ["isa", "ISA"], ["lisa", "Lifetime ISA"], ["pension", "Pension"], ["credit", "Credit card, Flex or overdraft"]]}, {k: "purpose", t: "text", l: "What it's for"}, {k: "fallback", t: "check", l: "Covers going over budget (only one should)"}, {k: "order", t: "number", l: "Order on screen"}]; }, owner: "owner"},
+    budgets: {title: "Budget", fields: function () { return [{k: "name", t: "text", l: "Name"}, {k: "amount", t: "money", l: "Amount each pay period (leave empty for whatever is left)"}, {k: "mode", t: "select", l: "How it works", info: "modes", o: [["daily", "Day to day"], ["weekly", "Weekly (food shops)"], ["oneoff", "One-offs"], ["saving", "Saving on payday"], ["remainder", "Whatever is left"]]}, {k: "account", t: "account", l: "Kept in", all: true}, {k: "carry", t: "check", l: "Carry anything unspent into next month"}, {k: "start", t: "date", l: "Starts (optional)"}, {k: "end", t: "date", l: "Ends (optional)"}]; }, owner: "person"},
+    accounts: {title: "Account", fields: function () { return [{k: "name", t: "text", l: "Name"}, {k: "kind", t: "select", l: "Kind", o: [["main", "Main account"], ["pot", "Pot or Space"], ["saving", "Savings pot"], ["isa", "ISA"], ["lisa", "Lifetime ISA"], ["pension", "Pension"], ["credit", "Credit or overdraft"]]}, {k: "purpose", t: "text", l: "What it's for"}, {k: "fallback", t: "check", l: "Covers going over budget (only one should)"}, {k: "order", t: "number", l: "Order on screen"}]; }, owner: "owner"},
     goals: {title: "Goal", fields: function () { return [{k: "name", t: "text", l: "Name"}, {k: "target", t: "money", l: "Target"}, {k: "due", t: "date", l: "Target date (optional)"}, {k: "kind", t: "select", l: "Kind", o: [["savings", "Saving for something"], ["house", "House deposit"], ["emergency", "Emergency fund"], ["car", "Car"], ["holiday", "Holiday"], ["other", "Other"]]}, {k: "accounts", t: "accounts", l: "Which accounts count towards it"}, {k: "extra", t: "money", l: "Plus money kept elsewhere (optional)"}, {k: "owners", t: "owners", l: "Whose goal"}, {k: "price", t: "money", l: "House price you're aiming for (house goals)"}, {k: "notes", t: "text", l: "Notes"}]; }, owner: "owners"},
     splits: {title: "Split", fields: function () { return [{k: "name", t: "text", l: "Name (for example Flat bills)"}, {k: "shares", t: "shares", l: "How it's shared"}]; }, owner: null},
     transfers: {title: "Regular payment", fields: function () { return [{k: "name", t: "text", l: "Name (for example Rent share)"}, {k: "amount", t: "money", l: "Amount"}].concat(SCHED()).concat([{k: "fromAccount", t: "account", l: "From your"}, {k: "toAccount", t: "account", l: "Into their", owner: partner()}, {k: "notes", t: "text", l: "Notes"}]); }, owner: "from"},
-    loans: {title: "Money owed", fields: function () { return [{k: "name", t: "text", l: "What for"}, {k: "amount", t: "money", l: "Total"}, {k: "direction", t: "select", l: "Who owes who", o: [["in", person(partner()).name + " owes me"], ["out", "I owe " + person(partner()).name]]}, {k: "date", t: "date", l: "Date"}, {k: "account", t: "account", l: "Paid from (optional)", optional: true}, {k: "repay", t: "money", l: "Paid back each month"}, {k: "repayFrom", t: "date", l: "First repayment"}, {k: "repayDay", t: "number", l: "Day of the month"}, {k: "notes", t: "text", l: "Notes"}]; }, owner: "loan"},
+    loans: {title: "Money owed", fields: function () { return [{k: "name", t: "text", l: "What for"}, {k: "amount", t: "money", l: "Total"}, {k: "direction", t: "select", l: "Who owes who", o: [["in", shortName(person(partner()).name) + " owes me"], ["out", "I owe " + shortName(person(partner()).name)]]}, {k: "date", t: "date", l: "Date"}, {k: "account", t: "account", l: "Paid from (optional)", optional: true}, {k: "repay", t: "money", l: "Paid back each month"}, {k: "repayFrom", t: "date", l: "First repayment"}, {k: "repayDay", t: "number", l: "Day of the month"}, {k: "notes", t: "text", l: "Notes"}]; }, owner: "loan"},
     gifts: {title: "Gift", fields: function () { return [{k: "name", t: "text", l: "Who for"}, {k: "idea", t: "text", l: "Idea"}, {k: "occasion", t: "text", l: "Occasion (for example Christmas)"}, {k: "date", t: "date", l: "When"}, {k: "limit", t: "money", l: "Spend up to"}, {k: "bought", t: "check", l: "Bought"}, {k: "cost", t: "money", l: "What it cost"}, {k: "notes", t: "text", l: "Notes"}]; }, owner: "person"}
   };
   var EDIT = {};
@@ -1164,7 +1199,7 @@
     F.fields().forEach(function (f) { html += field(f, r); });
     var canStop = EDIT.id && /bills|income|transfers|budgets/.test(EDIT.table);
     html += '<button type="button" class="btn wide" style="margin-top:18px" data-a="editsave">Save</button>';
-    if (EDIT.id) html += '<div class="two" style="margin-top:10px">' + (canStop ? '<button type="button" class="btn line" data-a="editstop">' + (EDIT.table === "budgets" ? "Stop after this pay period" : "Stop from today") + "</button>" : "") + '<button type="button" class="btn danger" data-a="editdelete">Delete</button></div>';
+    if (EDIT.id) html += '<div class="two fit" style="margin-top:10px">' + (canStop ? '<button type="button" class="btn line" data-a="editstop">' + (EDIT.table === "budgets" ? "Stop at next payday" : "Stop from today") + "</button>" : "") + '<button type="button" class="btn danger" data-a="editdelete">Delete</button></div>';
     return card(html);
   };
   function field(f, r) {
@@ -1182,17 +1217,17 @@
         var sa = !(r.setAside === false || /^false$/i.test(String(r.setAside)));
         return '<label class="check"><input type="checkbox" data-f="setAside"' + (sa ? " checked" : "") + '>Put a bit by each month so it\'s there when it comes</label>';
       case "check": return '<label class="check"><input type="checkbox" data-f="' + f.k + '"' + (v === true || /^true$/i.test(String(v)) ? " checked" : "") + ">" + esc(f.l) + "</label>";
-      case "select": return '<label class="f">' + esc(f.l) + '<select data-f="' + f.k + '">' + f.o.map(function (o) { return '<option value="' + o[0] + '"' + (String(v || f.o[0][0]) === o[0] ? " selected" : "") + ">" + esc(o[1]) + "</option>"; }).join("") + "</select></label>";
+      case "select": return '<label class="f">' + esc(f.l) + (f.info ? infoBtn(f.info) : "") + '<select data-f="' + f.k + '">' + f.o.map(function (o) { return '<option value="' + o[0] + '"' + (String(v || f.o[0][0]) === o[0] ? " selected" : "") + ">" + esc(o[1]) + "</option>"; }).join("") + "</select></label>";
       case "account":
         // a loan is paid from the lender's account: only theirs to choose, so it's asked only when you lent it
         if (EDIT.table === "loans" && r.direction === "out") return "";
         var own = f.owner || me(); return '<label class="f">' + esc(f.l) + '<select data-f="' + f.k + '">' + (f.optional ? '<option value="">None</option>' : "") + accOptions(v || (f.optional ? "" : B.mainOf(db(), own)), own, f.all ? null : /main|pot|saving|credit|isa|lisa|pension/) + "</select></label>";
       case "accounts": var sel = String(v).split(/[,\s]+/); return '<div class="f" style="font-size:13px;font-weight:600;color:var(--muted);margin-top:12px">' + esc(f.l) + "</div>" + db().accounts.map(function (a) { return '<label class="check" style="padding:6px 0"><input type="checkbox" data-fm="' + f.k + '" value="' + esc(a.id) + '"' + (sel.indexOf(a.id) >= 0 ? " checked" : "") + ">" + esc((a.owner === me() ? "" : person(a.owner).name + "'s ") + a.name) + "</label>"; }).join("");
       case "owners": var both = String(v || me()).split(/[,\s]+/).filter(Boolean).length > 1; return '<label class="f">' + esc(f.l) + '<select data-f="owners"><option value="' + esc(me()) + '">Just mine</option><option value="' + esc(me() + ", " + partner()) + '"' + (both ? " selected" : "") + ">Ours together</option></select></label>";
-      case "split": return '<label class="f">' + esc(f.l) + '<select data-f="split"><option value="">No, it\'s just mine</option>' + db().splits.map(function (s) { return '<option value="' + esc(s.id) + '"' + (v === s.id ? " selected" : "") + ">" + esc(s.name + ": " + describeShares(s.shares)) + "</option>"; }).join("") + "</select></label>";
+      case "split": return '<label class="f">' + esc(f.l) + '<select data-f="split"><option value="">No, it\'s just mine</option>' + db().splits.map(function (s) { return '<option value="' + esc(s.id) + '"' + (v === s.id ? " selected" : "") + ">" + esc(s.name) + "</option>"; }).join("") + "</select></label>";
       case "shares":
         var ppl = db().people, fixed = /=/.test(v), vals = {}; String(v).replace(/([a-z]+)\s*[:=]\s*([\d.]+)/gi, function (_, a, b) { vals[a.toLowerCase()] = b; });
-        return '<label class="f">How<select data-sh="mode"><option value="parts">In parts (for example 2 to 1)</option><option value="fixed"' + (fixed ? " selected" : "") + ">One of you pays a fixed amount</option></select></label>" +
+        return '<label class="f">How<select data-sh="mode"><option value="parts">In parts (like 2 to 1)</option><option value="fixed"' + (fixed ? " selected" : "") + ">A fixed amount</option></select></label>" +
           '<div class="two">' + ppl.map(function (x) { return '<label class="f">' + esc(x.name) + '<input type="text" inputmode="decimal" data-sh="' + esc(x.id) + '" value="' + esc(vals[x.id] || "") + '" placeholder="' + (fixed ? "£ or empty" : "parts") + '"></label>'; }).join("") + "</div>";
       case "how":
         var unit = r.unit || "month", every = +r.every || 1, how = unit === "month" && every === 3 ? "quarter" : unit === "week" ? "week" : unit;
@@ -1203,7 +1238,7 @@
           (how === "month" || how === "quarter" ? '<label class="f">On<select data-f="on">' + days + specials + "</select></label>" : "") +
           (how === "week" ? '<label class="f">Every how many weeks<input type="number" inputmode="numeric" data-f="every" value="' + every + '"></label>' : "") +
           (how === "dates" ? '<label class="f">Dates (one per line)<textarea data-f="dates">' + esc(String(r.dates || "").split(/[,;]\s*/).join("\n")) + "</textarea></label>" : "") +
-          (how !== "dates" && how !== "once" ? '<label class="f">If it lands on a weekend or bank holiday<select data-f="shift"><option value="">It stays on that day</option><option value="next working day"' + (/next/.test(r.shift || "") ? " selected" : "") + '>It moves to the next working day</option><option value="previous working day"' + (/prev/.test(r.shift || "") ? " selected" : "") + ">It moves to the working day before</option></select></label>" : "");
+          (how !== "dates" && how !== "once" ? '<label class="f">If it lands on a weekend or bank holiday<select data-f="shift"><option value="">Stays on that day</option><option value="next working day"' + (/next/.test(r.shift || "") ? " selected" : "") + '>Next working day</option><option value="previous working day"' + (/prev/.test(r.shift || "") ? " selected" : "") + ">Working day before</option></select></label>" : "");
     }
     return "";
   }
@@ -1253,7 +1288,7 @@
       put(t, r, true); markChecked(r.id); toast("Saved" + (fromToday ? ": the new amount counts from today" : "")); leave();
     };
     if (amountChanged) {
-      openSheet('<h2>From when?</h2><p class="muted">You changed it from ' + M(was) + " to " + M(r.amount) + '.</p><button type="button" class="btn wide" data-a="amtwhen" data-v="today">From today (earlier months keep ' + M(was) + ')</button><button type="button" class="btn ghost wide" style="margin-top:10px" data-a="amtwhen" data-v="always">' + (current ? "Since " + esc(B.nice(current.start)) + " (it was a mistake)" : "Always (it was a mistake)") + "</button>");
+      openSheet('<h2>From when?</h2><p class="muted">You changed it from ' + M(was) + " to " + M(r.amount) + ". From today, earlier months keep " + M(was) + ". If " + M(was) + " was a mistake, it\'s corrected " + (current ? "from " + esc(B.nice(current.start)) : "for every month") + '.</p><button type="button" class="btn wide" data-a="amtwhen" data-v="today">From today</button><button type="button" class="btn ghost wide" style="margin-top:10px" data-a="amtwhen" data-v="always">It was a mistake</button>');
       S.ui.amtFinish = finish; return;
     }
     finish(false);
@@ -1345,7 +1380,7 @@
       openSheet("<h2>" + esc(person().name) + '</h2><p class="muted">Signed in on this phone. ' + esc(syncLabel()) + '</p><button type="button" class="btn ghost wide" data-a="sheetgo" data-v="settings">Settings</button><button type="button" class="btn ghost wide" style="margin-top:10px" data-a="sheetgo" data-v="sync">Sync and backup</button>');
     },
     sheetgo: function (v) { go(v); },
-    demoinfo: function () { openSheet('<h2>Show and tell</h2><p class="muted">Everything here is made up. Switch who you\'re looking at, or turn it off to go back to your own money.</p><div class="two"><button type="button" class="btn ghost" data-a="demoas" data-v="alex">See Alex</button><button type="button" class="btn ghost" data-a="demoas" data-v="sam">See Sam</button></div><button type="button" class="btn wide" style="margin-top:10px" data-a="demo" data-v="off">Turn off Show and tell</button>'); },
+    demoinfo: function () { openSheet('<h2>Show and tell</h2><p class="muted">Everything here is made up. Switch who you\'re looking at, or turn it off to go back to your own money.</p><div class="two fit"><button type="button" class="btn ghost" data-a="demoas" data-v="alex">See Alex</button><button type="button" class="btn ghost" data-a="demoas" data-v="sam">See Sam</button></div><button type="button" class="btn wide" style="margin-top:10px" data-a="demo" data-v="off">Turn off Show and tell</button>'); },
     demoas: function (v) { S.demo.me = v; dirty(); S.prefs.easy = null; go("today"); },
     demo: function (v) { setDemo(v === "on"); go("today"); },
     connect: function () { var v = ($("#connectLink") || {}).value || ""; connectFrom(v); },
@@ -1389,7 +1424,7 @@
       // the occurrence by its own date, even when it moved (Christmas pay comes early), so a pay rise shows
       var bits = v.split("@"), inc = db().byId[bits[0]], cur = (B.occurrences(db(), inc, B.addDays(bits[1], -40), B.addDays(bits[1], 41)).filter(function (o) { return o.orig === bits[1]; })[0] || {}).amount || inc.amount;
       S.ui.payOcc = {item: bits[0], date: bits[1]};
-      openSheet('<h2>What did you get paid?</h2><p class="muted">Check your payslip or ' + esc(person().bank || "bank") + ' app. Everything re-sorts around it.</p><label class="f">Amount<input type="text" inputmode="decimal" id="payAmt" value="' + cur + '"></label><button type="button" class="btn wide" style="margin-top:12px" data-a="paysave">Save</button>');
+      openSheet('<h2>What did you get paid?</h2><p class="muted">Check your payslip or ' + esc(person().bank || "bank") + ' app. Everything re-sorts around it, and what\'s left (' + esc(S.ui.payLeft || "savings") + ') goes up or down.</p><label class="f">Amount<input type="text" inputmode="decimal" id="payAmt" value="' + cur + '"></label><button type="button" class="btn wide" style="margin-top:12px" data-a="paysave">Save</button>');
     },
     paysave: function () {
       var a = +String(($("#payAmt") || {}).value || "").replace(/[£,\s]/g, ""), o = S.ui.payOcc; if (!(a > 0)) return;
@@ -1417,9 +1452,9 @@
       var stored = (tables()[EDIT.table] || []).filter(function (x) { return x.id === EDIT.id; })[0] || EDIT.orig, end = todayIso();
       // a budget belongs to a whole pay period (its pay was sorted on payday), so it stops once this one ends
       var bud = EDIT.table === "budgets"; if (bud) end = B.addDays(B.periodAt(db(), me(), end).next, -1);
-      put(EDIT.table, Object.assign({}, stored, {end: end}), true); toast(bud ? "Stopped after this pay period" : "Stopped from today"); leave();
+      put(EDIT.table, Object.assign({}, stored, {end: end}), true); toast(bud ? "Stops at your next payday" : "Stopped from today"); leave();
     },
-    editdelete: function () { openSheet('<h2>Delete this?</h2><p class="muted">It will stop counting everywhere, including past months. To keep the past, use "' + (EDIT.table === "budgets" ? "Stop after this pay period" : "Stop from today") + '" instead.</p><button type="button" class="btn danger wide" data-a="editdelete2">Delete</button><button type="button" class="btn ghost wide" style="margin-top:10px" data-a="sheetclose">Keep it</button>'); },
+    editdelete: function () { openSheet('<h2>Delete this?</h2><p class="muted">It will stop counting everywhere, including past months. To keep the past, use "' + (EDIT.table === "budgets" ? "Stop at next payday" : "Stop from today") + '" instead.</p><button type="button" class="btn danger wide" data-a="editdelete2">Delete</button><button type="button" class="btn ghost wide" style="margin-top:10px" data-a="sheetclose">Keep it</button>'); },
     editdelete2: function () { del(EDIT.table, EDIT.id, true); toast("Deleted"); leave(); },
     addmode: function (v) { S.ui.add.mode = v; render(); window.scrollTo(0, 0); },
     addbud: function (v) { var a = S.ui.add; if (a.budget !== v) { a.budget = v; a.touched = {}; } closeSheet(); render(); },
@@ -1434,14 +1469,14 @@
     addfrom2: function (v) { S.ui.add.account = v; S.ui.add.touched = Object.assign(S.ui.add.touched || {}, {account: true}); closeSheet(); render(); },
     adddatepick: function () {
       var t = todayIso(), cur = S.ui.add.date || t;
-      openSheet('<h2>When was it?</h2><div class="chips" style="margin-top:10px"><button type="button" class="chip" data-a="adddate2" data-v="' + t + '" aria-pressed="' + (cur === t) + '">Today</button><button type="button" class="chip" data-a="adddate2" data-v="' + B.addDays(t, -1) + '" aria-pressed="' + (cur === B.addDays(t, -1)) + '">Yesterday</button></div><label class="f">Another day<input type="date" id="addDateIn" value="' + esc(cur) + '" max="' + t + '"></label><button type="button" class="btn wide" style="margin-top:12px" data-a="adddate2">Done</button>');
+      openSheet('<h2>When was it?</h2><div class="chips fit" style="margin-top:10px"><button type="button" class="chip" data-a="adddate2" data-v="' + t + '" aria-pressed="' + (cur === t) + '">Today</button><button type="button" class="chip" data-a="adddate2" data-v="' + B.addDays(t, -1) + '" aria-pressed="' + (cur === B.addDays(t, -1)) + '">Yesterday</button></div><label class="f">Another day<input type="date" id="addDateIn" value="' + esc(cur) + '" max="' + t + '"></label><button type="button" class="btn wide" style="margin-top:12px" data-a="adddate2">Done</button>');
     },
     adddate2: function (v) { var x = v || (($("#addDateIn") || {}).value) || todayIso(); S.ui.add.date = x > todayIso() ? todayIso() : x; closeSheet(); render(); },
     addsplit2: function () {
       var a = S.ui.add, d = db(), splits = d.splits.filter(function (s) { return !/=/.test(String(s.shares || "")) && s.id !== "half"; });
       a.touched = Object.assign(a.touched || {}, {split: true});
       if (!splits.length || a.split) { a.split = !a.split; a.splitId = a.splitId || "half"; render(); return; }
-      openSheet("<h2>Split with " + esc(person(partner()).name || "your partner") + '</h2><div class="list" style="margin-top:6px">' + [{id: "half", name: "Half each"}].concat(splits).map(function (s) { return '<button type="button" class="li" data-a="addsplit3" data-v="' + esc(s.id) + '"><span class="grow"><span class="what">' + esc(s.name) + "</span>" + (s.shares ? '<span class="why">' + esc(describeShares(s.shares)) + "</span>" : "") + "</span></button>"; }).join("") + "</div>");
+      openSheet("<h2>Split with " + esc(shortName(person(partner()).name) || "your partner") + '</h2><div class="list" style="margin-top:6px">' + [{id: "half", name: "Half each"}].concat(splits).map(function (s) { return '<button type="button" class="li" data-a="addsplit3" data-v="' + esc(s.id) + '"><span class="grow"><span class="what">' + esc(s.name) + "</span>" + (s.shares ? '<span class="why">' + esc(describeShares(s.shares)) + "</span>" : "") + "</span></button>"; }).join("") + "</div>");
     },
     addsplit3: function (v) { S.ui.add.split = true; S.ui.add.splitId = v; closeSheet(); render(); },
     addnotepick: function () { openSheet('<h2>Add a note</h2><label class="f">Note<input type="text" id="addNoteIn" value="' + esc(S.ui.add.note || "") + '" placeholder="For example: Tesco big shop" maxlength="80"></label><button type="button" class="btn wide" style="margin-top:12px" data-a="addnote2">Done</button>'); },
