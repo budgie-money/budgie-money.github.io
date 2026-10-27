@@ -812,6 +812,32 @@ function bankApply_(p, data, windowFrom, payCarry) {
       var day = t.date; if (/^pay:/.test(key)) { var pd = D.moveDate(key, t.date); if (D.taxYearStart(pd) === D.taxYearStart(t.date)) day = pd; }
       create("moves", {id: id, date: day, person: p, from: from, to: to, amount: amount, key: key, note: note || "", review: !!review});
     };
+    // a pot move that's one To do asked for (moving back what a pot paid for, covering going over, filling a pot or the
+    // main account, the payday cover): to the same place, the same amount to the penny, within the last week. It takes
+    // that move's key (one row for each part it ticks), so To do counts it as done rather than asking for it again; and
+    // one you'd already ticked in your app (within 3 days) isn't added a second time
+    var TODO_KEY_ = /^(back|cover|fill|lent|late|refund):|^pay:\d{4}-\d{2}-\d{2}:cover$/, openTodo = null, todoTaken = {}, appTaken = {};
+    var todoMatch = function (from, to, amount, date) {
+      if (D.diff(date, today) > 7) return null;
+      if (openTodo === null) { try { openTodo = D.todo(db, p, today).filter(function (x) { return x.type === "move" && !x.payday && x.keys && x.keys.length && x.keys.every(function (k) { return TODO_KEY_.test(k.key); }); }); } catch (e) { openTodo = []; } }
+      for (var i = 0; i < openTodo.length; i++) { var it = openTodo[i]; if (!todoTaken[i] && it.from === from && it.to === to && same(it.amount, amount)) { todoTaken[i] = true; return it; } }
+      return null;
+    };
+    // (what one tick in the app saved: its parts, one row each, on the same day between the same two accounts)
+    var appTicks = null;
+    var appTicked = function (from, to, amount, date) {
+      if (appTicks === null) { var g = {}; appTicks = []; db.moves.forEach(function (m) { if (m.dup || m.person !== p || /^bk-/.test(String(m.id)) || !TODO_KEY_.test(String(m.key || ""))) return; var k = m.date + "|" + m.from + "|" + m.to; if (!g[k]) { g[k] = {date: m.date, from: m.from, to: m.to, amount: 0}; appTicks.push(g[k]); } g[k].amount += +m.amount || 0; }); }
+      for (var i = 0; i < appTicks.length; i++) { var x = appTicks[i]; if (!appTaken[i] && x.from === from && x.to === to && same(x.amount, amount) && Math.abs(D.diff(x.date, date)) <= 3) { appTaken[i] = true; return x; } }
+      return null;
+    };
+    var putTodoMove = function (t, from, to, it, ex) {
+      var base = "bk-" + provider + "-" + t.id;
+      it.keys.forEach(function (k, i) {
+        var id = i ? base + "~" + (i + 1) : base, amount = it.keys.length > 1 ? k.amount : t.amount < 0 ? -t.amount : t.amount;
+        if (!i && ex) { update("moves", id, {key: k.key, amount: amount}); return; }
+        if (!moveRows[id]) create("moves", {id: id, date: t.date, person: p, from: from, to: to, amount: amount, key: k.key, note: "", review: false});
+      });
+    };
     // a bill, a regular payment to your partner, or a payment you've already logged between you two
     // (by their id, which is set in the sheet: their name is theirs to change, so "Sam Smith" or "Tesco" could be made
     // to match anyone's payment)
@@ -955,6 +981,15 @@ function bankApply_(p, data, windowFrom, payCarry) {
         if (!asMove()) return;
         var into = t.amount > 0, from = into ? mainAcc : potAcc, to = into ? potAcc : mainAcc, amt = Math.abs(t.amount);
         var pm = into ? paydayMatch(to, amt, t.date) : null;
+        if (!pm) {
+          var exM = moveRows["bk-" + provider + "-" + t.id], loose = !exM || /^bank:/.test(String(exM.key || ""));
+          if (exM && (exM.person !== p || bankTrue_(exM.deleted) || !loose)) { if (exM.person === p && !loose) return; }
+          else {
+            var tm = todoMatch(from, to, amt, t.date);
+            if (tm) { putTodoMove(t, from, to, tm, exM); return; }
+            if (!exM && appTicked(from, to, amt, t.date)) return;
+          }
+        }
         putMove(t, from, to, amt, pm ? pm.key : "bank:" + t.id, false);
         return;
       }

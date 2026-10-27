@@ -786,5 +786,45 @@ const phone = (F, k) => { const P = {T: {}, since: 0}; P.sync = (ops) => { const
   ok("L3: ticking it again once it's paid is kept as a copy", r2.applied.length === 1 && (F.c.readTable_("settlements").rows.find(x => x.id === "set-dec3") || {}).deleted === true, r2);
 }
 
+// ================= review 2026-10-27 (1.4.12) =================
+// Q3: an id is one thing whatever its tab, and the engine reads ids without spaces at either end: a new row whose id has
+// a space at the start or end ("e-main ") is turned away, so it can't stand in for Ethan's main account on his phone
+{
+  const F = fresh();
+  const r = F.call({key: F.kS, ops: [{op: "put", table: "accounts", row: {id: "e-main ", owner: "sophie", name: "Main account", kind: "pot"}}, {op: "put", table: "transactions", row: {id: " t-ws", date: "2026-10-27", person: "sophie", amount: 5, budget: "s-food", account: "s-main"}}]});
+  ok("Q3: ids with a space at either end are turned away", r.applied.length === 0 && r.rejected.length === 2 && r.rejected.every(x => !x.retry), r);
+  F.c.CACHE_ = {}; const L = B.load(F.call({key: F.kE, full: true}).rows, "2026-10-28");
+  ok("Q3: Ethan's main account is still his on his phone", L.byId["e-main"].owner === "ethan", L.byId["e-main"]);
+}
+
+// Q4: a To do move ticked again from a list that hadn't caught up is kept but marked as a copy, so neither the balances
+// nor To do change (no "Move £5.48 from Main account to Food pot" the other way); one To do still asks for is a new tick
+{
+  const F = fresh(t => t.transactions.push({id: "t-q4", date: "2026-10-27", person: "ethan", amount: 5.48, budget: "e-food-b", account: "e-main"}));
+  const d = "2026-10-27", view = () => B.load(F.call({key: F.kE, full: true}).rows, d);
+  const it = B.todo(view(), "ethan", d).filter(x => x.type === "move")[0];
+  const tick = id => F.call({key: F.kE, ops: it.keys.map(k => ({op: "put", table: "moves", row: {id: id, date: d, person: "ethan", from: it.from, to: it.to, amount: k.amount, key: k.key}}))});
+  tick("mv-q4a"); const food = B.balances(view(), d)["e-food"];
+  const r = tick("mv-q4b"), L = view(), copy = F.c.readTable_("moves").rows.find(x => x.id === "mv-q4b");
+  ok("Q4: ticking it again is kept but marked as a copy", r.applied.length === 1 && copy && copy.deleted === true && /Same move as mv-q4a/.test(copy.note), copy);
+  ok("Q4: so the Food pot and To do don't change", B.balances(L, d)["e-food"] === food && B.todo(L, "ethan", d).filter(x => x.type === "move").length === 0, {food: B.balances(L, d)["e-food"], todo: B.todo(L, "ethan", d)});
+  F.call({key: F.kE, ops: [{op: "put", table: "transactions", row: {id: "t-q4b", date: d, person: "ethan", amount: 3, budget: "e-food-b", account: "e-main"}}]});
+  const it2 = B.todo(view(), "ethan", d).filter(x => x.type === "move")[0];
+  const r2 = F.call({key: F.kE, ops: it2.keys.map(k => ({op: "put", table: "moves", row: {id: "mv-q4c", date: d, person: "ethan", from: it2.from, to: it2.to, amount: k.amount, key: k.key}}))});
+  ok("Q4: more to move back under the same key after another shop is a new tick", r2.applied.length === 1 && F.c.readTable_("moves").rows.find(x => x.id === "mv-q4c").deleted !== true && B.todo(view(), "ethan", d).filter(x => x.type === "move").length === 0, it2);
+}
+
+// Q5: a row put straight into the sheet by a script or the Sheets API (no edit trigger, so no "updated" time) still
+// reaches a phone that's already synced, and only the phones that may see it
+{
+  const F = fresh(), first = F.call({key: F.kE}), firstS = F.call({key: F.kS});
+  const add = (t, row) => { const sh = F.env.sheets[t], head = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0]; sh.appendRow(head.map(h => row[h] === undefined ? "" : row[h])); };
+  add("loans", {id: "l-q5", lender: "sophie", borrower: "ethan", name: "Dress", amount: 30, date: "2026-10-20"});
+  add("transactions", {id: "t-q5", date: "2026-10-27", person: "sophie", amount: 9, budget: "s-food", account: "s-main"});
+  const next = F.call({key: F.kE, since: first.now}), nextS = F.call({key: F.kS, since: firstS.now});
+  ok("Q5: a loan added straight into the sheet reaches Ethan's phone on its next sync", next.rows.loans.some(r => r.id === "l-q5") && nextS.rows.loans.some(r => r.id === "l-q5"), next.rows.loans);
+  ok("Q5: and Sophie's private payment added that way still only reaches her", !next.rows.transactions.some(r => r.id === "t-q5") && nextS.rows.transactions.some(r => r.id === "t-q5"));
+}
+
 console.log(fails ? fails + " failed, " + passes + " passed" : "All " + passes + " passed");
 process.exit(fails ? 1 : 0);

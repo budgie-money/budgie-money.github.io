@@ -91,18 +91,21 @@ nav.bottom .plus{width:52px;height:52px;border-radius:26px;background:var(--acce
 .amount-in .cur{font-size:40px;font-weight:800;font-family:var(--head);color:var(--muted)}
 .amount-in input{border:0;outline:0;background:transparent;width:6ch;field-sizing:content;min-width:3.2ch;max-width:100%;font-size:48px;font-weight:800;font-variant-numeric:tabular-nums;letter-spacing:-1px;font-family:var(--head);color:var(--ink);padding:4px 0}
 .amount-in input::placeholder{color:var(--line)}
-.budgrid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:14px}
-.budgrid.two{grid-template-columns:repeat(2,minmax(0,1fr))}
+.budgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(max(7em,calc((100% - 16px) / 3)),1fr));gap:8px;margin-top:14px;font-size:calc(var(--fs) - 1px)}
+.budgrid.two{grid-template-columns:repeat(auto-fill,minmax(max(9em,calc((100% - 8px) / 2)),1fr))}
 .budgrid.two .budtile{flex-direction:row;min-height:60px;justify-content:flex-start;padding:10px 14px;text-align:left}
-.budtile{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;min-height:76px;padding:10px 6px;border-radius:16px;border:1px solid var(--line);background:var(--card);color:var(--ink);font-weight:600;font-size:14px;line-height:1.15;text-align:center}
-.budtile svg{color:var(--accent)}
+.budtile{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;min-width:0;min-height:76px;padding:10px 5px;border-radius:16px;border:1px solid var(--line);background:var(--card);color:var(--ink);font-weight:600;font-size:inherit;line-height:1.15;text-align:center}
+.budtile span{min-width:0;max-width:100%;overflow-wrap:break-word;hyphens:auto}
+.budtile span.long{font-size:.88em}
+.budtile svg{flex:none;color:var(--accent)}
 .budtile[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
 .budtile[aria-pressed="true"] svg{color:var(--accent-ink)}
-.budtile.more{border-style:dashed;color:var(--muted)}
+.budtile.others{border-style:dashed;color:var(--muted)}
 .details{display:flex;flex-wrap:wrap;justify-content:center;gap:6px;margin-top:14px}
 .detail{border:0;background:var(--soft);color:var(--ink);border-radius:999px;min-height:40px;padding:0 14px;font-size:14px;font-weight:600}
 .detail.on{background:color-mix(in srgb, var(--accent) 22%, var(--card))}
 .btn.logit{margin-top:16px;min-height:56px;font-size:17px}
+.info{border:0;background:none;color:var(--muted);width:36px;height:36px;padding:0;margin:-10px 0 -10px 2px;display:inline-flex;align-items:center;justify-content:center;vertical-align:middle}
 .linkbtn{border:0;background:none;color:var(--accent);font-weight:600;font-size:14px;text-decoration:underline;min-height:44px;padding:0 6px}
 #lock{position:fixed;inset:0;z-index:200;background:var(--hero);color:var(--hero-ink);display:flex;align-items:center;justify-content:center;padding:24px}
 #lock .in{width:100%;max-width:360px;text-align:center}

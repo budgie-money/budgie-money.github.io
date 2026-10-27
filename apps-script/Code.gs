@@ -196,6 +196,7 @@ function handle_(b) {
     lock.waitLock(25000); locked = true;
     try {
       if (Array.isArray(b.ops) && b.ops.length) { var res = applyOps_(me, b.ops, app); applied = res.applied; rejected = res.rejected; if (applied.length) SpreadsheetApp.flush(); }
+      dateUndated_(Date.now());
       snap = snapshot_();
     } finally { lock.releaseLock(); locked = false; }
     var out = app ? appSync_(me, app, b.since || "", !!b.full, snap) : sync_(me, b.since || "", !!b.full, snap);
@@ -408,6 +409,8 @@ function applyOne_(me, op, now, by, opts) {
   if (!existing && !sys) {
     // (an id too long for a cell would fail like a hiccup, and hold up every change after it for good)
     if (id.length > 500) throw refuse_("That id is too long");
+    // (the engine reads every id without spaces at either end, so "e-main " would be someone's main account there)
+    if (id !== id.trim()) throw cant();
     if (/^bk-/.test(id)) throw refuse_("That id is kept for the bank feed");
     if (/^t-pk-/.test(id) && app !== "peckish") throw refuse_("That id is kept for Peckish");
     if (t === "settings" && (String(src.person) !== String(me) || id !== me + ":" + src.key)) throw refuse_("A setting's id is your name and its key");
@@ -456,6 +459,18 @@ function applyOne_(me, op, now, by, opts) {
   if (!existing && !sys && t === "moves" && /^pay:/.test(String(row.key || "")) && !toBoolCell_(row.deleted)) {
     var same = tab.rows.filter(function (r) { return r.key === row.key && r.person === row.person && !toBoolCell_(r.deleted); })[0];
     if (same) { row.deleted = true; row.note = "Same payday move as " + same.id; }
+  }
+  // a To do move ticked again from a list that hadn't caught up (one already ticked, on this phone or another, or by
+  // the bank feed): when To do no longer asks for anything under its key, it's kept but marked as a copy, as for a
+  // payday move, so neither the balances nor To do change. (A key To do still asks for, say more to move back after
+  // another shop, is a new tick.)
+  if (!existing && !sys && t === "moves" && /^(back|cover|fill|lent|late|refund):/.test(String(row.key || "")) && !toBoolCell_(row.deleted) && Budgie.isIso(String(row.date || ""))) {
+    var before = tab.rows.filter(function (r) { return String(r.key) === String(row.key) && r.person === row.person && !toBoolCell_(r.deleted); })[0];
+    if (before) {
+      var mdb = Budgie.load(allTables_(), String(row.date));
+      var asked = Budgie.todo(mdb, String(row.person), String(row.date)).some(function (x) { return (x.keys || []).some(function (k) { return k.key === String(row.key); }); });
+      if (!asked) { row.deleted = true; row.note = "Same move as " + before.id; }
+    }
   }
   // you both ticking the same settling up (one "I've paid", the other "it's arrived") before your phones caught up:
   // when nothing is owed any more by the time the second one arrives, it's kept but marked as a copy, so neither of
@@ -642,6 +657,25 @@ function appSync_(me, app, since, full, snap) {
 // ---------- sync ----------
 // a copy of every tab, and the time it was taken (before reading, so nothing written after it is missed)
 function snapshot_() { var at = Date.now(); return {at: at, tables: allTables_()}; }
+// a row with no "updated" time was put into the sheet by something other than the app or someone typing (a script, or
+// the Sheets API), so the sheet's edit trigger never dated it and phones that have already synced would never get it.
+// It's dated the first time a sync sees it, just before the copy is taken (with the lock held): old enough that the
+// phone asking now isn't sent it twice, new enough that every phone that synced before now fetches it.
+function dateUndated_(at) {
+  var when = at - 5000;
+  Object.keys(SCHEMA).forEach(function (t) {
+    if (t === "meta") return;
+    var tab = readTable_(t), uc = tab.head.indexOf("updated") + 1; if (!tab.sheet || !uc) return;
+    // written a run of rows at a time (rows put in together sit together)
+    var run = [], flush = function () { if (run.length) tab.sheet.getRange(run[0]._row, uc, run.length, 1).setValues(run.map(function () { return [when]; })); run = []; };
+    tab.rows.forEach(function (r) {
+      if (+r.updated || r.id === "" || r.id === undefined) return;
+      if (run.length && run[run.length - 1]._row !== r._row - 1) flush();
+      run.push(r); r.updated = when;
+    });
+    flush();
+  });
+}
 // tables where one row can stop being visible on its own (a split taken off, a budget moved off a LISA)
 // (a joint goal made just one person's, a balance moved off a LISA)
 var HIDE_ROWS_ = {transactions: true, bills: true, budgets: true, income: true, moves: true, amounts: true, exceptions: true, goals: true, valuations: true};

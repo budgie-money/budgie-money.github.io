@@ -67,7 +67,8 @@ People are `ethan` and `sophie`. Money is in pounds. Dates are real dates.
   what's unspent, up to one month's worth.
 - **What should be in each account or pot today**, from the last checked balance plus everything since.
 - **To do**: payday moves, moving money back when something was paid from the wrong pot, covering an overspend
-  from the fallback pot, topping up a pot before a bill. A move is only suggested if the money is really there.
+  from the fallback pot, topping up a pot (or the main account itself) before a bill. A move is only suggested if the
+  money is really there.
 - **Between you two**: shared bills and split payments by their split rule (for example 2 parts to 1), minus what
   has been paid, so you always know who owes whom and by how much. Loans between you are kept separate.
 - **Goals, LISA, house, net worth, insights, calendar.**
