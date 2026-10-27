@@ -435,9 +435,26 @@ function starlingScopes_(token) {
   if (missing.length) return {ok: false, error: "That token is missing " + missing.join(", ") + ". Make a new one with those boxes ticked too."};
   return {ok: true, scopes: scopes.slice().sort(), holder: typeof r.json.accountHolderUid === "string" ? r.json.accountHolderUid : ""};
 }
+// Starling turns away requests that come too quickly. A first read is many of them (a feed window per 90 days, for the
+// account and each spending Space), so they're spaced out, and a short "slow down" is waited out where it happened
+// instead of giving up the whole read (which, started again from scratch, would only be turned away again)
+var STARLING_GAP_MS_ = 400, STARLING_TRIES_ = 4, STARLING_WAIT_MAX_S_ = 20, STARLING_FIRST_DAYS_ = 400, STARLING_LAST_ = 0;
+function starlingPace_() {
+  var gap = STARLING_LAST_ + STARLING_GAP_MS_ - Date.now();
+  if (gap > 0) { try { Utilities.sleep(gap); } catch (e) {} }
+  STARLING_LAST_ = Date.now();
+}
 function starlingGet_(p, path, query, optional) {
   var tok = bankGet_(bankKey_("TOKEN", p)); if (!tok || tok.provider !== "starling") throw bankErr_("reconnect", "Starling isn't connected");
-  var r = bankHttp_("get", STARLING_API_ + path + qs_(query), {headers: {Authorization: "Bearer " + tok.access, Accept: "application/json"}});
+  var r;
+  for (var i = 0; ; i++) {
+    starlingPace_();
+    r = bankHttp_("get", STARLING_API_ + path + qs_(query), {headers: {Authorization: "Bearer " + tok.access, Accept: "application/json"}});
+    if (r.code !== 429 || i >= STARLING_TRIES_ - 1) break;
+    // (a longer wait than that is left to the next read, as before)
+    var wait = bankRetryAfter_(r.headers) || 3 * (i + 1); if (wait > STARLING_WAIT_MAX_S_) break;
+    try { Utilities.sleep(wait * 1000); } catch (e) { break; }
+  }
   // something the token wasn't given a box for (Spaces, say) is skipped rather than treated as a broken connection
   if (optional && (r.code === 403 || r.code === 404)) return null;
   return bankCheck_(r, "starling");
@@ -468,7 +485,9 @@ function starlingRead_(p, full, wide) {
     });
     ((sp && sp.savingsGoals) || []).forEach(function (g) { var id = g.savingsGoalUid || g.uid; if (id && !bankHas_(spaces, id)) { spaces[id] = id; out.accounts.push({extId: id, name: g.name || "Space", kind: "space", balance: money(g.totalSaved)}); } });
     // the feed, in 90-day windows (all of it the first time, the last two weeks after that)
-    var from = full ? new Date(a.createdAt && !isNaN(new Date(a.createdAt)) ? a.createdAt : now.getTime() - 3 * 365 * BANK_DAY_) : bankSince_(false, wide);
+    // (the first time, the last 400 days at most: enough for a year's trends, and far fewer requests than all of it)
+    var first = now.getTime() - STARLING_FIRST_DAYS_ * BANK_DAY_, made = a.createdAt && !isNaN(new Date(a.createdAt)) ? new Date(a.createdAt).getTime() : first;
+    var from = full ? new Date(Math.max(first, made)) : bankSince_(false, wide);
     cats.forEach(function (cat, ci) {
       if (!cat) return;
       var accFor = ci === 0 ? uid : cat;   // a spending Space's payments belong to that Space
@@ -555,7 +574,7 @@ function bankRun_(p) {
     var tok = bankGet_(bankKey_("TOKEN", p)); if (!tok) return {ok: false, error: "No bank is connected."};
     conn0 = bankConnId_(tok);
     s = bankStatus_(p);
-    if (s.backoffUntil && s.backoffUntil > Date.now()) return {ok: false, error: BANK_NAMES_[tok.provider] + " asked Budgie to wait. It'll try again soon."};
+    if (s.backoffUntil && s.backoffUntil > Date.now()) return {ok: false, error: BANK_NAMES_[tok.provider] + " asked Budgie to wait. It tries again by itself at " + Utilities.formatDate(new Date(s.backoffUntil), tz_(), "HH:mm") + "."};
     // a Starling token is checked once a day: if what it can do has changed, it's disconnected
     if (tok.provider === "starling" && !(s.scopeCheckedAt > Date.now() - BANK_SCOPE_CHECK_)) {
       var chk = starlingScopes_(tok.access);
@@ -659,8 +678,11 @@ function bankRun_(p) {
       else { s.needsReconnect = true; s.waiting = false; s.lastError = msg; }
     } else if (e && e.bank === "backoff") {
       s.backoffN = Math.min(6, (s.backoffN || 0) + 1);
-      s.backoffUntil = Date.now() + Math.max((e.retryAfter || 0) * 1000, 30 * 60000 * Math.pow(2, s.backoffN - 1));   // skips at least one poll
-      s.lastError = msg;
+      // (Monzo: skips at least one poll. Starling's limit is a short one, already waited out above, so it's tried again
+      // after 5 minutes, then 10, 20 and so on: a "slow down" right after connecting doesn't keep the first read away for long)
+      var base = tok && tok.provider === "starling" ? 5 * 60000 : 30 * 60000;
+      s.backoffUntil = Date.now() + Math.max((e.retryAfter || 0) * 1000, base * Math.pow(2, s.backoffN - 1));
+      s.lastError = msg + ". Budgie tries again by itself at " + Utilities.formatDate(new Date(s.backoffUntil), tz_(), "HH:mm") + ".";
     } else s.lastError = msg;
     bankSaveStatus_(p, s);
     return {ok: false, error: s.lastError || msg};
