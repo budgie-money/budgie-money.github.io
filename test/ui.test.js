@@ -325,6 +325,60 @@ const fails = [], check = (name, cond, extra) => { if (cond) console.log("ok", n
   await page.unroute("**/exec");
   await page.context().close();
 
+  // 8. review fixes (1.4.7)
+  page = await newPage("2026-11-02");
+  await page.goto(links.ethan); await page.waitForFunction(() => /Hi Ethan/.test(document.querySelector("#top").textContent), null, {timeout: 8000});
+  // settings typed into the sheet without an id (the test sheet's start dates) are all kept, not one over the other
+  check("settings without an id don't overwrite each other on the phone", await page.evaluate(() => window.BudgieApp.S.data.tables.settings.filter(r => !r.id && r.key === "start").map(r => r.person).sort().join()) === "ethan,sophie");
+  // a peek ends in an open sheet too, not just on the screen behind it
+  await page.evaluate(() => { const S = window.BudgieApp.S; S.prefs.hide = true; S.ui.reveal = true; window.BudgieApp.go("today"); });
+  await page.click(".swipe .face"); await page.waitForTimeout(100);
+  const sheetPeek = /£\d/.test(T(await page.textContent("#sheets")));
+  const away2 = (state) => page.evaluate(st => { Object.defineProperty(document, "visibilityState", {get: () => st, configurable: true}); document.dispatchEvent(new Event("visibilitychange")); }, state);
+  await away2("hidden"); await page.waitForTimeout(100);
+  const sheetAfter = T(await page.textContent("#sheets")), labelAfter = await page.evaluate(() => (document.querySelector("#sheets [aria-label]") || {getAttribute: () => ""}).getAttribute("aria-label"));
+  check("Hide amounts: a peek ends in an open sheet when Budgie goes into the background", sheetPeek && sheetAfter && !/£\d/.test(sheetAfter) && !/£\d/.test(labelAfter || ""), {sheetAfter: sheetAfter.slice(0, 80), labelAfter});
+  await page.evaluate(() => { delete document.visibilityState; window.BudgieApp.S.prefs.hide = false; }); await page.keyboard.press("Escape");
+  // the sheet not answering properly, or not being reached, is said in plain words
+  await page.route("**/exec", r => r.fulfill({status: 200, contentType: "text/html", body: "<!DOCTYPE html><html><body>Sorry, unable to open the file at this time.</body></html>"}));
+  await page.evaluate(() => window.BudgieApp.sync(false)); await page.waitForTimeout(400);
+  const oddErr = await page.evaluate(() => window.BudgieApp.S.lastError);
+  await page.unroute("**/exec"); await page.route("**/exec", r => r.abort("internetdisconnected"));
+  await page.evaluate(() => window.BudgieApp.sync(false)); await page.waitForTimeout(400);
+  const netErr = await page.evaluate(() => window.BudgieApp.S.lastError);
+  check("a page from Google instead of an answer is said in plain words", /didn't answer properly/.test(oddErr) && !/token|JSON/i.test(oddErr), oddErr);
+  check("not reaching the sheet is said in plain words", /Couldn't reach your Google Sheet/.test(netErr) && !/fetch/i.test(netErr), netErr);
+  await page.unroute("**/exec");
+  // a look that isn't one of Budgie's (typed into the sheet as "constructor") doesn't break the app
+  const errN = errs.length;
+  await page.evaluate(() => { const S = window.BudgieApp.S; S.prefs.special = "constructor"; S.prefs.colour = "toString"; window.BudgieApp.go("today"); });
+  await page.waitForTimeout(150);
+  check("an unknown look is just the standard one", errs.length === errN && /Hi Ethan/.test(T(await page.textContent("#top"))), errs.slice(errN));
+  await page.evaluate(() => { const S = window.BudgieApp.S; S.prefs.special = ""; S.prefs.colour = ""; });
+  await page.context().close();
+  // long titles fit at 320px (two lines at most, nothing cut off)
+  {
+    const ctx = await browser.newContext({viewport: {width: 320, height: 640}, isMobile: true, hasTouch: true, locale: "en-GB", timezoneId: "Europe/London", serviceWorkers: "block"});
+    page = await ctx.newPage(); await page.clock.install({time: new Date("2026-11-02T19:30:00")});
+    await page.goto(links.ethan); await page.waitForFunction(() => /Hi Ethan/.test(document.querySelector("#top").textContent), null, {timeout: 8000});
+    const cut = [];
+    for (const [s, p] of [["sharing", null], ["bank", null], ["edit", "income"], ["edit", "transfers"], ["edit", "loans"]]) {
+      await page.evaluate(([s, p]) => { if (p) { document.querySelector("#main").insertAdjacentHTML("beforeend", '<button id="zz" type="button" data-a="new" data-v="' + p + '">x</button>'); document.querySelector("#zz").click(); } else window.BudgieApp.go(s); }, [s, p]);
+      await page.waitForTimeout(80);
+      const r = await page.evaluate(() => { const h = document.querySelector("#top h1"); return {t: h.textContent, cut: h.scrollWidth > h.clientWidth + 1 || h.scrollHeight > h.clientHeight + 1}; });
+      if (r.cut) cut.push(r.t);
+    }
+    check("long titles aren't cut off at 320px", !cut.length, cut);
+    await ctx.close();
+  }
+  // a LISA bonus that's late says it was due, rather than "by" a day that's gone
+  page = await newPage("2026-11-02");
+  await page.goto("http://localhost:" + PORT + "/"); await page.click('[data-a="demo"][data-v="on"]'); await page.waitForTimeout(150);
+  await page.click('nav [data-v="more"]'); await page.click('main [data-v="lisa"]'); await page.waitForTimeout(100);
+  const lisaT = T(await page.textContent("main"));
+  check("a late LISA bonus says when it was due", /the first was due by/.test(lisaT) && !/the first by (Mon|Tue|Wed|Thu|Fri|Sat|Sun) \d+ (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct)\b/.test(lisaT), (lisaT.match(/Bonus on its way[^.]*\./) || [""])[0]);
+  await page.context().close();
+
   console.log(errs.length ? "ERRORS:\n" + errs.join("\n") : "No errors");
   console.log(fails.length ? "FAIL\n  " + fails.join("\n  ") : "All checks passed");
   process.exitCode = fails.length ? 1 : 0;

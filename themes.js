@@ -29,10 +29,12 @@
   function apply(t) {
     t = t || {};
     var mode = t.mode || "system", dark = mode === "dark" || (mode === "system" && window.matchMedia && matchMedia("(prefers-color-scheme: dark)").matches);
-    var vars, sp = SPECIAL[t.special];
+    // (only the looks listed here: a setting typed as "constructor", say, is just an unknown look)
+    var own = function (o, k) { return Object.prototype.hasOwnProperty.call(o, k) ? o[k] : null; };
+    var vars, sp = own(SPECIAL, t.special);
     if (sp) vars = Object.assign({}, sp.vars);
     else {
-      var c = COLOURS[t.colour] || COLOURS.blue;
+      var c = own(COLOURS, t.colour) || COLOURS.blue;
       vars = Object.assign({}, dark ? DARK : LIGHT, {accent: dark ? c.dark : c.light, soft: dark ? c.softD : c.softL, hero: dark ? c.dark : c.light,
         font: "'Plus Jakarta Sans', system-ui, sans-serif", head: "'Plus Jakarta Sans', system-ui, sans-serif", radius: "16px", pattern: "none"});
     }

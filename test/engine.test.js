@@ -481,7 +481,7 @@ const savedUp = (pl, id) => lineAmt(pl, l => l.setAside && l.bill === id && l.ki
   const bs = B.budgetState(c, me, per);
   eq("compat: budgetState(db, me, per)", ["amount", "spent", "left", "avail", "carryIn", "carryOut", "over"].every(k => k in bs["e-fun"]) && bs["e-fun"].period.start === per.start, true);
   eq("compat: still exported", ["load", "coming", "periodAt", "planFor", "budgetState", "today", "checks", "lisa", "yearly", "yearReview"].every(k => typeof B[k] === "function"), true);
-  eq("compat: version", B.VERSION, "1.4.6");
+  eq("compat: version", B.VERSION, "1.4.7");
 })();
 
 // C3: a payday move ticked in the app and by the bank feed counts once (the latest)
@@ -580,5 +580,34 @@ eq("R1: half of £20.15 shows as what's owed", B.money(B.shareOf(db(), "half", "
   eq("L1: a repayment paid on its day still counts in its own month", loanLines(onTime, "sophie", "2026-12-29", 3), ["200 2026-12-28", "200 2027-01-28", "200 2027-02-28"]);
 }
 
+// ================= review 2026-10-27 (1.4.7) =================
+// S1: settling up what's shown for an odd-penny split leaves you all square, not a penny owed back and forth
+{
+  const t = fixture(), d = "2026-10-28";
+  t.transactions.push({id: "t-odd", date: d, person: "ethan", amount: 20.15, budget: "e-fun", account: "e-main", split: "half"});
+  const owed = B.between(B.load(t, d), "ethan", d).owedToMe;
+  near("S1: half of £20.15 is owed as £10.08", owed, 10.08);
+  t.settlements.push({id: "set-odd", date: d, from: "sophie", to: "ethan", amount: owed, key: "split:" + d, note: "Settled up"});
+  const L = B.load(t, d), e1 = B.between(L, "ethan", d), s1 = B.between(L, "sophie", d);
+  eq("S1: after paying the £10.08 you're both all square", [e1.owedToMe, e1.iOwe, s1.owedToMe, s1.iOwe], [0, 0, 0, 0]);
+  eq("S1: and neither To do asks for a penny", B.todo(L, "ethan", d).concat(B.todo(L, "sophie", d)).filter(x => x.type === "settle").map(x => x.what), []);
+  // three odd halves: what's shown is still what's paid, and that still squares it
+  const u = fixture();
+  ["a", "b", "c"].forEach((x, i) => u.transactions.push({id: "t-" + x, date: d, person: "sophie", amount: 7.33 + i * 2, budget: "s-food", account: "s-main", split: "half"}));
+  const iOwe = B.between(B.load(u, d), "ethan", d).iOwe;
+  u.settlements.push({id: "set-3", date: d, from: "ethan", to: "sophie", amount: iOwe, key: "split:" + d});
+  eq("S1: after three odd halves too", B.between(B.load(u, d), "ethan", d).net, 0);
+  eq("S1: a whole penny is still owed", B.between(B.load(Object.assign(fixture(), {transactions: [{id: "t-2p", date: d, person: "ethan", amount: 0.02, budget: "e-fun", account: "e-main", split: "half"}]}), d), "sophie", d).iOwe, 0.01);
+}
+
+// S2: a repayment that's partly paid already asks only for the rest, in To do, Coming up and Debts
+{
+  const t = fixture(); t.settlements.push({id: "part", date: "2026-12-01", from: "sophie", to: "ethan", amount: 300, loan: "sofa", key: "loan:sofa:part"});
+  const L = B.load(t, "2027-01-28");
+  eq("S2: To do asks Sophie for the £100 left of January's", B.todo(L, "sophie", "2027-01-28").filter(x => x.type === "loan").map(x => [x.amount, x.what]), [[100, "Pay Ethan £100.00"]]);
+  eq("S2: and tells Ethan £100 is coming", B.todo(L, "ethan", "2027-01-28").filter(x => x.type === "loan").map(x => x.amount), [100]);
+  eq("S2: Coming up says the same", B.coming(B.load(t, "2027-01-20"), "sophie", "2027-01-20", 14).filter(c => c.table === "loans").map(c => c.amount), [100]);
+  eq("S2: Debts lists £100 then £200", B.loans(L, "sophie", "2027-01-20")[0].plan.map(r => r.amount), [100, 200]);
+}
 console.log(fails ? fails + " failed, " + passes + " passed" : "All " + passes + " passed");
 process.exit(fails ? 1 : 0);

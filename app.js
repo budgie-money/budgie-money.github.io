@@ -1,7 +1,7 @@
 /* Budgie app: screens, syncing and offline queue. The maths lives in engine.js. */
 (function () {
   "use strict";
-  var B = window.Budgie, TH = window.BudgieThemes, APP_VERSION = "1.4.6";
+  var B = window.Budgie, TH = window.BudgieThemes, APP_VERSION = "1.4.7";
   var $ = function (s) { return document.querySelector(s); };
   var esc = function (s) { return String(s === undefined || s === null ? "" : s).replace(/[&<>"']/g, function (c) { return {"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]; }); };
   // wiped: Budgie's copy at the old address has been wiped (it's moving across), so nothing is saved here again
@@ -88,7 +88,7 @@
     if (full) { T = S.data.tables = {}; }
     Object.keys(rows || {}).forEach(function (t) {
       T[t] = T[t] || [];
-      rows[t].forEach(function (r) { var key = t === "meta" ? "key" : "id", i = T[t].findIndex(function (x) { return x[key] === r[key]; }); if (i >= 0) T[t][i] = r; else T[t].push(r); });
+      rows[t].forEach(function (r) { var k = rowKey(t, r), i = T[t].findIndex(function (x) { return rowKey(t, x) === k; }); if (i >= 0) T[t][i] = r; else T[t].push(r); });
     });
     // changes still waiting to go up stay applied on top
     S.data.queue.forEach(function (op) {
@@ -97,7 +97,18 @@
       else if (op.op === "delete" && i >= 0) list[i] = Object.assign({}, list[i], {deleted: true});
     });
   }
+  // what one row is known by: its id (a setting typed into the sheet without one is known by whose it is and its key,
+  // so two of them don't overwrite each other on the phone)
+  function rowKey(t, r) { if (t === "meta") return "m:" + r.key; var id = r.id; return id === undefined || id === null || id === "" ? (t === "settings" ? "s:" + r.person + ":" + r.key : "") : "i:" + id; }
   function newer(a, b) { var x = String(a).split(".").map(Number), y = String(b).split(".").map(Number); for (var i = 0; i < 3; i++) { if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0); } return false; }
+  // one request to the sheet. A phone signal that drops, or Google answering with a page of its own instead of Budgie's
+  // answer (busy, or signed out), says so in plain words rather than the browser's own
+  async function askSheet(body, signal) {
+    var res;
+    try { res = await fetch(S.cfg.u, {method: "POST", headers: {"Content-Type": "text/plain;charset=utf-8"}, body: JSON.stringify(body), signal: signal}); }
+    catch (e) { if (e && e.name === "AbortError") throw e; throw new Error("Couldn't reach your Google Sheet. Check your signal and try again."); }
+    try { return await res.json(); } catch (e) { if (e && e.name === "AbortError") throw e; throw new Error("Your Google Sheet didn't answer properly (Google may be busy). Try again in a minute."); }
+  }
   async function sync(full) {
     if (demoOn() || !S.cfg) return;
     // one at a time: a full one asked for meanwhile (Full refresh, a new link) runs as soon as this one is done
@@ -110,8 +121,7 @@
     var ctl = typeof AbortController === "function" ? new AbortController() : null, slow = ctl ? setTimeout(function () { ctl.abort(); }, 90000) : null;
     try {
       var ops = S.data.queue.slice(0, 40);
-      var res = await fetch(S.cfg.u, {method: "POST", headers: {"Content-Type": "text/plain;charset=utf-8"}, body: JSON.stringify({key: S.cfg.k, since: full ? 0 : S.data.since, full: !!full || !S.data.since, ops: ops}), signal: ctl ? ctl.signal : undefined});
-      var j = await res.json();
+      var j = await askSheet({key: S.cfg.k, since: full ? 0 : S.data.since, full: !!full || !S.data.since, ops: ops}, ctl ? ctl.signal : undefined);
       if (S.cfg !== cfgAt || S.data !== dataAt) return; // disconnected or switched sheets while this was on its way
       if (!j.ok) throw new Error(j.error || "The sheet said no");
       // a change the sheet couldn't save for a passing reason (retry) goes back in the queue. It's only given up on once
@@ -767,7 +777,7 @@
       html += card('<div class="small muted">' + whose + " Lifetime ISA</div>" + '<div class="row" style="align-items:center"><span style="font-size:32px;font-weight:800;font-family:var(--head)">' + M0(value) + "</span>" + (a.owner === me() ? '<button type="button" class="btn ghost sm" data-a="potcheck" data-v="' + esc(a.id) + '">Update</button>' : "") + "</div>" +
         (sub ? '<div class="tiny muted">' + sub + "</div>" : "") + chartHtml + holdHtml +
         (L.bonusReceived || L.feesThisYear ? '<div class="small muted" style="margin-top:10px">This tax year: ' + M(L.bonusReceived) + " bonus received · " + M(L.feesThisYear) + " fees</div>" : "") +
-        (L.expectedBonus && L.expectedBonus.length ? '<div class="small" style="margin-top:6px">Bonus on its way: about <b>' + M(L.expectedBonusTotal || L.expectedBonus.reduce(function (t, x) { return t + x.amount; }, 0)) + "</b>" + (L.expectedBonus[0].due ? ", the first by " + esc(B.nice(L.expectedBonus[0].due)) : "") + ". Moneybox claims it for you.</div>" : "") +
+        (L.expectedBonus && L.expectedBonus.length ? '<div class="small" style="margin-top:6px">Bonus on its way: about <b>' + M(L.expectedBonusTotal || L.expectedBonus.reduce(function (t, x) { return t + x.amount; }, 0)) + "</b>" + (L.expectedBonus[0].due ? (L.expectedBonus[0].due < now ? ", the first was due by " : ", the first by ") + esc(B.nice(L.expectedBonus[0].due)) : "") + ". Moneybox claims it for you.</div>" : "") +
         '<div style="margin-top:12px"><div class="row small"><span style="font-weight:600">This tax year (6 Apr to 5 Apr)</span><span class="num">' + M0(L.paidThisYear) + " of £4,000</span></div>" + '<div style="margin-top:6px">' + bar(L.paidThisYear / 40) + '</div><div class="small muted" style="margin-top:4px">' + M0(L.allowanceLeft) + " left you can pay in · bonus on this year's payments about " + M(L.bonusThisYear) + "</div>" +
         (L.planned ? '<div class="small" style="margin-top:8px">On course for ' + M0(L.onCourse) + " by 5 April" + (L.overBy ? '. <span class="warn">That\'s ' + M(L.overBy) + " over the £4,000 limit, and your provider turns away anything over it. Pay in a little less before then.</span>" : L.onCourse >= 3999.5 ? '. <span class="good">That\'s the full £1,000 bonus.</span>' : ".") + "</div>" : "") +
         (a.owner === me() && (L.paidBefore || !Mo.flows.length) ? '<button type="button" class="btn ghost sm" style="margin-top:8px" data-a="lisapaid" data-v="' + esc(a.id) + '">' + (L.paidBefore ? "Paid in before Budgie: " + M0(L.paidBefore) : "Add what you paid in before Budgie") + "</button>" : "") + "</div>");
@@ -919,7 +929,7 @@
       }).join("") + "</div>", "flush");
     }).join("") + '<p class="tiny muted" style="text-align:center;margin:18px 0">Budgie ' + APP_VERSION + " · engine " + B.VERSION + " · Google Calendar coming soon</p>";
   };
-  function themeLabel() { var sp = TH.SPECIAL[S.prefs.special]; return sp ? sp.name : (S.prefs.mode === "dark" ? "Dark" : S.prefs.mode === "light" ? "Light" : "Matches your phone") + ", " + ((TH.COLOURS[S.prefs.colour] || {}).name || "standard colour"); }
+  function themeLabel() { var sp = Object.prototype.hasOwnProperty.call(TH.SPECIAL, S.prefs.special) ? TH.SPECIAL[S.prefs.special] : null; return sp ? sp.name : (S.prefs.mode === "dark" ? "Dark" : S.prefs.mode === "light" ? "Light" : "Matches your phone") + ", " + ((Object.prototype.hasOwnProperty.call(TH.COLOURS, S.prefs.colour) ? TH.COLOURS[S.prefs.colour] : {}).name || "standard colour"); }
   function syncLabel() { return S.lastError ? "Not synced: " + S.lastError : S.lastSync ? "Synced " + ago(S.lastSync) : "Connected"; }
   function ago(t) { var s = Math.round((Date.now() - t) / 1000); return s < 60 ? "just now" : s < 3600 ? Math.round(s / 60) + " min ago" : Math.round(s / 3600) + " h ago"; }
 
@@ -936,8 +946,7 @@
   // ----- Bank connection (read-only: balances, payments, pots or Spaces)
   async function bankCall(action, extra) {
     if (demoOn() || !S.cfg) throw new Error("Not connected to your sheet");
-    var res = await fetch(S.cfg.u, {method: "POST", headers: {"Content-Type": "text/plain;charset=utf-8"}, body: JSON.stringify(Object.assign({key: S.cfg.k, action: action}, extra || {}))});
-    var j = await res.json(); if (!j.ok) throw new Error(j.error || "The sheet said no");
+    var j = await askSheet(Object.assign({key: S.cfg.k, action: action}, extra || {})); if (!j.ok) throw new Error(j.error || "The sheet said no");
     return j;
   }
   function bankRefresh() { return bankCall("bank.status").then(function (j) { S.bank = j.bank || {}; S.bank.at = Date.now(); render(true); return S.bank; }, function (e) { S.bank = Object.assign(S.bank || {}, {err: e.message}); render(true); }); }
@@ -1592,10 +1601,20 @@
     try { if (await lockCheck()) { LOCK.locked = false; showLock(false); render(); } else showLock(true); }
     finally { LOCK.busy = false; }
   }
+  // once a peek ends, amounts still showing where the screen isn't drawn again (an open sheet, a toast, a form being
+  // filled in) are covered too; what's typed into a box is left as it is
+  function coverMoney() {
+    ["#main", "#sheets", "#toast"].forEach(function (q) {
+      var root = $(q); if (!root) return;
+      var w = document.createTreeWalker(root, NodeFilter.SHOW_TEXT), n;
+      while ((n = w.nextNode())) { var v = MT(n.nodeValue); if (v !== n.nodeValue) n.nodeValue = v; }
+      root.querySelectorAll("[aria-label],[title]").forEach(function (el) { ["aria-label", "title"].forEach(function (a) { var x = el.getAttribute(a); if (x !== null && MT(x) !== x) el.setAttribute(a, MT(x)); }); });
+    });
+  }
   function lockNow() { if (!lockOn()) return; LOCK.locked = true; showLock(true); }
   document.addEventListener("visibilitychange", function () {
     // a peek at the amounts (the eye) lasts until Budgie goes into the background, so coming back shows £•••• again
-    if (document.visibilityState === "hidden" && S.ui.reveal) { S.ui.reveal = false; render(true); }
+    if (document.visibilityState === "hidden" && S.ui.reveal) { S.ui.reveal = false; render(true); coverMoney(); }
     if (!lockOn()) return;
     if (document.visibilityState === "hidden") { LOCK.hiddenAt = Date.now(); if (!LOCK.locked) showLock(true, true); }
     else if (LOCK.locked || Date.now() - LOCK.hiddenAt > LOCK.GRACE) { LOCK.locked = true; render(); showLock(true); unlock(); }

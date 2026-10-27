@@ -6,7 +6,7 @@
   else root.Budgie = factory();
 })(this, function () {
   "use strict";
-  var VERSION = "1.4.6";
+  var VERSION = "1.4.7";
 
   // ---------- dates ----------
   function D(s) { var p = String(s).split("-"); return new Date(Date.UTC(+p[0], +p[1] - 1, +p[2])); }
@@ -163,7 +163,8 @@
   var TABLES = ["people", "accounts", "income", "bills", "budgets", "splits", "transfers", "transactions", "moves", "settlements", "loans", "goals", "valuations", "amounts", "exceptions", "settings", "gifts", "prices", "meta"];
   // today (optional): money already in pots only counts for periods that have started
   function load(tables, today) {
-    var db = {byItem: {amounts: {}, exceptions: {}}, byId: {}, _c: {}, today: today || ""};
+    // (lookups by id have no built-in keys, so an id like "constructor" or "__proto__" is only ever that row)
+    var db = {byItem: {amounts: Object.create(null), exceptions: Object.create(null)}, byId: Object.create(null), _c: {}, today: today || ""};
     TABLES.forEach(function (t) { db[t] = (tables[t] || []).map(clean).filter(function (r) { return !r.deleted && (t === "meta" || t === "settings" || r.id); }); });
     db.amounts.forEach(function (a) { (db.byItem.amounts[a.item] = db.byItem.amounts[a.item] || []).push(a); });
     db.exceptions.forEach(function (x) { (db.byItem.exceptions[x.item] = db.byItem.exceptions[x.item] || []).push(x); });
@@ -545,7 +546,7 @@
     var credit = paid;
     for (var i = 0; i < dates.length && left > 0.004; i++) {
       var a = Math.min(rp, left), covered = Math.min(a, credit); credit -= covered; left -= a;
-      out.push({date: dates[i], amount: round(a), paid: covered >= a - 0.004, key: "loan:" + l.id + ":" + dates[i]});
+      out.push({date: dates[i], amount: round(a), paid: covered >= a - 0.004, left: round(a - covered), key: "loan:" + l.id + ":" + dates[i]});
     }
     return out;
   }
@@ -719,8 +720,9 @@
       if (l.lender !== p && l.borrower !== p) return;
       loanPlan(db, l).forEach(function (r) {
         if (r.paid || r.date > today || db.settleKeys[r.key]) return;
-        items.push({key: r.key, type: "loan", loan: l.id, amount: r.amount, date: r.date, lender: l.lender, borrower: l.borrower,
-          what: l.borrower === p ? "Pay " + person(db, l.lender).name + " " + money(r.amount) : person(db, l.borrower).name + " pays you " + money(r.amount),
+        // (only what's still to pay of it, when part of it has been paid already)
+        items.push({key: r.key, type: "loan", loan: l.id, amount: r.left, date: r.date, lender: l.lender, borrower: l.borrower,
+          what: l.borrower === p ? "Pay " + person(db, l.lender).name + " " + money(r.left) : person(db, l.borrower).name + " pays you " + money(r.left),
           why: l.name + (r.date < today ? " (was due " + nice(r.date) + ")" : " · due today")});
       });
     });
@@ -796,7 +798,9 @@
       if (s.from === q && s.to === p) owed -= +s.amount;
       if (s.from === p && s.to === q) owed += +s.amount;
     });
-    owed = round(owed);
+    // half a penny or less either way is all square: settling up the £10.08 shown for half of £20.15 leaves half a
+    // penny over, which would otherwise show as a penny owed the other way (and back again after paying that)
+    owed = Math.abs(owed) < 0.005 + 1e-7 ? 0 : round(owed);
     Object.keys(month).forEach(function (k) { month[k] = round(month[k]); });
     return {partner: q, owedToMe: owed > 0 ? owed : 0, iOwe: owed < 0 ? -owed : 0, net: owed, month: month};
   }
@@ -844,7 +848,7 @@
     db.transfers.forEach(function (t) {
       if (t.from === p || t.to === p) occurrences(db, t, from, to).forEach(function (o) { add(o, "transfers", t.from === p ? (t.name || "Transfer") + " to " + person(db, t.to).name : person(db, t.from).name + ": " + (t.name || "transfer"), o.amount, t.from === p ? t.fromAccount : t.toAccount, t.from === p ? -1 : 1); });
     });
-    db.loans.forEach(function (l) { loanPlan(db, l).forEach(function (r) { if (r.paid || r.date < from || r.date >= to) return; if (l.borrower === p) out.push({date: r.date, key: r.key, item: l.id, table: "loans", name: "Pay " + person(db, l.lender).name + " back", amount: r.amount, sign: -1, account: accName(db, mainOf(db, p))}); if (l.lender === p) out.push({date: r.date, key: r.key, item: l.id, table: "loans", name: person(db, l.borrower).name + " pays you back", amount: r.amount, sign: 1, account: accName(db, mainOf(db, p))}); }); });
+    db.loans.forEach(function (l) { loanPlan(db, l).forEach(function (r) { if (r.paid || r.date < from || r.date >= to) return; if (l.borrower === p) out.push({date: r.date, key: r.key, item: l.id, table: "loans", name: "Pay " + person(db, l.lender).name + " back", amount: r.left, sign: -1, account: accName(db, mainOf(db, p))}); if (l.lender === p) out.push({date: r.date, key: r.key, item: l.id, table: "loans", name: person(db, l.borrower).name + " pays you back", amount: r.left, sign: 1, account: accName(db, mainOf(db, p))}); }); });
     return out.sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : 0; });
   }
   // everything due on each day of a month, for the calendar
@@ -1112,7 +1116,7 @@
   function loans(db, p, date) {
     return db.loans.filter(function (l) { return l.lender === p || l.borrower === p; }).map(function (l) {
       var paid = loanPaid(db, l, date), left = round((+l.amount || 0) - paid);
-      return {id: l.id, name: l.name, lender: l.lender, borrower: l.borrower, amount: +l.amount || 0, paid: paid, left: left, pct: l.amount ? Math.round(paid / l.amount * 100) : 0, plan: loanPlan(db, l).filter(function (r) { return !r.paid; })};
+      return {id: l.id, name: l.name, lender: l.lender, borrower: l.borrower, amount: +l.amount || 0, paid: paid, left: left, pct: l.amount ? Math.round(paid / l.amount * 100) : 0, plan: loanPlan(db, l).filter(function (r) { return !r.paid; }).map(function (r) { return Object.assign({}, r, {amount: r.left}); })};
     });
   }
 

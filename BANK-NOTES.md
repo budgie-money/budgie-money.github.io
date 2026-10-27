@@ -60,25 +60,28 @@ The code is `apps-script/BankFeeds.gs`. Its tests are `test/bank.test.js`, which
   - A payment matching one already logged is linked instead of added:
     - logged by hand: the same amount within 1p, within 2 days;
     - posted by Peckish: the bank's name for it shares a word with the shop's (e.g. "Tesco"), within 15% or £5 (whichever is bigger), within 3 days. Your own Peckish shop is linked and its amount becomes the bank's, so Peckish (which you both see) learns what that shop really cost. A shop that doesn't name the same shop is never linked, so a made-up one can't take over a payment somewhere else.
+    - It works the other way round too: one you log (or Peckish posts) after the bank has brought the payment in, while you haven't checked the bank's one yet, is linked the same way (and only if it names the same shop, so cash you log for the same amount stays its own payment) and the bank's copy is taken off, so it isn't counted twice. A bank payment you've already checked is left as it is.
   - A rule learned from a correction sets the budget, but its split is only stored as `splitHint`. The split itself stays empty until you confirm the payment.
   - A pending payment that goes to £0, or that disappears from the feed and is more than a week old, is removed. If the bank shows it again later, it comes back (one you dismissed on your phone stays dismissed).
+  - A pot, Space or Moneybox move whose payment the bank later shows as reversed or declined is taken off too.
   - A payment the bank lists twice in one read (under a Space as well as the account, say) counts once.
   - One bank payment is a payment or a move, never both. A Moneybox payment read before there was a LISA or ISA comes in as a payment; once there is one, it becomes the move if you haven't checked it yet (a checked one stays a payment). A move stays a move.
-  - Rows the bank wrote or linked: phones can only change `budget`, `split`, `note` and `review`. A phone can dismiss one, and bring back only one it dismissed itself (Undo); one the bank feed removed comes back only from the bank.
+  - Rows the bank wrote or linked: phones can only change `budget`, `split`, `note` and `review`. A phone can dismiss one, and bring back only one it dismissed itself (Undo); one the bank feed removed comes back only from the bank. Peckish can't bring one back at all: sending a shop again, or taking it off in Peckish, leaves a payment you took off in Budgie off.
 - **Planned items aren't imported again.** These are already in Budgie: bills, regular transfers to your partner, and payments between you that you've already logged.
   - A payment between you that your partner logged only counts if the bank's name for it has your partner's Budgie id in it (e.g. "SOPHIE …"). Their display name isn't used, because they can change it.
   - Only your own payday ticks stop a bank pot move coming in. Your partner's rows never do.
   - A bill that came to a different amount becomes an `amount` exception.
   - A card payment only counts as a bill if the names share a word (e.g. "Phone").
-- **Pay** at a different amount becomes an `amount` exception. Money only counts as the pay if it's within 50% of the expected pay and within 3 days, and never if the bank's name for it has your partner's Budgie id in it, or it's a Monzo top-up (`is_load`) or a move from a pot or Space. Each payday goes to the money in most like it over the whole read (the amount expected, on the day), so a pay-sized transfer from savings the day before can't take its place. A payday whose pay could be before the start of a read keeps what the earlier read found. Other money in is ignored, except card refunds.
+- **Pay** at a different amount becomes an `amount` exception. Money only counts as the pay if it's within 50% of the expected pay and within 3 days, and never if the bank's name for it has your partner's Budgie id in it, or it's a Monzo top-up (`is_load`) or a move from a pot or Space. Each payday goes to the money in most like it over the whole read (the amount expected, on the day), so a pay-sized transfer from savings the day before can't take its place. A payday whose pay could be before the start of a read keeps what the earlier read found. A first import read in parts carries the last week's money in from one part to the next, so a payday where a part stopped still goes to the money most like the pay on either side. Other money in is ignored, except card refunds.
 - **Pot or Space moves** become `moves`. Starling lists a move to or from a spending Space in the Space's own feed too: only the account's side counts (between two Spaces, the side it left from). A move to a Space Budgie can't see (no `savings-goal:read` box) is left out, not taken for spending or pay. A move to a pot, Moneybox, LISA or ISA within 7 days after payday ticks the planned payday move.
   - It matches to the penny, or it's the one planned move to that place within 10%. The plan can drift after payday, e.g. when a bill comes in higher.
+  - It's dated on payday, unless it landed in the next tax year (on or after 6 April for a payday before it): then it's dated when it landed, so a LISA or ISA payment counts towards the year the provider counts it in.
   - A Moneybox payment that doesn't match goes to the LISA (if it equals the LISA saving) or the ISA, with `review: true`.
 - **Balances:** one `valuations` row per mapped account per day.
 - **How far back each read goes:**
   - everything, the first time (over more than one run if it's long)
   - the last 35 days, every 15 minutes
-  - 89 days, on the read after you map a pot
+  - 89 days, on the read after you map a pot, and on the first read that works after four weeks or more without one
   - A read that brings exactly what the last one did (same payments, balances and day, and nothing changed in your settings, accounts, bills, pay, budgets and the other small tabs) skips saving, so the 96 reads a day stay well inside the 90 minutes of trigger time a gmail account gets. It still saves at least once an hour.
 
 ## Check these on the first real connection

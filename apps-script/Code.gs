@@ -100,7 +100,7 @@ function appKeyName_(personId, app) { return "APPKEY_" + personId + "_" + app; }
 function makeAppKey_(app) { return "app_" + app + "_" + makeKey_(); }
 function appCheckArgs_(personId, app) {
   if (!personId || !app) throw new Error("Run it from another function, e.g. appLink('ethan', 'peckish').");
-  if (!APPS_[app]) throw new Error("Budgie doesn't know an app called " + app + ". Known: " + Object.keys(APPS_).join(", ") + ".");
+  if (!own_(APPS_, app)) throw new Error("Budgie doesn't know an app called " + app + ". Known: " + Object.keys(APPS_).join(", ") + ".");
   if (!readTable_("people").rows.some(function (p) { return p.id === personId; })) throw new Error("No person called " + personId + " in the people tab.");
 }
 function appWebUrl_() {
@@ -126,7 +126,7 @@ function appKeyAction_(me, b) {
   var props = PropertiesService.getScriptProperties();
   if (b.action === "app.status") { var apps = {}; Object.keys(APPS_).forEach(function (a) { apps[a] = !!props.getProperty(appKeyName_(me, a)); }); return {ok: true, keyType: "full", apps: apps}; }
   var app = String(b.app || "");
-  if (!APPS_[app]) return {ok: false, keyType: "full", error: "Budgie doesn't know that app."};
+  if (!own_(APPS_, app)) return {ok: false, keyType: "full", error: "Budgie doesn't know that app."};
   var old = props.getProperty(appKeyName_(me, app));
   if (b.action === "app.unlink") { if (old) { props.deleteProperty(appKeyName_(me, app)); forgetKey_(old); } return {ok: true, keyType: "full"}; }
   var k = makeAppKey_(app), link = appLinkFor_(app, k);
@@ -227,7 +227,7 @@ function keyList_(force) {
   for (var name in all) {
     var k = String(all[name]), m = name.match(/^KEY_(.+)$/), who = null;
     if (m && KEY_RE_.test(k)) who = {person: m[1], app: ""};
-    else if ((m = name.match(/^APPKEY_(.+)_([a-z]+)$/)) && APPKEY_RE_.test(k) && APPS_[m[2]]) who = {person: m[1], app: m[2]};
+    else if ((m = name.match(/^APPKEY_(.+)_([a-z]+)$/)) && APPKEY_RE_.test(k) && own_(APPS_, m[2])) who = {person: m[1], app: m[2]};
     if (who) list.who[keyHash_(k)] = who;
   }
   try { if (cache) cache.put("keys:all", JSON.stringify(list), 600); } catch (e) {}
@@ -264,8 +264,11 @@ function readTable_(t) {
   CACHE_[t] = {head: head, rows: rows, sheet: sh}; return CACHE_[t];
 }
 function allTables_() { var t = {}; Object.keys(SCHEMA).forEach(function (k) { t[k] = readTable_(k).rows.map(strip_); }); return t; }
-// rows by id, built once per read of a tab (the first row wins if an id is ever repeated)
-function index_(t) { var tab = readTable_(t); if (!tab.idx) { tab.idx = {}; tab.rows.forEach(function (r) { if (r.id !== undefined && r.id !== "" && !tab.idx[r.id]) tab.idx[r.id] = r; }); } return tab.idx; }
+// rows by id, built once per read of a tab (the first row wins if an id is ever repeated). It has no built-in keys,
+// so an id like "constructor" or "__proto__" is just an id, never mistaken for a row that's already there
+function index_(t) { var tab = readTable_(t); if (!tab.idx) { tab.idx = Object.create(null); tab.rows.forEach(function (r) { if (r.id !== undefined && r.id !== "" && !tab.idx[r.id]) tab.idx[r.id] = r; }); } return tab.idx; }
+// a value of a lookup table's own (an app or tab called "constructor" isn't one)
+function own_(o, k) { return Object.prototype.hasOwnProperty.call(o, k) ? o[k] : undefined; }
 function strip_(r) { var o = {}; for (var k in r) if (k !== "_row") o[k] = r[k]; return o; }
 function setMeta_(k, v) { var t = readTable_("meta"), row = t.rows.filter(function (r) { return r.key === k; })[0]; if (row) t.sheet.getRange(row._row, 2).setValue(v); else t.sheet.appendRow([k, v]); CACHE_.meta = null; }
 
@@ -362,8 +365,9 @@ function cell_(v) {
   if (v === undefined || v === null) return "";
   if (v instanceof Date || typeof v === "number" || typeof v === "boolean") return v;
   if (typeof v !== "string") { try { v = JSON.stringify(v); } catch (e) { v = String(v); } if (typeof v !== "string") v = ""; }
-  // (a plain number only: "007", "1e5", "+5" or ".5" would be changed by the sheet, so they're kept as typed below)
-  if (/^-?(0|[1-9]\d*)(\.\d+)?$/.test(v) || /^\d{4}-\d{2}-\d{2}$/.test(v)) return v;
+  // (a plain number only: "007", "1e5", "+5" or ".5" would be changed by the sheet, so they're kept as typed below,
+  // and so is one with more than 15 digits, which a sheet would round: a long reference number keeps every digit)
+  if ((/^-?(0|[1-9]\d*)(\.\d+)?$/.test(v) && v.replace(/\D/g, "").replace(/^0+/, "").length <= 15) || /^\d{4}-\d{2}-\d{2}$/.test(v)) return v;
   var t = v.replace(/^[\s\u0000-\u001f\u007f-\u009f\u00a0\u1680\u180e\u2000-\u200f\u2028-\u202f\u205f-\u206f\u3000\ufeff]+/, "");
   if (/^[=+\-@']/.test(t)) return "'" + v;
   return CELL_CONVERTS_.some(function (re) { return re.test(v); }) ? "'" + v : v;
@@ -380,7 +384,7 @@ function exceptionIdOk_(id, item) {
 function applyOne_(me, op, now, by, opts) {
   opts = opts || {};
   var t = op.table, sys = !!opts.sys, app = opts.app || "";
-  if (!SCHEMA[t]) throw refuse_("Unknown table " + t);
+  if (!own_(SCHEMA, t)) throw refuse_("Unknown table " + t);
   if (SERVER_ONLY[t]) throw refuse_("The sheet fills in " + t + " itself");
   if (app) appAllowed_(app, me, t, op);
   var src = op.row || op.fields || {};
@@ -425,7 +429,9 @@ function applyOne_(me, op, now, by, opts) {
       // (taking one off is always fine; bringing one back only when you took it off yourself, so Undo works, but a
       // payment the bank feed removed stays removed: the feed brings it back itself if the bank shows it again)
       if (bankRow && BANK_OWNED_.indexOf(k) >= 0) {
-        if (k === "deleted") { var off = toBoolCell_(src[k]), gone = toBoolCell_(existing.deleted); if (off && !gone) row.deleted = true; else if (!off && gone && String(existing.by) === String(me)) row.deleted = false; }
+        // (only from your own phone: another app's key, Peckish say, sending its shop again never brings back a payment
+        // you took off in Budgie)
+        if (k === "deleted") { var off = toBoolCell_(src[k]), gone = toBoolCell_(existing.deleted); if (off && !gone) row.deleted = true; else if (!off && gone && !app && String(existing.by) === String(me)) row.deleted = false; }
         continue;
       }
       row[k] = src[k];
@@ -437,7 +443,8 @@ function applyOne_(me, op, now, by, opts) {
     // the bank has matched this shop to a real payment: Peckish taking it off only unlinks it from Peckish, and the
     // payment stays in Budgie for its person to check, so a real payment can't vanish
     if (existing.person !== me || existing.source !== app) throw refuse_(NOT_ALLOWED_);
-    row = strip_(existing); row.source = ""; row.review = true; row.deleted = false;
+    // (one you'd already taken off in Budgie stays off)
+    row = strip_(existing); row.source = ""; row.review = true; row.deleted = toBoolCell_(existing.deleted);
     row.note = String(existing.note || "").replace(/ \(Peckish\)$/, "") + " (taken off in Peckish)";
   } else if (app) appRowOk_(app, me, t, row, existing);
   // the app and the bank both ticking the same payday move: the second one is kept, marked as a copy
@@ -594,7 +601,7 @@ function appSync_(me, app, since, full, snap) {
   var personRow = function (id) { return tables.people.filter(function (p) { return p.id === id; })[0] || null; };
   var partner = (personRow(me) || {}).partner || "", pr = personRow(partner);
   if (!partner || partner === me || !pr || pr.partner !== me) partner = "";
-  var sharing = {}, mine = {}; tables.settings.forEach(function (r) { if (!/^share\./.test(r.key)) return; var on = /^(true|yes|on|1)$/i.test(String(r.value)); if (r.person === partner) sharing[r.key.slice(6)] = on; if (r.person === me) mine[r.key.slice(6)] = on; });
+  var sharing = partner ? sharingIn_(tables.settings, partner) : {}, mine = sharingIn_(tables.settings, me);
   var budName = {}; tables.budgets.forEach(function (b) { budName[b.id] = String(b.name || ""); });
   var pick = function (r, cols) { if (!cols) return r; var o = {}; cols.concat(["deleted", "updated"]).forEach(function (c) { if (r[c] !== undefined) o[c] = r[c]; }); return o; };
   var mineOnly = {budgets: "person", accounts: "owner"}, rows = {}, count = 0;
@@ -628,7 +635,9 @@ function snapshot_() { var at = Date.now(); return {at: at, tables: allTables_()
 // (a joint goal made just one person's, a balance moved off a LISA)
 var HIDE_ROWS_ = {transactions: true, bills: true, budgets: true, income: true, moves: true, amounts: true, exceptions: true, goals: true, valuations: true};
 // what someone shares, as their partner sees it
-function sharingOf_(p) { var s = {}; readTable_("settings").rows.forEach(function (r) { if (r.person === p && /^share\./.test(r.key)) s[r.key.slice(6)] = /^(true|yes|on|1)$/i.test(String(r.value)); }); return s; }
+function sharingOf_(p) { return sharingIn_(readTable_("settings").rows, p); }
+// from a list of settings rows; a setting that's been taken off (deleted) doesn't count, as in the app and the engine
+function sharingIn_(rows, p) { var s = {}; rows.forEach(function (r) { if (r.person === p && /^share\./.test(String(r.key)) && !toBoolCell_(r.deleted)) s[String(r.key).slice(6)] = /^(true|yes|on|1)$/i.test(String(r.value)); }); return s; }
 function partnerOf_(p) {
   var me = byId_("people", p), q = me && me.partner ? byId_("people", me.partner) : null;
   return q && q.id !== p && q.partner === p ? q.id : "";
@@ -663,7 +672,7 @@ function noteHidden_(t, before, after) {
 function sync_(me, since, full, snap) {
   snap = snap || snapshot_();
   var at = snap.at, tables = snap.tables, recent = function (r) { return (+r.updated || 0) > +since - 5000; };
-  var sharingOf = function (p) { var s = {}; tables.settings.forEach(function (r) { if (r.person === p && /^share\./.test(r.key)) s[r.key.slice(6)] = /^(true|yes|on|1)$/i.test(String(r.value)); }); return s; };
+  var sharingOf = function (p) { return sharingIn_(tables.settings, p); };
   var personRow = function (id) { return tables.people.filter(function (p) { return p.id === id; })[0] || null; };
   // your partner is whoever your row names, as long as their row names you back (and it isn't you)
   var partner = (personRow(me) || {}).partner || "", pr = personRow(partner);
@@ -730,7 +739,7 @@ function partnerSummary_(tables, partner, today) {
 function onEdit(e) {
   try {
     if (!e || !e.range) return;
-    var sh = e.range.getSheet(), t = sh.getName(); if (!SCHEMA[t] || t === "meta") return;
+    var sh = e.range.getSheet(), t = sh.getName(); if (!own_(SCHEMA, t) || t === "meta") return;
     var head = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0].map(String), uc = head.indexOf("updated") + 1, bc = head.indexOf("by") + 1;
     if (!uc) return;
     var r0 = Math.max(2, e.range.getRow()), r1 = e.range.getLastRow(); if (r1 < r0) return;

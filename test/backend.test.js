@@ -702,5 +702,44 @@ const phone = (F, k) => { const P = {T: {}, since: 0}; P.sync = (ops) => { const
     ok("#5 Budgie.gs is up to date (run node migrate/build.js)", !stale.length, stale);
   }
 }
+// ================= review 2026-10-27 (1.4.7) =================
+// P1: an id or an app called like a built-in JavaScript name ("constructor", "__proto__", "toString") is just a name:
+// it's never mistaken for a row that's already there, and isn't an app Budgie knows
+{
+  const F = fresh();
+  const r = F.call({key: F.kE, ops: [{op: "put", table: "splits", row: {id: "constructor", name: "Odd", shares: "ethan:1, sophie:1"}},
+    {op: "put", table: "splits", row: {id: "__proto__", name: "Odder", shares: "ethan:2, sophie:1"}},
+    {op: "put", table: "transactions", row: {id: "toString", date: "2026-10-28", person: "ethan", amount: 4, budget: "e-fun", account: "e-main", split: "__proto__"}}]});
+  ok("P1: rows with built-in names as ids are saved as new rows", r.applied.length === 3 && !r.rejected.length, r.rejected);
+  F.c.CACHE_ = {};
+  const sp = F.c.readTable_("splits").rows, tx = F.c.readTable_("transactions").rows;
+  ok("P1: and are in the sheet as ordinary rows", sp.some(x => x.id === "constructor" && x.name === "Odd") && sp.some(x => x.id === "__proto__" && x.name === "Odder") && tx.some(x => x.id === "toString"), sp.map(x => x.id));
+  ok("P1: nothing leaks into JavaScript's own objects", ({}).name === undefined && ({}).shares === undefined && Object.shares === undefined);
+  const L = B.load(F.call({key: F.kE, full: true}).rows, "2026-10-28");
+  near("P1: the engine reads a split called __proto__ like any other", B.between(L, "ethan", "2026-10-28").owedToMe, 4 / 3);
+  ok("P1: and an unknown id still isn't found", B.person(L, "hasOwnProperty").name === "hasOwnProperty" && B.accName(L, "toString") === "toString");
+  const a = F.call({key: F.kE, action: "app.link", app: "constructor"});
+  ok("P1: an app called constructor isn't one Budgie knows", a.ok === false && !a.link && !Object.keys(F.env.props).some(k => /constructor/.test(k)), a);
+}
+
+// P2: a sharing setting that's been taken off counts as off, as it does in the app and the engine
+{
+  const F = fresh(t => t.transactions.push({id: "s-own", date: "2026-10-27", person: "sophie", amount: 12, budget: "s-food", account: "s-main"}));
+  F.call({key: F.kS, ops: [{op: "put", table: "settings", row: {id: "sophie:share.payments", person: "sophie", key: "share.payments", value: "true"}}]});
+  const E = phone(F, F.kE); E.sync();
+  ok("P2: (shared while it's on)", E.T.transactions.some(x => x.id === "s-own"));
+  F.call({key: F.kS, ops: [{op: "delete", table: "settings", id: "sophie:share.payments"}]});
+  wait(5100); E.sync();
+  ok("P2: once Sophie's setting is taken off, her own payments leave Ethan's phone", !E.T.transactions.some(x => x.id === "s-own" && !x.deleted), E.T.transactions.filter(x => x.id === "s-own"));
+  ok("P2: and a full sync doesn't send them either", !F.call({key: F.kE, full: true}).rows.transactions.some(x => x.id === "s-own"));
+}
+
+// P3: a number with more than 15 digits (a long reference in a note) is kept as typed, not rounded by the sheet
+{
+  const F = fresh(), c = F.c;
+  ok("P3: 20 digits are kept as text", c.cell_("12345678901234567890") === "'12345678901234567890" && c.cell_("-1234567890123456.5") === "'-1234567890123456.5", [c.cell_("12345678901234567890"), c.cell_("-1234567890123456.5")]);
+  ok("P3: ordinary numbers are still numbers to the sheet", c.cell_("123456789012345") === "123456789012345" && c.cell_("12.5") === "12.5" && c.cell_("0.05") === "0.05" && c.cell_("-40") === "-40" && c.cell_(1234567890123456789) === 1234567890123456789);
+}
+
 console.log(fails ? fails + " failed, " + passes + " passed" : "All " + passes + " passed");
 process.exit(fails ? 1 : 0);
