@@ -6,7 +6,7 @@
   else root.Budgie = factory();
 })(this, function () {
   "use strict";
-  var VERSION = "1.4.13";
+  var VERSION = "1.4.14";
 
   // ---------- dates ----------
   function D(s) { var p = String(s).split("-"); return new Date(Date.UTC(+p[0], +p[1] - 1, +p[2])); }
@@ -643,20 +643,21 @@
   // (flows on a valuation's own date are already in it)
   function balances(db, date) { return memo(db, "bal|" + date, function () { return bal0(db, date); }); }
   function bal0(db, date) {
-    var res = dict(), base = dict(), vdate = dict(), vupd = dict(), vbank = dict();
+    var res = dict(), base = dict(), vdate = dict(), vupd = dict();
     db.accounts.forEach(function (a) { res[a.id] = 0; base[a.id] = addDays(startOf(db, a.owner), -1); });
     db.valuations.forEach(function (v) {
       if (v.date > date || res[v.account] === undefined) return;
       var vd = vdate[v.account] || "";
-      if (v.date > vd || (v.date === vd && (+v.updated || 0) >= (vupd[v.account] || 0))) { vdate[v.account] = v.date; vupd[v.account] = +v.updated || 0; res[v.account] = +v.amount || 0; base[v.account] = v.date; vbank[v.account] = /^bk-/.test(String(v.id)); }
+      if (v.date > vd || (v.date === vd && (+v.updated || 0) >= (vupd[v.account] || 0))) { vdate[v.account] = v.date; vupd[v.account] = +v.updated || 0; res[v.account] = +v.amount || 0; base[v.account] = v.date; }
     });
     var af = allFlows(db), list = af.list;
     if (date > af.to) list = flows(db, addDays(af.from, -1), date);
     var end = date > af.to ? list.length : lowerBound(af.dates, addDays(date, 1));
-    // flows on a check's own date are already in it, unless they were logged after the check; and a balance from the bank
-    // feed has every payment and move from the bank that day in it, however late its row was changed (checking what a
-    // payment was for, say)
-    var counts = function (f) { var b = base[f.account]; return f.date > b || (f.date === b && !(f.bank && vbank[f.account]) && f.upd && vupd[f.account] && f.upd > vupd[f.account]); };
+    // flows on a check's own date are already in it, unless they were logged after the check. A payment or move from the
+    // bank feed on that day is in it however late its row came or was changed: the balance came from the bank (from the
+    // feed, or read off the bank's app and typed in), and the bank had it. (A first import brings in the days before
+    // you started, after the balances you started with were typed in.)
+    var counts = function (f) { var b = base[f.account]; return f.date > b || (f.date === b && !f.bank && f.upd && vupd[f.account] && f.upd > vupd[f.account]); };
     for (var i = 0; i < end; i++) { var f = list[i]; if (res[f.account] !== undefined && f.date <= date && counts(f)) res[f.account] = round(res[f.account] + f.amount); }
     return res;
   }

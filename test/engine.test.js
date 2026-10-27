@@ -481,7 +481,7 @@ const savedUp = (pl, id) => lineAmt(pl, l => l.setAside && l.bill === id && l.ki
   const bs = B.budgetState(c, me, per);
   eq("compat: budgetState(db, me, per)", ["amount", "spent", "left", "avail", "carryIn", "carryOut", "over"].every(k => k in bs["e-fun"]) && bs["e-fun"].period.start === per.start, true);
   eq("compat: still exported", ["load", "coming", "periodAt", "planFor", "budgetState", "today", "checks", "lisa", "yearly", "yearReview"].every(k => typeof B[k] === "function"), true);
-  eq("compat: version", B.VERSION, "1.4.13");
+  eq("compat: version", B.VERSION, "1.4.14");
 })();
 
 // C3: a payday move ticked in the app and by the bank feed counts once (the latest)
@@ -964,6 +964,19 @@ const tickPay11 = (t, p, d) => { const L0 = B.load(t, d), per = B.periodAt(L0, p
   const t = fixture(); tickPay11(t, "ethan", "2026-10-29");
   t.valuations.push({id: "v-q11b", account: "e-bills", date: "2026-10-30", amount: 300, updated: 1}, {id: "v-q11f", account: "e-emergency", date: "2026-10-30", amount: 25, updated: 1});
   eq("Q11: the Emergency pot's £25 first, then the rest of the household bills from Main", B.todo(B.load(t, "2026-10-30"), "ethan", "2026-10-30").filter(x => x.fill).map(x => [x.from, x.to, x.amount]), [["e-main", "e-bills", 95], ["e-emergency", "e-bills", 25]]);
+}
+// Q15: a balance typed in by hand (read off the bank's app) has that day's bank payments in it too: a first import that
+// brings in the day before you started, after the balances you started with were typed in, never takes them off again
+// (seen with Sophie: £2.80 typed for 24 October, and that day's £120 and £12.21 imported later, made her start at -£117.41)
+{
+  const t = fixture(), d = "2026-11-17";
+  t.valuations.push({id: "v-q15", account: "e-main", date: d, amount: 2.8, updated: 1000});
+  t.transactions.push({id: "bk-monzo-tx_q15a", date: d, person: "ethan", amount: 120, account: "e-main", bankId: "tx_q15a", updated: 5000});
+  t.transactions.push({id: "t-q15linked", date: d, person: "ethan", amount: 12.21, account: "e-main", bankId: "tx_q15b", updated: 6000});
+  eq("Q15: that day's bank payments are already in a hand-typed balance", B.balances(B.load(t, d), d)["e-main"], 2.8);
+  // one you log in the app after typing the balance, that the bank hasn't seen, still counts
+  t.transactions.push({id: "t-q15cash", date: d, person: "ethan", amount: 4, account: "e-main", updated: 7000});
+  eq("Q15: one logged by hand later that day still counts", B.balances(B.load(t, d), d)["e-main"], -1.2);
 }
 // Q12: a balance the bank feed checked already has every payment and move from the bank that day in it, so changing one
 // of those rows later that day (checking what a bank payment was for, editing its note) never takes it off again; one
