@@ -75,8 +75,11 @@ People are `ethan` and `sophie`. Money is in pounds. Dates are real dates.
 ## Privacy between partners
 
 The Apps Script only sends your partner's **summary** (worked out on the server by the same engine), filtered by
-what they chose to share. Their individual payments are only sent if they turn "Each payment" on. Things you
-share (split payments, shared bills, loans, joint goals) you both see.
+what they chose to share. Their individual payments (and their pay, bills, budgets and balances) are only sent if they
+turn "Each payment" on. Things you share (split payments, shared bills, loans, joint goals) you both see. A regular
+payment between you is the payer's to change. A payment you log, or a pot move you tick, only ever uses your own accounts; a bill, pay or budget uses its person's, a
+payment between you goes from the payer's account to the other's, a loan is paid from the lender's, and only the person whose
+account money comes out of can say which one it was.
 
 ## Sync
 

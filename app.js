@@ -1,10 +1,12 @@
 /* Budgie app: screens, syncing and offline queue. The maths lives in engine.js. */
 (function () {
   "use strict";
-  var B = window.Budgie, TH = window.BudgieThemes, APP_VERSION = "1.4.0";
+  var B = window.Budgie, TH = window.BudgieThemes, APP_VERSION = "1.4.11";
   var $ = function (s) { return document.querySelector(s); };
   var esc = function (s) { return String(s === undefined || s === null ? "" : s).replace(/[&<>"']/g, function (c) { return {"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]; }); };
-  var LS = {get: function (k, d) { try { var v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch (e) { return d; } }, set: function (k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }};
+  // wiped: Budgie's copy at the old address has been wiped (it's moving across), so nothing is saved here again
+  var wiped = false;
+  var LS = {get: function (k, d) { try { var v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch (e) { return d; } }, set: function (k, v) { if (wiped) return; try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }};
   var todayIso = function () { var d = new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); };
   var newId = function (p) { return (p || "r") + "-" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6); };
   var ICON = {
@@ -25,7 +27,7 @@
     db: null,
     open: function () { return new Promise(function (res) { try { var r = indexedDB.open("budgie", 1); r.onupgradeneeded = function () { r.result.createObjectStore("kv"); }; r.onsuccess = function () { store.db = r.result; res(); }; r.onerror = function () { res(); }; } catch (e) { res(); } }); },
     get: function (k) { return new Promise(function (res) { if (!store.db) return res(LS.get("budgie.kv." + k, null)); try { var q = store.db.transaction("kv").objectStore("kv").get(k); q.onsuccess = function () { res(q.result || null); }; q.onerror = function () { res(null); }; } catch (e) { res(null); } }); },
-    set: function (k, v) { if (!store.db) { LS.set("budgie.kv." + k, v); return; } try { store.db.transaction("kv", "readwrite").objectStore("kv").put(v, k); } catch (e) { LS.set("budgie.kv." + k, v); } }
+    set: function (k, v) { if (wiped) return; if (!store.db) { LS.set("budgie.kv." + k, v); return; } try { store.db.transaction("kv", "readwrite").objectStore("kv").put(v, k); } catch (e) { LS.set("budgie.kv." + k, v); } }
   };
 
   // ---------- state ----------
@@ -41,7 +43,8 @@
   var demoOn = function () { return !!S.prefs.demo; };
   var tables = function () { return demoOn() ? S.demo.tables : S.data.tables; };
   var me = function () { return demoOn() ? S.demo.me : S.data.me; };
-  var db = function () { if (!DB) DB = B.load(tables(), todayIso()); return DB; };
+  // worked out again once the date changes, so a phone left open overnight (or offline) isn't a day behind
+  var db = function () { var t = todayIso(); if (!DB || DB.today !== t) DB = B.load(tables(), t); return DB; };
   var dirty = function () { DB = null; };
   var savePrefs = function () { LS.set("budgie.prefs", S.prefs); };
   var persist = function () { if (!demoOn()) store.set("data", S.data); };
@@ -51,7 +54,9 @@
 
   // ---------- money display ----------
   var M = function (n) { return S.prefs.hide && !S.ui.reveal ? "£••••" : B.money(n); };
-  var M0 = function (n) { return S.prefs.hide && !S.ui.reveal ? "£••••" : "£" + Math.round(+n || 0).toLocaleString("en-GB"); };
+  // the engine's own sentences ("Pay Sophie £40.00") are covered too
+  var MT = function (s) { return S.prefs.hide && !S.ui.reveal ? String(s === undefined || s === null ? "" : s).replace(/-?£\d[\d,]*(\.\d+)?/g, "£••••") : s; };
+  var M0 = function (n) { var r = Math.round(+n || 0); return S.prefs.hide && !S.ui.reveal ? "£••••" : (r < 0 ? "-£" : "£") + Math.abs(r).toLocaleString("en-GB"); };
 
   // ---------- changes ----------
   function upsert(t, row) {
@@ -61,6 +66,9 @@
   }
   function put(t, row, quiet) {
     row = Object.assign({}, row, {updated: Date.now(), by: me()});
+    // a setting, or a change to one date, has an id made from what it is: making it again after it was taken off
+    // (Undo, or in the sheet) brings it back, rather than leaving it off on the phone and in the sheet
+    if ((t === "settings" || t === "exceptions") && row.deleted === undefined) row.deleted = false;
     upsert(t, row);
     if (!demoOn()) { S.data.queue.push({op: "put", table: t, row: row}); persist(); syncSoon(); }
     dirty(); if (!quiet) render();
@@ -83,7 +91,7 @@
     if (full) { T = S.data.tables = {}; }
     Object.keys(rows || {}).forEach(function (t) {
       T[t] = T[t] || [];
-      rows[t].forEach(function (r) { var key = t === "meta" ? "key" : "id", i = T[t].findIndex(function (x) { return x[key] === r[key]; }); if (i >= 0) T[t][i] = r; else T[t].push(r); });
+      rows[t].forEach(function (r) { var k = rowKey(t, r), i = T[t].findIndex(function (x) { return rowKey(t, x) === k; }); if (i >= 0) T[t][i] = r; else T[t].push(r); });
     });
     // changes still waiting to go up stay applied on top
     S.data.queue.forEach(function (op) {
@@ -92,20 +100,44 @@
       else if (op.op === "delete" && i >= 0) list[i] = Object.assign({}, list[i], {deleted: true});
     });
   }
+  // what one row is known by: its id (a setting typed into the sheet without one is known by whose it is and its key,
+  // so two of them don't overwrite each other on the phone)
+  function rowKey(t, r) { if (t === "meta") return "m:" + r.key; var id = r.id; return id === undefined || id === null || id === "" ? (t === "settings" ? "s:" + r.person + ":" + r.key : "") : "i:" + id; }
   function newer(a, b) { var x = String(a).split(".").map(Number), y = String(b).split(".").map(Number); for (var i = 0; i < 3; i++) { if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0); } return false; }
+  // one request to the sheet. A phone signal that drops, or Google answering with a page of its own instead of Budgie's
+  // answer (busy, or signed out), says so in plain words rather than the browser's own
+  async function askSheet(body, signal) {
+    var res;
+    try { res = await fetch(S.cfg.u, {method: "POST", headers: {"Content-Type": "text/plain;charset=utf-8"}, body: JSON.stringify(body), signal: signal}); }
+    catch (e) { if (e && e.name === "AbortError") throw e; throw new Error("Couldn't reach your Google Sheet. Check your signal and try again."); }
+    try { return await res.json(); } catch (e) { if (e && e.name === "AbortError") throw e; throw new Error("Your Google Sheet didn't answer properly (Google may be busy). Try again in a minute."); }
+  }
+  // what the sheet said no with, in plain words (a key that's been changed, after a lost phone, says what to do)
+  function sheetSaid(j) { var e = String(j && j.error || ""); return /^(Wrong|No) app key$/.test(e) ? "This phone's connect link has stopped working, as a new one was made. Open the newest connect link from your Google Sheet." : e || "The sheet said no"; }
   async function sync(full) {
-    if (demoOn() || !S.cfg || S.syncing) return;
+    if (demoOn() || !S.cfg) return;
+    // one at a time: a full one asked for meanwhile (Full refresh, a new link) runs as soon as this one is done
+    // (changes made meanwhile go up straight after a sync anyway)
+    if (S.syncing) { if (full) S.syncAgain = true; return; }
     S.syncing = true; renderTop();
     var cfgAt = S.cfg, dataAt = S.data;
+    // a request that never answers (a phone signal that drops mid-way) mustn't leave Budgie "Syncing…" for good;
+    // anything it carried is sent again next time, and the sheet only ever saves a change once
+    var ctl = typeof AbortController === "function" ? new AbortController() : null, slow = ctl ? setTimeout(function () { ctl.abort(); }, 90000) : null;
     try {
       var ops = S.data.queue.slice(0, 40);
-      var res = await fetch(S.cfg.u, {method: "POST", headers: {"Content-Type": "text/plain;charset=utf-8"}, body: JSON.stringify({key: S.cfg.k, since: full ? 0 : S.data.since, full: !!full || !S.data.since, ops: ops})});
-      var j = await res.json();
+      var j = await askSheet({key: S.cfg.k, since: full ? 0 : S.data.since, full: !!full || !S.data.since, ops: ops}, ctl ? ctl.signal : undefined);
       if (S.cfg !== cfgAt || S.data !== dataAt) return; // disconnected or switched sheets while this was on its way
-      if (!j.ok) throw new Error(j.error || "The sheet said no");
-      S.data.queue = S.data.queue.slice(ops.length);
-      // changes the sheet turned down are dropped (the sheet's copy comes back in a full refresh) so they can't block the rest
-      var rej = j.rejected || [];
+      if (!j.ok) throw new Error(sheetSaid(j));
+      // a change the sheet couldn't save for a passing reason (retry) goes back in the queue. It's only given up on once
+      // it has failed a few times over several hours, so a Google hiccup (which can last a while, with a few things
+      // logged during it) never loses anything; changes the sheet turned down are dropped (the sheet's copy comes back
+      // in a full refresh) so they can't block the rest
+      var tNow = Date.now(), keepTrying = function (op) { return (op.tries || 0) < 4 || tNow - (op.failedAt || tNow) < 6 * 3600000; };
+      var again = [], rej = (j.rejected || []).filter(function (r) { var op = ops[r.i]; if (r.retry && op && (r.notTried || keepTrying(op))) { if (!r.notTried) { op.tries = (op.tries || 0) + 1; op.failedAt = op.failedAt || tNow; } again.push(op); return false; } return true; });
+      S.data.queue = again.concat(S.data.queue.slice(ops.length));
+      // changes made on this phone before it was given a new link for the same person and sheet go up now
+      if (S.data.carry) { var cr = S.data.carry; delete S.data.carry; if (cr.me === j.person) S.data.queue = S.data.queue.concat(cr.queue); else { S.ui.carryNote = cr.queue.length + " change" + (cr.queue.length === 1 ? "" : "s") + " made as " + (cr.name || cr.me) + " weren't sent, because this link is for someone else."; toast(S.ui.carryNote); } }
       if (rej.length) { S.lastRejected = rej.map(function (r) { return r.error || "A change was turned down"; }); toast(rej.length === 1 ? "The sheet turned down a change: " + S.lastRejected[0] : rej.length + " changes were turned down by the sheet"); }
       merge(j.rows, j.full);
       S.data.since = rej.length && !j.full ? 0 : j.now; S.data.me = j.person; S.data.summary = j.partnerSummary;
@@ -115,9 +147,13 @@
       persist(); dirty(); S.lastSync = Date.now(); S.lastError = "";
       applyPersonPrefs();
       if (!S.bank && !S.bankAsked) { S.bankAsked = true; setTimeout(bankRefresh, 300); }
-      if (S.data.queue.length || ((rej.length || upgraded) && !j.full)) setTimeout(function () { sync((rej.length || upgraded) && !j.full); }, 60); // a full refresh puts back the sheet's copy of anything turned down
-    } catch (e) { S.lastError = navigator.onLine === false ? "Offline: changes will sync when you're back online" : String(e && e.message || e); }
-    finally { S.syncing = false; render(true); }
+      // (what's waiting to be tried again waits for the next sync, a minute or the next change, rather than straight away)
+      if (S.data.queue.length > again.length || ((rej.length || upgraded) && !j.full)) setTimeout(function () { sync((rej.length || upgraded) && !j.full); }, 60); // a full refresh puts back the sheet's copy of anything turned down
+    } catch (e) { S.lastError = navigator.onLine === false ? "Offline: changes will sync when you're back online" : e && e.name === "AbortError" ? "Your sheet took too long to answer. Budgie will try again." : String(e && e.message || e); }
+    finally {
+      clearTimeout(slow); S.syncing = false; render(true);
+      if (S.syncAgain) { S.syncAgain = false; setTimeout(function () { sync(true); }, 0); }
+    }
   }
 
   // ---------- themes ----------
@@ -255,9 +291,10 @@
     var a = document.activeElement; return !!(a && $("#main").contains(a) && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName));
   }
   function render(background) {
+    if (isOldHome()) { movedScreen(); return; }   // even after a sync while moving across: no app at the old address
     applyTheme();
     if (LOCK.locked) { $("#main").innerHTML = ""; $("#nav").innerHTML = ""; $("#top").innerHTML = ""; $("#sheets").innerHTML = ""; return; } // nothing on screen until it's you
-    if (!me()) { S.view = {s: "connect", p: {}}; }
+    if (!me()) { S.view = {s: "connect", p: {}}; } else if (S.view.s === "connect") S.view = {s: "today", p: {}};
     renderTop(); renderNav();
     if (background && formBusy() && S.view.s !== "connect") return;
     if (S.view.s === "edit" && $("#main").querySelector("[data-f]")) readForm();
@@ -310,10 +347,10 @@
     if (payItems.length) rows += li("Sort your pay into " + esc(potWord(true)), payItems.length + " " + esc(payItems.length === 1 ? potWord() : potWord(true)) + " still to move", "", "go", "payday");
     rest.forEach(function (it, i) {
       var right = num(it.type === "warn" ? "" : M(it.amount));
-      var why = esc(it.why) + (it.short ? ' <span class="warn">Only ' + M(Math.max(0, it.amount - it.short)) + " is there right now.</span>" : "");
-      if (it.type === "warn") rows += '<div class="li"><span class="grow"><span class="what warn">' + esc(it.what) + '</span><span class="why">' + why + '</span></span><button type="button" class="btn ghost sm" data-a="tick" data-v="' + i + '">Got it</button></div>';
-      else if (it.info) rows += '<div class="li"><span class="grow"><span class="what">' + esc(it.what) + '</span><span class="why">' + why + '</span></span><button type="button" class="btn ghost sm" data-a="tick" data-v="' + i + '">I\'ve paid</button></div>';
-      else rows += '<label class="li" style="cursor:pointer"><input type="checkbox" class="tick" data-c="tick" data-v="' + i + '" aria-label="Done: ' + esc(it.what) + '"><span class="grow"><span class="what">' + esc(it.what) + '</span><span class="why">' + why + "</span></span>" + right + "</label>";
+      var why = esc(MT(it.why)) + (it.short ? ' <span class="warn">Only ' + M(Math.max(0, it.amount - it.short)) + " is there right now.</span>" : "");
+      if (it.type === "warn") rows += '<div class="li"><span class="grow"><span class="what warn">' + esc(MT(it.what)) + '</span><span class="why">' + why + '</span></span><button type="button" class="btn ghost sm" data-a="tick" data-v="' + i + '">Got it</button></div>';
+      else if (it.info) rows += '<div class="li"><span class="grow"><span class="what">' + esc(MT(it.what)) + '</span><span class="why">' + why + '</span></span><button type="button" class="btn ghost sm" data-a="tick" data-v="' + i + '">I\'ve paid</button></div>';
+      else rows += '<label class="li" style="cursor:pointer"><input type="checkbox" class="tick" data-c="tick" data-v="' + i + '" aria-label="Done: ' + esc(MT(it.what)) + '"><span class="grow"><span class="what">' + esc(MT(it.what)) + '</span><span class="why">' + why + "</span></span>" + right + "</label>";
     });
     var leftN = rest.length + (payItems.length ? 1 : 0) + (reN ? 1 : 0);
     html += card('<div class="row"><h2>To do</h2><span class="small muted">' + (leftN ? leftN + " left" : "") + "</span></div>" + (rows ? '<div class="list">' + rows + "</div>" : '<p class="muted" style="margin:8px 0 0">All done. Everything is where it should be.</p>'));
@@ -342,7 +379,8 @@
     last.coming = {};
     var rows = list.slice(0, 8).map(function (c) {
       last.coming[c.key] = c;
-      var mine = canEditItem(c);
+      // a loan repayment has no "didn't happen" or "change": tapping it asks if it's been paid
+      var mine = c.table !== "loans" && canEditItem(c);
       return '<div class="swipe">' + (mine ? '<div class="acts" aria-hidden="true"><button type="button" class="skip" tabindex="-1" data-a="occskip" data-v="' + esc(c.key) + '">Didn\'t happen</button><button type="button" class="chg" tabindex="-1" data-a="occ" data-v="' + esc(c.key) + '">Change</button></div>' : "") +
         '<button type="button" class="face li" data-a="occ" data-v="' + esc(c.key) + '">' + dateBox(c.date) + '<span class="grow"><span class="what">' + esc(c.name) + '</span><span class="why hide-easy">' + esc(c.account || "") + (c.changed ? " · changed" : "") + "</span></span>" + num((c.sign > 0 ? "+" : "−") + M(c.amount), c.sign > 0 ? "good" : "") + "</button></div>";
     }).join("");
@@ -473,7 +511,7 @@
     var sm = demoOn() ? B.summary(d, q, now) : (S.data.summary || {});
     var qp = person(q), col = q === "sophie" || q === "sam" ? "#2F7D6D" : "#2E5E8C", html = "";
     var statusWord = sm.status ? sm.status.toLowerCase() : "";
-    html += card('<div style="display:flex;gap:12px;align-items:center"><span class="round avatar" style="background:' + col + ';color:#fff;width:48px;height:48px;border-radius:24px">' + esc((qp.name || "?").charAt(0)) + '</span><div class="grow"><div style="font-weight:800;font-size:19px">' + esc(qp.name) + (statusWord ? " is " + esc(statusWord) : "") + '</div><div class="small muted">' + (sm.nextPay ? (function (n) { return n <= 0 ? "Paid today" : n === 1 ? "Paid tomorrow" : "Paid in " + n + " days (" + esc(B.nice(sm.nextPay)) + ")"; })(B.diff(now, sm.nextPay)) : "") + "</div></div></div>" +
+    html += card('<div style="display:flex;gap:12px;align-items:center"><span class="round avatar" style="background:' + col + ';color:#fff;width:48px;height:48px;border-radius:24px">' + esc((qp.name || "?").charAt(0)) + '</span><div class="grow"><div style="font-weight:800;font-size:19px">' + esc(qp.name) + (statusWord ? " is " + esc(statusWord) : "") + '</div><div class="small muted">' + (sm.nextPay ? (function (n) { return n < 0 ? "" : n === 0 ? "Paid today" : n === 1 ? "Paid tomorrow" : "Paid in " + n + " days (" + esc(B.nice(sm.nextPay)) + ")"; })(B.diff(now, sm.nextPay)) : "") + "</div></div></div>" +
       (sm.safe !== undefined ? '<div class="two" style="margin-top:14px"><div class="tile" style="background:var(--bg)"><div class="n">Can spend today</div><div class="v">' + M(sm.safe) + '</div></div><div class="tile" style="background:var(--bg)"><div class="n">Saving this month</div><div class="v">' + M(sm.saved || 0) + "</div></div></div>" : "") +
       (sm.tiles ? sm.tiles.map(function (x) { return '<div style="margin-top:12px"><div class="row small"><span style="font-weight:600">' + esc(x.name.replace(/ \(what's left\)/, "")) + '</span><span class="num">' + M(x.spent) + " of " + M(x.amount) + "</span></div>" + '<div style="margin-top:5px">' + bar(x.pct, x.mode === "oneoff" ? null : x.paceMark, col) + "</div></div>"; }).join("") + '<p class="tiny muted" style="margin:12px 0 0">The black line is where they\'d expect to be by today.</p>' : '<p class="small muted">' + esc(qp.name) + " isn't sharing their budget details.</p>"));
     // their own goals and payments, when they've chosen to share them
@@ -512,7 +550,9 @@
   // ----- Payday
   SCREENS.payday = function () {
     var d = db(), p = me(), now = todayIso(), per = B.periodAt(d, p, now);
-    var upcoming = !(per.pay && !per.opening && B.diff(per.start, now) <= 7);
+    // this payday's list stays until every move on it is ticked (Today keeps asking), then the next payday shows
+    var curLeft = per.pay && !per.opening && B.payday(d, p, per).moves.some(function (m) { return !B.ticked(d, p, "pay:" + per.start + ":" + m.to); });
+    var upcoming = !(per.pay && !per.opening && (B.diff(per.start, now) <= 7 || curLeft));
     if (upcoming) per = B.periodAt(d, p, B.today(d, p, now).nextPay);
     var pd = B.payday(d, p, per), pay = pd.pay, html = "";
     var payOcc = pay && pay.occ ? pay.occ.split("@") : null;
@@ -520,20 +560,21 @@
       (pay && payOcc ? '<button type="button" class="btn sm" style="background:color-mix(in srgb, var(--hero-ink) 18%, transparent);color:var(--hero-ink)" data-a="payedit" data-v="' + esc(pay.occ) + '">' + (pay.actual ? "Change the amount" : "Paid a different amount?") + "</button>" : "") +
       '<div class="small" style="opacity:.92;margin-top:8px">Change it and everything below re-sorts. What\'s left (' + esc(remainderName(pd.plan)) + ") goes up or down.</div></section>";
     var rows = pd.moves.map(function (m) {
-      var key = "pay:" + per.start + ":" + m.to, done = !!d.moveKeys[key];
-      return '<label class="li" style="cursor:pointer"><input type="checkbox" class="tick" data-c="paytick" data-v="' + esc(key) + "|" + esc(m.from) + "|" + esc(m.to) + "|" + m.amount + '"' + (done ? " checked" : "") + (upcoming ? " disabled" : "") + '><span class="grow"><span class="what">' + esc(B.accName(d, m.to)) + '</span><span class="why">' + esc(m.why) + "</span></span>" + num(M(m.amount)) + "</label>";
+      var key = "pay:" + per.start + ":" + m.to, done = !!B.ticked(d, p, key);
+      return '<label class="li" style="cursor:pointer"><input type="checkbox" class="tick" data-c="paytick" data-v="' + esc(key) + "|" + esc(m.from) + "|" + esc(m.to) + "|" + m.amount + '"' + (done ? " checked" : "") + (upcoming ? " disabled" : "") + '><span class="grow"><span class="what">' + esc(B.accName(d, m.to)) + '</span><span class="why">' + esc(MT(m.why)) + "</span></span>" + num(M(m.amount)) + "</label>";
     }).join("");
     if (pd.cover) {
-      var ckey = "pay:" + per.start + ":cover", cdone = !!d.moveKeys[ckey];
+      var ckey = "pay:" + per.start + ":cover", cdone = !!B.ticked(d, p, ckey);
       html += card('<div class="warn" style="font-weight:700">This pay is ' + M(pd.cover.amount + (pd.uncovered || 0)) + " short of everything planned</div><p class=\"small muted\" style=\"margin:4px 0 8px\">Your " + esc(B.accName(d, pd.cover.from)) + " covers the gap so your " + esc(B.accName(d, pd.payAccount)) + " doesn't go under. To avoid it, lower a budget or saving this month.</p>" +
         (pd.uncovered > 0.004 ? '<p class="small bad" style="margin:0 0 8px;font-weight:600">Your ' + esc(B.accName(d, pd.cover.from)) + " only has enough for " + M(pd.cover.amount) + ", so " + M(pd.uncovered) + " is still short. Lower a budget or saving this month, or move money in from elsewhere.</p>" : "") +
         '<label class="li" style="cursor:pointer"><input type="checkbox" class="tick" data-c="paytick" data-v="' + esc(ckey) + "|" + esc(pd.cover.from) + "|" + esc(pd.cover.to) + "|" + pd.cover.amount + '"' + (cdone ? " checked" : "") + (upcoming ? " disabled" : "") + '><span class="grow"><span class="what">' + esc(B.accName(d, pd.cover.from)) + " to " + esc(B.accName(d, pd.cover.to)) + "</span></span>" + num(M(pd.cover.amount)) + "</label>");
     }
-    var doneN = pd.moves.filter(function (m) { return d.moveKeys["pay:" + per.start + ":" + m.to]; }).length;
+    var doneN = pd.moves.filter(function (m) { return B.ticked(d, p, "pay:" + per.start + ":" + m.to); }).length;
     html += card('<div class="row"><h2>Move from ' + esc(B.accName(d, pd.payAccount)) + '</h2><span class="small muted">' + (upcoming ? "On payday" : doneN + " of " + pd.moves.length + " done") + '</span></div><div class="list" style="margin-top:6px">' + (rows || '<p class="muted">Nothing to move.</p>') + "</div>" +
       '<div class="row" style="padding-top:10px;border-top:1px solid var(--line2);margin-top:4px"><span>Stays in ' + esc(B.accName(d, pd.payAccount)) + ' <span class="tiny muted">for spending from there</span></span>' + num(M(pd.keeps)) + "</div>");
     var left = pd.plan.lines.filter(function (l) { return l.leftover; })[0];
     if (pd.already.length || left) html += '<div class="banner small">Less to move: ' + pd.already.map(function (a) { return M(a.amount) + " is already in your " + esc(a.name); }).concat(left ? [M(left.amount) + " still in your " + esc(B.accName(d, pd.payAccount)) + " from last month counts towards it"] : []).join(", ") + ".</div>";
+    (pd.later || []).forEach(function (m) { html += '<div class="banner small">' + M(m.amount) + " more goes to your " + esc(B.accName(d, m.to)) + " once " + esc(m.names.join(" and ")) + " has come in, after payday. To do asks for it then.</div>"; });
     if (upcoming && pd.estimate) html += '<p class="tiny muted" style="margin:8px 4px">These are estimates until payday: they use what should be in your ' + esc(potWord(true)) + " then. Log spending as you go and they stay right.</p>";
     if (pd.plan.shortfall > 0.004) html += card('<div class="bad" style="font-weight:700">This pay is ' + M(pd.plan.shortfall) + " short of the plan.</div><p class=\"small muted\">Lower a budget or saving for this month in Settings.</p>");
     return html;
@@ -564,14 +605,17 @@
     S.ui.payEdit = id;
     var buds = d.budgets.filter(function (b) { return b.person === p && b.mode !== "saving"; });
     var accs = B.accountsOf(d, p).filter(function (a) { return /main|pot|saving|credit/.test(a.kind || "pot"); });
-    openSheet("<h2>Change this payment</h2>" +
-      '<label class="f">Amount<input type="text" inputmode="decimal" id="peAmt" value="' + esc(x.amount) + '"></label>' +
+    // one from the bank: the amount, the date and the account are the bank's, so only what it was for and the note change
+    var bk = isBankTx(x), lock = bk ? " disabled" : "";
+    openSheet("<h2>Change this payment</h2>" + (bk ? '<p class="small muted" style="margin:4px 0 0">From ' + esc(bankName()) + ": the amount, date and account come from your bank.</p>" : "") +
+      '<label class="f">Amount<input type="text" inputmode="decimal" id="peAmt" value="' + esc(x.amount) + '"' + lock + "></label>" +
       '<label class="f">What for<select id="peBud">' + buds.map(function (b) { return '<option value="' + esc(b.id) + '"' + (b.id === x.budget ? " selected" : "") + ">" + esc(b.name.replace(/ \(what's left\)/, "")) + "</option>"; }).join("") + "</select></label>" +
-      '<label class="f">Paid from<select id="peAcc">' + accs.map(function (a) { return '<option value="' + esc(a.id) + '"' + (a.id === x.account ? " selected" : "") + ">" + esc(a.name) + "</option>"; }).join("") + "</select></label>" +
-      '<div class="two"><label class="f">Date<input type="date" id="peDate" value="' + esc(x.date) + '"></label><label class="f">Note<input type="text" id="peNote" value="' + esc(x.note || "") + '"></label></div>' +
+      '<label class="f">Paid from<select id="peAcc"' + lock + ">" + accs.map(function (a) { return '<option value="' + esc(a.id) + '"' + (a.id === x.account ? " selected" : "") + ">" + esc(a.name) + "</option>"; }).join("") + "</select></label>" +
+      '<div class="two"><label class="f">Date<input type="date" id="peDate" value="' + esc(x.date) + '"' + lock + '></label><label class="f">Note<input type="text" id="peNote" value="' + esc(x.note || "") + '"></label></div>' +
       (x.split ? '<p class="small muted" style="margin:8px 0 0">Split with ' + esc(person(partner()).name) + ": " + esc((d.byId[x.split] || {}).name || "half each") + "</p>" : "") +
       '<button type="button" class="btn wide" style="margin-top:14px" data-a="pesave">Save</button><button type="button" class="btn danger wide" style="margin-top:10px" data-a="pedel">Delete this payment</button>');
   }
+  function isBankTx(x) { return !!x && (!!x.bankId || /^bk-/.test(String(x.id || ""))); }
 
   // ----- Pots
   SCREENS.pots = function () {
@@ -739,7 +783,7 @@
       html += card('<div class="small muted">' + whose + " Lifetime ISA</div>" + '<div class="row" style="align-items:center"><span style="font-size:32px;font-weight:800;font-family:var(--head)">' + M0(value) + "</span>" + (a.owner === me() ? '<button type="button" class="btn ghost sm" data-a="potcheck" data-v="' + esc(a.id) + '">Update</button>' : "") + "</div>" +
         (sub ? '<div class="tiny muted">' + sub + "</div>" : "") + chartHtml + holdHtml +
         (L.bonusReceived || L.feesThisYear ? '<div class="small muted" style="margin-top:10px">This tax year: ' + M(L.bonusReceived) + " bonus received · " + M(L.feesThisYear) + " fees</div>" : "") +
-        (L.expectedBonus && L.expectedBonus.length ? '<div class="small" style="margin-top:6px">Bonus on its way: about <b>' + M(L.expectedBonusTotal || L.expectedBonus.reduce(function (t, x) { return t + x.amount; }, 0)) + "</b>" + (L.expectedBonus[0].due ? ", the first by " + esc(B.nice(L.expectedBonus[0].due)) : "") + ". Moneybox claims it for you.</div>" : "") +
+        (L.expectedBonus && L.expectedBonus.length ? '<div class="small" style="margin-top:6px">Bonus on its way: about <b>' + M(L.expectedBonusTotal || L.expectedBonus.reduce(function (t, x) { return t + x.amount; }, 0)) + "</b>" + (L.expectedBonus[0].due ? (L.expectedBonus[0].due < now ? ", the first was due by " : ", the first by ") + esc(B.nice(L.expectedBonus[0].due)) : "") + ". Moneybox claims it for you.</div>" : "") +
         '<div style="margin-top:12px"><div class="row small"><span style="font-weight:600">This tax year (6 Apr to 5 Apr)</span><span class="num">' + M0(L.paidThisYear) + " of £4,000</span></div>" + '<div style="margin-top:6px">' + bar(L.paidThisYear / 40) + '</div><div class="small muted" style="margin-top:4px">' + M0(L.allowanceLeft) + " left you can pay in · bonus on this year's payments about " + M(L.bonusThisYear) + "</div>" +
         (L.planned ? '<div class="small" style="margin-top:8px">On course for ' + M0(L.onCourse) + " by 5 April" + (L.overBy ? '. <span class="warn">That\'s ' + M(L.overBy) + " over the £4,000 limit, and your provider turns away anything over it. Pay in a little less before then.</span>" : L.onCourse >= 3999.5 ? '. <span class="good">That\'s the full £1,000 bonus.</span>' : ".") + "</div>" : "") +
         (a.owner === me() && (L.paidBefore || !Mo.flows.length) ? '<button type="button" class="btn ghost sm" style="margin-top:8px" data-a="lisapaid" data-v="' + esc(a.id) + '">' + (L.paidBefore ? "Paid in before Budgie: " + M0(L.paidBefore) : "Add what you paid in before Budgie") + "</button>" : "") + "</div>");
@@ -858,7 +902,7 @@
   function checkList() { return demoOn() || !me() ? [] : B.checks(db(), me(), todayIso()); }
   function checkRows(list) {
     return list.map(function (c) {
-      return '<div class="li" style="flex-wrap:wrap;gap:8px"><span class="grow" style="min-width:200px"><span class="what">' + esc(c.text) + "</span></span>" +
+      return '<div class="li" style="flex-wrap:wrap;gap:8px"><span class="grow" style="min-width:200px"><span class="what">' + esc(MT(c.text)) + "</span></span>" +
         '<span style="display:flex;gap:8px;margin-left:auto">' + (c.action ? '<button type="button" class="btn sm" data-a="chk" data-v="' + esc(c.id) + '">' + (c.action === "go" ? "Check" : "Change") + "</button>" : "") +
         '<button type="button" class="btn ghost sm" data-a="chkok" data-v="' + esc(c.id) + '">' + (c.action ? "It's right" : "Done") + "</button></span></div>";
     }).join("");
@@ -891,7 +935,7 @@
       }).join("") + "</div>", "flush");
     }).join("") + '<p class="tiny muted" style="text-align:center;margin:18px 0">Budgie ' + APP_VERSION + " · engine " + B.VERSION + " · Google Calendar coming soon</p>";
   };
-  function themeLabel() { var sp = TH.SPECIAL[S.prefs.special]; return sp ? sp.name : (S.prefs.mode === "dark" ? "Dark" : S.prefs.mode === "light" ? "Light" : "Matches your phone") + ", " + ((TH.COLOURS[S.prefs.colour] || {}).name || "standard colour"); }
+  function themeLabel() { var sp = Object.prototype.hasOwnProperty.call(TH.SPECIAL, S.prefs.special) ? TH.SPECIAL[S.prefs.special] : null; return sp ? sp.name : (S.prefs.mode === "dark" ? "Dark" : S.prefs.mode === "light" ? "Light" : "Matches your phone") + ", " + ((Object.prototype.hasOwnProperty.call(TH.COLOURS, S.prefs.colour) ? TH.COLOURS[S.prefs.colour] : {}).name || "standard colour"); }
   function syncLabel() { return S.lastError ? "Not synced: " + S.lastError : S.lastSync ? "Synced " + ago(S.lastSync) : "Connected"; }
   function ago(t) { var s = Math.round((Date.now() - t) / 1000); return s < 60 ? "just now" : s < 3600 ? Math.round(s / 60) + " min ago" : Math.round(s / 3600) + " h ago"; }
 
@@ -908,8 +952,7 @@
   // ----- Bank connection (read-only: balances, payments, pots or Spaces)
   async function bankCall(action, extra) {
     if (demoOn() || !S.cfg) throw new Error("Not connected to your sheet");
-    var res = await fetch(S.cfg.u, {method: "POST", headers: {"Content-Type": "text/plain;charset=utf-8"}, body: JSON.stringify(Object.assign({key: S.cfg.k, action: action}, extra || {}))});
-    var j = await res.json(); if (!j.ok) throw new Error(j.error || "The sheet said no");
+    var j = await askSheet(Object.assign({key: S.cfg.k, action: action}, extra || {})); if (!j.ok) throw new Error(sheetSaid(j));
     return j;
   }
   function bankRefresh() { return bankCall("bank.status").then(function (j) { S.bank = j.bank || {}; S.bank.at = Date.now(); render(true); return S.bank; }, function (e) { S.bank = Object.assign(S.bank || {}, {err: e.message}); render(true); }); }
@@ -923,7 +966,8 @@
     var safety = '<div class="banner small"><b>Read-only.</b> Budgie only reads your balances, payments and ' + (isStarling ? "Spaces" : "pots") + ". It can't move or send money. Your " + (isStarling ? "key" : "sign-in") + " is kept inside your Google Sheet's script, never on this phone or anywhere else, and you can switch it off at any time" + (isStarling ? " by deleting the key on Starling's developer site." : " by disconnecting here or in the Monzo app.") + "</div>";
     if (b.err && !b.provider) return card('<p class="bad small">' + esc(b.err) + '</p><button type="button" class="btn ghost sm" data-a="bankre">Try again</button>');
     if (b.waitingForApproval) return safety + card('<h2>Nearly there</h2><p class="muted">Open the Monzo app and approve Budgie. Once you have, Budgie brings in your payments within a minute or two.</p><button type="button" class="btn ghost wide" data-a="bankre">I\'ve approved it</button>');
-    if (!b.connected) {
+    // needing reconnecting isn't the same as never connected: that screen has Reconnect (Monzo) and Disconnect
+    if (!b.connected && !b.needsReconnect) {
       var url = esc((S.cfg || {}).u || "");
       if (isStarling) return safety + card('<h2>Connect Starling</h2><ol class="steps">' +
         '<li>On a computer or your phone\'s browser, go to <b>developer.starlingbank.com</b> and sign up with the email you use for Starling.</li>' +
@@ -947,7 +991,7 @@
     var rows = (b.accounts || []).map(function (x) {
       var unset = x.mappedTo === null || x.mappedTo === undefined, sug = unset ? guess(x) : "", cur = unset ? null : x.mappedTo, suggested = !!sug;
       if (suggested) S.ui.bankGuess[x.extId] = sug;
-      return '<div class="li" style="flex-wrap:wrap;gap:6px"><span class="grow" style="min-width:140px"><span class="what">' + esc(x.name) + '</span><span class="why">' + esc(({main: "Main account", pot: "Pot", space: "Space", credit: "Credit"})[x.kind] || "") + (x.balance !== undefined ? " · " + M(x.balance) : "") + (suggested ? ' · <span class="warn">looks like ' + esc(B.accName(d, sug)) + "</span>" : unset ? ' · <span class="warn">not matched yet</span>' : "") + "</span></span>" +
+      return '<div class="li" style="flex-wrap:wrap;gap:6px"><span class="grow" style="min-width:140px"><span class="what">' + esc(x.name) + '</span><span class="why">' + esc(({main: "Main account", pot: "Pot", space: "Space", credit: "Credit"})[x.kind] || "") + (x.balance !== undefined && x.balance !== null ? " · " + M(x.balance) : "") + (suggested ? ' · <span class="warn">looks like ' + esc(B.accName(d, sug)) + "</span>" : unset ? ' · <span class="warn">not matched yet</span>' : "") + "</span></span>" +
         '<select data-c="bankmap" data-v="' + esc(x.extId) + '" aria-label="Which Budgie account is ' + esc(x.name) + '" style="min-height:44px;border-radius:10px;border:1px solid var(--line);background:var(--card);padding:0 8px;max-width:100%">' + (unset ? '<option value="" selected disabled>Choose…</option>' : "") + '<option value=""' + (cur === "" ? " selected" : "") + ">Ignore it</option>" + accs.map(function (a) { return '<option value="' + esc(a.id) + '"' + (cur === a.id ? " selected" : "") + ">" + esc(a.name) + "</option>"; }).join("") + "</select></div>";
     }).join("");
     var nGuess = Object.keys(S.ui.bankGuess).length;
@@ -1007,7 +1051,7 @@
       card('<label class="li check"><span class="grow"><span class="what">Send me the Sunday email</span></span><input type="checkbox" data-c="emailon"' + (on ? " checked" : "") + '></label><label class="f">Your email address<input type="email" id="emailTo" inputmode="email" autocomplete="email" value="' + esc(to) + '" placeholder="you@example.com"></label><button type="button" class="btn wide" style="margin-top:12px" data-a="emailsave">Save</button>');
   };
   SCREENS.sharing = function () {
-    var keys = [["totals", "How much is left", "Your can-spend-today and what you're saving"], ["cats", "Your budgets", "Food, fun and the rest, against plan"], ["goals", "Your own goals", "Progress on goals that are just yours"], ["payments", "Each payment", "Every item you log, with notes"]];
+    var keys = [["totals", "How much is left", "Your can-spend-today and what you're saving"], ["cats", "Your budgets", "Food, fun and the rest, against plan"], ["goals", "Your own goals", "Progress on goals that are just yours"], ["payments", "Each payment", "Every payment you log with its note, and your pay, bills, budgets and balances"]];
     return '<p class="small muted" style="margin:0 4px 10px">Shared bills, split payments, money between you and joint goals are always shared. Gift lists never are.</p>' + card('<div class="list">' + keys.map(function (k) {
       var on = /^(true|yes|on|1)$/i.test(String(getSetting("share." + k[0], k[0] === "payments" ? "false" : "true")));
       return '<label class="li check"><span class="grow"><span class="what">' + k[1] + '</span><span class="why">' + k[2] + '</span></span><input type="checkbox" data-c="share" data-v="' + k[0] + '"' + (on ? " checked" : "") + "></label>";
@@ -1038,7 +1082,7 @@
   };
   function describeShares(s) {
     var d = db(), names = function (id) { return person(id).name || id; }, txt = String(s || "");
-    var fixed = txt.match(/([a-z]+)\s*=\s*([\d.]+)/i); if (fixed) return names(fixed[1].toLowerCase()) + " pays " + B.money(+fixed[2]) + ", the rest by the other";
+    var fixed = txt.match(/([a-z]+)\s*=\s*([\d.]+)/i); if (fixed) return names(fixed[1].toLowerCase()) + " pays " + M(+fixed[2]) + ", the rest by the other";
     var parts = []; txt.replace(/([a-z]+)\s*:\s*([\d.]+)/gi, function (_, a, b) { parts.push(names(a.toLowerCase()) + " " + b); }); return parts.length ? parts.join(" : ") + " parts" : "Half each";
   }
   SCREENS.list = function (p) {
@@ -1076,7 +1120,7 @@
     F.fields().forEach(function (f) { html += field(f, r); });
     var canStop = EDIT.id && /bills|income|transfers|budgets/.test(EDIT.table);
     html += '<button type="button" class="btn wide" style="margin-top:18px" data-a="editsave">Save</button>';
-    if (EDIT.id) html += '<div class="two" style="margin-top:10px">' + (canStop ? '<button type="button" class="btn line" data-a="editstop">Stop from today</button>' : "") + '<button type="button" class="btn danger" data-a="editdelete">Delete</button></div>';
+    if (EDIT.id) html += '<div class="two" style="margin-top:10px">' + (canStop ? '<button type="button" class="btn line" data-a="editstop">' + (EDIT.table === "budgets" ? "Stop after this pay period" : "Stop from today") + "</button>" : "") + '<button type="button" class="btn danger" data-a="editdelete">Delete</button></div>';
     return card(html);
   };
   function field(f, r) {
@@ -1095,9 +1139,12 @@
         return '<label class="check"><input type="checkbox" data-f="setAside"' + (sa ? " checked" : "") + '>Put a bit by each month so it\'s there when it comes</label>';
       case "check": return '<label class="check"><input type="checkbox" data-f="' + f.k + '"' + (v === true || /^true$/i.test(String(v)) ? " checked" : "") + ">" + esc(f.l) + "</label>";
       case "select": return '<label class="f">' + esc(f.l) + '<select data-f="' + f.k + '">' + f.o.map(function (o) { return '<option value="' + o[0] + '"' + (String(v || f.o[0][0]) === o[0] ? " selected" : "") + ">" + esc(o[1]) + "</option>"; }).join("") + "</select></label>";
-      case "account": var own = f.owner || me(); return '<label class="f">' + esc(f.l) + '<select data-f="' + f.k + '">' + (f.optional ? '<option value="">None</option>' : "") + accOptions(v || (f.optional ? "" : B.mainOf(db(), own)), own, f.all ? null : /main|pot|saving|credit|isa|lisa|pension/) + "</select></label>";
+      case "account":
+        // a loan is paid from the lender's account: only theirs to choose, so it's asked only when you lent it
+        if (EDIT.table === "loans" && r.direction === "out") return "";
+        var own = f.owner || me(); return '<label class="f">' + esc(f.l) + '<select data-f="' + f.k + '">' + (f.optional ? '<option value="">None</option>' : "") + accOptions(v || (f.optional ? "" : B.mainOf(db(), own)), own, f.all ? null : /main|pot|saving|credit|isa|lisa|pension/) + "</select></label>";
       case "accounts": var sel = String(v).split(/[,\s]+/); return '<div class="f" style="font-size:13px;font-weight:600;color:var(--muted);margin-top:12px">' + esc(f.l) + "</div>" + db().accounts.map(function (a) { return '<label class="check" style="padding:6px 0"><input type="checkbox" data-fm="' + f.k + '" value="' + esc(a.id) + '"' + (sel.indexOf(a.id) >= 0 ? " checked" : "") + ">" + esc((a.owner === me() ? "" : person(a.owner).name + "'s ") + a.name) + "</label>"; }).join("");
-      case "owners": var both = String(v || me()).split(/[,\s]+/).filter(Boolean).length > 1; return '<label class="f">' + esc(f.l) + '<select data-f="owners"><option value="' + me() + '">Just mine</option><option value="' + me() + ", " + partner() + '"' + (both ? " selected" : "") + ">Ours together</option></select></label>";
+      case "owners": var both = String(v || me()).split(/[,\s]+/).filter(Boolean).length > 1; return '<label class="f">' + esc(f.l) + '<select data-f="owners"><option value="' + esc(me()) + '">Just mine</option><option value="' + esc(me() + ", " + partner()) + '"' + (both ? " selected" : "") + ">Ours together</option></select></label>";
       case "split": return '<label class="f">' + esc(f.l) + '<select data-f="split"><option value="">No, it\'s just mine</option>' + db().splits.map(function (s) { return '<option value="' + esc(s.id) + '"' + (v === s.id ? " selected" : "") + ">" + esc(s.name + ": " + describeShares(s.shares)) + "</option>"; }).join("") + "</select></label>";
       case "shares":
         var ppl = db().people, fixed = /=/.test(v), vals = {}; String(v).replace(/([a-z]+)\s*[:=]\s*([\d.]+)/gi, function (_, a, b) { vals[a.toLowerCase()] = b; });
@@ -1129,7 +1176,7 @@
     Object.keys(multi).forEach(function (k) { r[k] = multi[k].join(", "); });
     var sh = root.querySelector('[data-sh="mode"]');
     if (sh) { var fixed = sh.value === "fixed", bits = []; root.querySelectorAll("[data-sh]").forEach(function (el) { if (el.dataset.sh !== "mode" && el.value.trim()) bits.push(el.dataset.sh + (fixed ? "=" : ":") + el.value.trim().replace(/[£,]/g, "")); }); r.shares = bits.join(", "); }
-    ["amount", "target", "extra", "limit", "cost", "repay", "price"].forEach(function (k) { if (r[k] !== undefined && r[k] !== "") r[k] = +String(r[k]).replace(/[£,\s]/g, "") || 0; });
+    ["amount", "target", "extra", "limit", "cost", "repay", "price"].forEach(function (k) { if (r[k] !== undefined && r[k] !== "") r[k] = B.round(+String(r[k]).replace(/[£,\s]/g, "") || 0); });
     return r;
   }
   function saveEditor() {
@@ -1140,9 +1187,11 @@
     if (F.owner === "owner") r.owner = r.owner || me();
     if (F.owner === "owners") r.owners = r.owners || me();
     if (F.owner === "from" && !EDIT.id) { r.from = me(); r.to = partner(); }
-    if (t === "loans") { if (r.direction === "out") { r.lender = partner(); r.borrower = me(); } else { r.lender = me(); r.borrower = partner(); } delete r.direction; }
+    if (t === "loans") { if (r.direction === "out") { r.lender = partner(); r.borrower = me(); } else { r.lender = me(); r.borrower = partner(); } delete r.direction; if (r.account && (db().byId[r.account] || {}).owner !== r.lender) r.account = ""; }
     if (/bills|income|transfers/.test(t) && !r.start) r.start = now;
     if (/bills|income|transfers/.test(t) && r.unit === "month" && (!r.on || (!EDIT.id && !S.ui.onTouched))) r.on = String(+r.start.slice(8, 10));
+    // a day picked for "every month" means nothing once it's yearly, weekly or on set dates (a yearly one follows its start date)
+    if (/bills|income|transfers/.test(t) && r.unit && r.unit !== "month" && (!EDIT.id || String(EDIT.orig.unit || "month") !== r.unit)) r.on = "";
     // a new amount on something that's been running: keep history, change from today
     var was = EDIT.nowAmt, base = (tables()[t] || []).filter(function (x) { return x.id === r.id; })[0] || {};
     var amountChanged = EDIT.id && DATED.test(t) && was !== null && r.amount !== "" && Math.abs(+was - +r.amount) > 0.004 && (EDIT.orig.start || "2000-01-01") < now;
@@ -1260,7 +1309,7 @@
     calday: function (v) { calDay(v); }, occ: function (v) { occSheet(v); }, occskip: function (v) { occSheet(v); occDo("skip"); }, occdo: function (v) { var k = v.split("|"); occDo(k[0]); },
     occsave: function (v) {
       var o = S.ui.occ, c = o.c, id = "x-" + c.item + "-" + o.orig;
-      if (v === "amount") { var a = +String(($("#occAmt") || {}).value || "").replace(/[£,\s]/g, ""); if (!(a >= 0)) return; put("exceptions", {id: id + "-amount", item: c.item, date: o.orig, action: "amount", amount: a}); }
+      if (v === "amount") { var raw = String(($("#occAmt") || {}).value || "").replace(/[£,\s]/g, ""), a = +raw; if (raw === "" || !(a >= 0)) return; put("exceptions", {id: id + "-amount", item: c.item, date: o.orig, action: "amount", amount: B.round(a)}); }
       if (v === "move") { var nd = ($("#occDate") || {}).value; if (!nd) return; put("exceptions", {id: id + "-move", item: c.item, date: o.orig, action: "move", newDate: nd}); }
       closeSheet(); toast("Saved. Your budget has updated.");
     },
@@ -1274,6 +1323,7 @@
     payedit1: function (v) { paymentSheet(v); },
     pesave: function () {
       var x = (tables().transactions || []).filter(function (r) { return r.id === S.ui.payEdit; })[0]; if (!x) return;
+      if (isBankTx(x)) { put("transactions", Object.assign({}, x, {budget: $("#peBud").value, note: $("#peNote").value}), true); closeSheet(); toast("Payment changed"); render(); return; }
       var a = +String(($("#peAmt") || {}).value || "").replace(/[£,\s]/g, ""); if (!(a > 0)) { toast("Type the amount first"); return; }
       put("transactions", Object.assign({}, x, {amount: B.round(a), budget: $("#peBud").value, account: $("#peAcc").value, date: $("#peDate").value || x.date, note: $("#peNote").value}), true);
       closeSheet(); toast("Payment changed"); render();
@@ -1285,21 +1335,23 @@
     },
     settle2: function (v) {
       var bt = B.between(db(), me(), todayIso()), q = partner(), row;
-      if (v === "in") row = put("settlements", {id: newId("set"), date: todayIso(), from: q, to: me(), amount: bt.owedToMe, note: "Settled up"}, true);
-      else row = put("settlements", {id: newId("set"), date: todayIso(), from: me(), to: q, amount: bt.iOwe, note: "Settled up"}, true);
+      // (keyed like To do's settling up, so the sheet can tell if you both ticked the same one)
+      if (v === "in") row = put("settlements", {id: newId("set"), date: todayIso(), from: q, to: me(), amount: bt.owedToMe, key: "split:" + todayIso(), note: "Settled up"}, true);
+      else row = put("settlements", {id: newId("set"), date: todayIso(), from: me(), to: q, amount: bt.iOwe, key: "split:" + todayIso(), note: "Settled up"}, true);
       closeSheet(); toast("All square", {t: "settlements", ids: [row.id]}); render();
     },
     payedit: function (v) {
-      var bits = v.split("@"), inc = db().byId[bits[0]], cur = (B.occurrences(db(), inc, bits[1], B.addDays(bits[1], 1))[0] || {}).amount || inc.amount;
+      // the occurrence by its own date, even when it moved (Christmas pay comes early), so a pay rise shows
+      var bits = v.split("@"), inc = db().byId[bits[0]], cur = (B.occurrences(db(), inc, B.addDays(bits[1], -40), B.addDays(bits[1], 41)).filter(function (o) { return o.orig === bits[1]; })[0] || {}).amount || inc.amount;
       S.ui.payOcc = {item: bits[0], date: bits[1]};
       openSheet('<h2>What did you get paid?</h2><p class="muted">Check your payslip or ' + esc(person().bank || "bank") + ' app. Everything re-sorts around it.</p><label class="f">Amount<input type="text" inputmode="decimal" id="payAmt" value="' + cur + '"></label><button type="button" class="btn wide" style="margin-top:12px" data-a="paysave">Save</button>');
     },
     paysave: function () {
       var a = +String(($("#payAmt") || {}).value || "").replace(/[£,\s]/g, ""), o = S.ui.payOcc; if (!(a > 0)) return;
-      put("exceptions", {id: "x-" + o.item + "-" + o.date + "-amount", item: o.item, date: o.date, action: "amount", amount: a}); closeSheet(); toast("Pay set to " + M(a) + ". Everything has re-sorted.");
+      put("exceptions", {id: "x-" + o.item + "-" + o.date + "-amount", item: o.item, date: o.date, action: "amount", amount: B.round(a)}); closeSheet(); toast("Pay set to " + M(a) + ". Everything has re-sorted.");
     },
     potcheck: function (v) { var a = db().byId[v]; S.ui.potCheck = v; openSheet("<h2>" + esc(a.name) + '</h2><p class="muted">What does your ' + esc(person().bank || "bank") + ' app show right now? Budgie starts again from this.</p><label class="f">Balance<input type="text" inputmode="decimal" id="potBal" placeholder="£"></label>' + (/lisa|isa|pension|saving/.test(a.kind || "") ? '<label class="f">On<input type="date" id="potDate" value="' + todayIso() + '" max="' + todayIso() + '"></label><p class="tiny muted" style="margin:6px 0 0">You can add past balances too (say, the last day of each month) to fill in the chart.</p>' : "") + '<button type="button" class="btn wide" style="margin-top:12px" data-a="potsave">Save</button>'); },
-    potsave: function () { var a = +String(($("#potBal") || {}).value || "").replace(/[£,\s]/g, ""); if (isNaN(a) || ($("#potBal") || {}).value === "") return; var vd = (($("#potDate") || {}).value || todayIso()); put("valuations", {id: newId("val"), account: S.ui.potCheck, date: vd > todayIso() ? todayIso() : vd, amount: a}, true); markChecked(S.ui.potCheck); closeSheet(); toast("Thanks. Budgie has caught up."); render(); },
+    potsave: function () { var a = +String(($("#potBal") || {}).value || "").replace(/[£,\s]/g, ""); if (isNaN(a) || ($("#potBal") || {}).value === "") return; var vd = (($("#potDate") || {}).value || todayIso()); put("valuations", {id: newId("val"), account: S.ui.potCheck, date: vd > todayIso() ? todayIso() : vd, amount: B.round(a)}, true); markChecked(S.ui.potCheck); closeSheet(); toast("Thanks. Budgie has caught up."); render(); },
     chk: function (v) {
       var c = checkList().filter(function (x) { return x.id === v; })[0]; if (!c) return;
       if (c.action === "edit") { var k = c.value.split(":"); openEditor(k[0], k[1]); }
@@ -1312,12 +1364,17 @@
       S.ui.lisaAcc = v; var cur = getSetting("lisa.paidBefore." + v, "");
       openSheet('<h2>Paid in since 6 April</h2><p class="muted">Your LISA app shows how much has gone in this tax year (yours and anyone else\'s). Budgie adds what comes next, so it can warn you before you go over £4,000.</p><label class="f">Paid in before ' + esc(B.nice(B.startOf(db(), me()))) + '<input type="text" inputmode="decimal" id="lisaPaid" value="' + esc(cur) + '" placeholder="£"></label><button type="button" class="btn wide" style="margin-top:12px" data-a="lisapaidsave">Save</button>');
     },
-    lisapaidsave: function () { var raw = ($("#lisaPaid") || {}).value || "", a = +String(raw).replace(/[£,\s]/g, ""); if (raw === "" || isNaN(a)) return; setting("lisa.paidBefore." + S.ui.lisaAcc, a); markChecked("lisapaid-" + S.ui.lisaAcc); closeSheet(); toast("Saved"); render(); },
+    lisapaidsave: function () { var raw = ($("#lisaPaid") || {}).value || "", a = +String(raw).replace(/[£,\s]/g, ""); if (raw === "" || isNaN(a)) return; setting("lisa.paidBefore." + S.ui.lisaAcc, B.round(a)); markChecked("lisapaid-" + S.ui.lisaAcc); closeSheet(); toast("Saved"); render(); },
     edit: function (v) { var k = v.split(":"); openEditor(k[0], k[1]); }, "new": function (v) { openEditor(v, null); },
     editsave: function () { saveEditor(); },
     amtwhen: function (v) { if (S.ui.amtFinish) S.ui.amtFinish(v === "today"); },
-    editstop: function () { var stored = (tables()[EDIT.table] || []).filter(function (x) { return x.id === EDIT.id; })[0] || EDIT.orig; put(EDIT.table, Object.assign({}, stored, {end: todayIso()}), true); toast("Stopped from today"); leave(); },
-    editdelete: function () { openSheet('<h2>Delete this?</h2><p class="muted">It will stop counting everywhere, including past months. To keep the past, use "Stop from today" instead.</p><button type="button" class="btn danger wide" data-a="editdelete2">Delete</button><button type="button" class="btn ghost wide" style="margin-top:10px" data-a="sheetclose">Keep it</button>'); },
+    editstop: function () {
+      var stored = (tables()[EDIT.table] || []).filter(function (x) { return x.id === EDIT.id; })[0] || EDIT.orig, end = todayIso();
+      // a budget belongs to a whole pay period (its pay was sorted on payday), so it stops once this one ends
+      var bud = EDIT.table === "budgets"; if (bud) end = B.addDays(B.periodAt(db(), me(), end).next, -1);
+      put(EDIT.table, Object.assign({}, stored, {end: end}), true); toast(bud ? "Stopped after this pay period" : "Stopped from today"); leave();
+    },
+    editdelete: function () { openSheet('<h2>Delete this?</h2><p class="muted">It will stop counting everywhere, including past months. To keep the past, use "' + (EDIT.table === "budgets" ? "Stop after this pay period" : "Stop from today") + '" instead.</p><button type="button" class="btn danger wide" data-a="editdelete2">Delete</button><button type="button" class="btn ghost wide" style="margin-top:10px" data-a="sheetclose">Keep it</button>'); },
     editdelete2: function () { del(EDIT.table, EDIT.id, true); toast("Deleted"); leave(); },
     addmode: function (v) { S.ui.add.mode = v; render(); window.scrollTo(0, 0); },
     addbud: function (v) { var a = S.ui.add; if (a.budget !== v) { a.budget = v; a.touched = {}; } closeSheet(); render(); },
@@ -1353,11 +1410,13 @@
       var date = a.date || todayIso();
       if (a.mode === "bill") {
         var b = db().byId[a.bill]; if (!b) { toast("Choose which bill it was"); return; }
-        var occ = B.occurrences(db(), b, B.addDays(date, -25), B.addDays(date, 26)).sort(function (x, y) { return Math.abs(B.diff(x.date, date)) - Math.abs(B.diff(y.date, date)); })[0];
+        // the one it was ("When was it?"): the latest on or before that day, or failing that the next one due
+        var near = B.occurrences(db(), b, B.addDays(date, -25), B.addDays(date, 26)), was = near.filter(function (o) { return o.date <= date; });
+        var occ = was.length ? was[was.length - 1] : near[0];
         if (!occ) { toast("That bill isn't due near that date"); return; }
         var orig = occ.key.split(/[@+]/)[1];
         put("exceptions", {id: "x-" + b.id + "-" + orig + "-amount", item: b.id, date: orig, action: "amount", amount: amt});
-        toast(b.name + " saved as " + M(amt) + (b.split ? " and re-split" : ""));
+        toast(b.name + " on " + B.nice(occ.date) + " saved as " + M(amt) + (b.split ? " and re-split" : ""));
       } else {
         var row = put("transactions", {id: newId("t"), date: date, person: me(), amount: amt, budget: a.budget, account: a.account || B.mainOf(db(), me()), split: a.split ? (a.splitId || "half") : "", note: a.note || "", source: "app"}, true);
         toast("Logged " + M(amt), {t: "transactions", ids: [row.id]});
@@ -1383,16 +1442,18 @@
       var id = String(($("#mzId") || {}).value || "").trim(), sec = String(($("#mzSecret") || {}).value || "").trim();
       if (!id || !sec) { toast("Paste the Client ID and the Client secret first"); return; }
       var w = window.open("about:blank", "_blank"); // opened straight from the tap so the phone doesn't block it
+      try { if (w) w.opener = null; } catch (e) {}   // the sign-in pages can't reach back into Budgie
+      ($("#mzSecret") || {}).value = "";   // the secret doesn't stay on the screen, whatever Monzo says
       bankCall("bank.monzo.setClient", {clientId: id, clientSecret: sec}).then(function () { return bankCall("bank.monzo.authUrl"); }).then(function (j) {
         if (w) w.location = j.url; else location.href = j.url;
         S.bank = null; toast("Approve Budgie in the Monzo app, then come back here");
       }, function (e) { if (w) w.close(); toast(e.message); });
     },
-    bankmonzo2: function () { var w = window.open("about:blank", "_blank"); bankCall("bank.monzo.authUrl").then(function (j) { if (w) w.location = j.url; else location.href = j.url; S.bank = null; }, function (e) { if (w) w.close(); toast(e.message); }); },
+    bankmonzo2: function () { var w = window.open("about:blank", "_blank"); try { if (w) w.opener = null; } catch (e) {} bankCall("bank.monzo.authUrl").then(function (j) { if (w) w.location = j.url; else location.href = j.url; S.bank = null; }, function (e) { if (w) w.close(); toast(e.message); }); },
     bankstarling: function () {
       var t = String(($("#stTok") || {}).value || "").trim(); if (!t) { toast("Paste your token first"); return; }
-      toast("Checking the token…");
-      bankCall("bank.starling.setToken", {token: t}).then(function () { ($("#stTok") || {}).value = ""; toast("Connected to Starling"); return bankRefresh(); }).then(function () { sync(false); }, function (e) { toast(e.message); });
+      toast("Checking the token…"); ($("#stTok") || {}).value = "";   // the token doesn't stay on the screen, whatever Starling says
+      bankCall("bank.starling.setToken", {token: t}).then(function () { toast("Connected to Starling"); return bankRefresh(); }).then(function () { sync(false); }, function (e) { toast(e.message); });
     },
     bankguess: function () {
       var g = S.ui.bankGuess || {}, ids = Object.keys(g); if (!ids.length) return;
@@ -1414,7 +1475,7 @@
     },
     reload: function () { var done = function () { location.reload(); }; try { navigator.serviceWorker.getRegistration().then(function (r) { return r && r.update(); }).then(done, done); } catch (e) { done(); } },
     disconnect: function () {
-      var n = S.data.queue.length;
+      var n = S.data.queue.length + (S.data.carry ? S.data.carry.queue.length : 0);
       openSheet('<h2>Disconnect this phone?</h2>' + (n ? '<p class="bad" style="font-weight:600">' + n + " change" + (n === 1 ? " hasn't" : "s haven't") + " reached your Google Sheet yet. Disconnecting now would lose " + (n === 1 ? "it" : "them") + '.</p><button type="button" class="btn wide" data-a="syncnow">Sync now</button>' : '<p class="muted">Your data stays safe in the Google Sheet. You\'ll need your connect link to come back.</p>') +
         '<button type="button" class="btn danger wide" style="margin-top:10px" data-a="disconnect2">' + (n ? "Disconnect anyway" : "Disconnect") + "</button>");
     },
@@ -1446,10 +1507,19 @@
     fn(el.dataset.v, el, e);
   });
   document.addEventListener("change", function (e) {
-    var el = e.target, c = el.dataset && el.dataset.c; if (!c) return;
+    var el = e.target, c = el.dataset && el.dataset.c;
+    // the editor's fields (data-f): picking a day yourself, and the questions that follow "How often"
+    if (!c && el.dataset && el.dataset.f) {
+      if (el.dataset.f === "on") S.ui.onTouched = true;
+      // a new bill's day follows its start date until you pick a day yourself
+      if (el.dataset.f === "start" && !EDIT.id && !S.ui.onTouched && B.isIso(el.value)) { var onEl = $("#main").querySelector('[data-f="on"]'); if (onEl) onEl.value = String(+el.value.slice(8, 10)); }
+      if (el.dataset.f === "how" || (el.dataset.f === "direction" && EDIT.table === "loans")) render();   // render reads the form first, so nothing typed is lost
+      return;
+    }
+    if (!c) return;
     var v = el.dataset.v;
     if (c === "tick") { tickItem(last.todo[+v]); return; }
-    if (c === "paytick") { var k = v.split("|"); if (el.checked) put("moves", {id: newId("mv"), date: B.moveDate ? B.moveDate(k[0], todayIso()) : todayIso(), person: me(), from: k[1], to: k[2], amount: +k[3], key: k[0]}); else { (db().moves || []).filter(function (m) { return m.key === k[0]; }).forEach(function (m) { del("moves", m.id); }); } return; }
+    if (c === "paytick") { var k = v.split("|"); if (el.checked) put("moves", {id: newId("mv"), date: B.moveDate ? B.moveDate(k[0], todayIso()) : todayIso(), person: me(), from: k[1], to: k[2], amount: +k[3], key: k[0]}); else { (db().moves || []).filter(function (m) { return m.key === k[0] && m.person === me(); }).forEach(function (m) { del("moves", m.id); }); } return; }
     if (c === "toggle") {
       if (v === "easy") { S.prefs.easy = el.checked; savePrefs(); if (!demoOn() && me()) setting("easy", el.checked); applyTheme(); render(); }
       if (v === "hide") { S.prefs.hide = el.checked; S.ui.reveal = false; savePrefs(); render(); }
@@ -1474,10 +1544,6 @@
     }
     if (c === "impon") { S.ui.imp.rows[+v].on = el.checked; return; }
     if (c === "impbud") { S.ui.imp.rows[+v].budget = el.value; return; }
-    if (el.dataset.f === "on") S.ui.onTouched = true;
-    // a new bill's day follows its start date until you pick a day yourself
-    if (el.dataset.f === "start" && !EDIT.id && !S.ui.onTouched) { readForm(); EDIT.row.on = ""; render(); }
-    if (el.dataset.f === "how") { readForm(); render(); }
   });
   // the "how often" control re-draws the form so the right questions show
   document.addEventListener("input", function (e) {
@@ -1501,7 +1567,8 @@
   // When Budgie goes into the background the screen is covered straight away (so it doesn't show in the
   // app switcher), and coming back after more than a minute asks again.
   var LOCK = {cred: LS.get("budgie.lock", null), locked: false, hiddenAt: 0, busy: false, GRACE: 60000};
-  var lockOn = function () { return !!(LOCK.cred && LOCK.cred.id) && !demoOn(); };
+  // on whenever it's been set up, Show and tell included: otherwise turning Show and tell off would get round it
+  var lockOn = function () { return !!(LOCK.cred && LOCK.cred.id); };
   var rnd = function (n) { var a = new Uint8Array(n); crypto.getRandomValues(a); return a; };
   var b64u = function (buf) { var s2 = "", a = new Uint8Array(buf); for (var i = 0; i < a.length; i++) s2 += String.fromCharCode(a[i]); return btoa(s2).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, ""); };
   var unb64u = function (s2) { s2 = s2.replace(/-/g, "+").replace(/_/g, "/"); var bin = atob(s2 + "===".slice((s2.length + 3) % 4)), a = new Uint8Array(bin.length); for (var i = 0; i < bin.length; i++) a[i] = bin.charCodeAt(i); return a; };
@@ -1542,8 +1609,20 @@
     try { if (await lockCheck()) { LOCK.locked = false; showLock(false); render(); } else showLock(true); }
     finally { LOCK.busy = false; }
   }
+  // once a peek ends, amounts still showing where the screen isn't drawn again (an open sheet, a toast, a form being
+  // filled in) are covered too; what's typed into a box is left as it is
+  function coverMoney() {
+    ["#main", "#sheets", "#toast"].forEach(function (q) {
+      var root = $(q); if (!root) return;
+      var w = document.createTreeWalker(root, NodeFilter.SHOW_TEXT), n;
+      while ((n = w.nextNode())) { var v = MT(n.nodeValue); if (v !== n.nodeValue) n.nodeValue = v; }
+      root.querySelectorAll("[aria-label],[title]").forEach(function (el) { ["aria-label", "title"].forEach(function (a) { var x = el.getAttribute(a); if (x !== null && MT(x) !== x) el.setAttribute(a, MT(x)); }); });
+    });
+  }
   function lockNow() { if (!lockOn()) return; LOCK.locked = true; showLock(true); }
   document.addEventListener("visibilitychange", function () {
+    // a peek at the amounts (the eye) lasts until Budgie goes into the background, so coming back shows £•••• again
+    if (document.visibilityState === "hidden" && S.ui.reveal) { S.ui.reveal = false; render(true); coverMoney(); }
     if (!lockOn()) return;
     if (document.visibilityState === "hidden") { LOCK.hiddenAt = Date.now(); if (!LOCK.locked) showLock(true, true); }
     else if (LOCK.locked || Date.now() - LOCK.hiddenAt > LOCK.GRACE) { LOCK.locked = true; render(); showLock(true); unlock(); }
@@ -1578,14 +1657,16 @@
       return true;
     }
     S.ui.connectOk = false;
+    // a new link for the same sheet (a new key, say): anything still waiting goes up once the sheet says it's the same person
+    var waiting = S.data.queue.concat(S.data.carry && S.data.carry.queue || []), carry = !same && S.cfg && S.cfg.u === j.u && waiting.length && (S.data.me || (S.data.carry || {}).me) ? {me: S.data.me || S.data.carry.me, name: S.data.me ? person().name : S.data.carry.name, queue: waiting} : null;
     S.cfg = {u: j.u, k: j.k}; LS.set("budgie.cfg", S.cfg);
     // opening the same link again keeps anything still waiting to sync
-    if (!same) { S.data = {tables: {}, since: 0, me: "", summary: null, queue: []}; store.set("data", S.data); }
+    if (!same) { S.data = {tables: {}, since: 0, me: "", summary: null, queue: []}; if (carry) S.data.carry = carry; store.set("data", S.data); }
     dirty(); S.lastError = "";
     if (demoOn()) setDemo(false);
     try { history.replaceState(null, "", location.pathname); } catch (e) {}
     $("#main").innerHTML = '<p class="empty">Connecting to your sheet…</p>';
-    sync(true).then(function () { if (S.data.me) toast("Connected. Hi " + person().name + "!"); go("today"); });
+    sync(true).then(function () { if (S.data.me) toast("Connected. Hi " + person().name + "!" + (S.ui.carryNote ? " " + S.ui.carryNote : "")); S.ui.carryNote = ""; go("today"); });
     return true;
   }
   // ---------- Budgie's new home ----------
@@ -1602,10 +1683,14 @@
   async function moveMe() {
     if (lockOn() && !(await lockCheck())) { toast("Budgie needs to check it's you first"); return; }
     toast("Sending anything waiting…");
+    S.prefs.demo = false;   // (Show and tell left on here would stop anything being sent; it isn't saved, as this copy is wiped)
     for (var i = 0; i < 5 && S.data.queue.length; i++) { await sync(false); if (S.data.queue.length) await new Promise(function (r) { setTimeout(r, 1500); }); }
-    if (S.data.queue.length) { toast("Couldn't reach your sheet yet. Try again when you have signal."); return; }
+    // (what the sheet said, when it answered: a link whose key has been changed can't move across, whatever the signal)
+    if (S.data.queue.length) { toast(S.lastError && !/^Offline/.test(S.lastError) ? S.lastError : "Couldn't reach your sheet yet. Try again when you have signal."); return; }
     var link = HOME + "#connect=" + btoa(unescape(encodeURIComponent(JSON.stringify({u: S.cfg.u, k: S.cfg.k})))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-    // wipe the old copy so nothing at this address can read it
+    // wipe the old copy so nothing at this address can read it. From here nothing is saved at this address again, and
+    // a sync still on its way (one fetching everything again after a refused change, say) is dropped when it answers
+    wiped = true; clearTimeout(syncTimer); S.cfg = null;
     try { Object.keys(localStorage).forEach(function (k) { if (/^budgie\./.test(k)) localStorage.removeItem(k); }); } catch (e) {}
     try { if (store.db) store.db.close(); indexedDB.deleteDatabase("budgie"); } catch (e) {}
     try { (await caches.keys()).forEach(function (k) { if (/^budgie-/.test(k)) caches.delete(k); }); } catch (e) {}

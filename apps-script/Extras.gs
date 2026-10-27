@@ -9,7 +9,8 @@
      - yearReviewCheck   every day, 9 to 10am   on or just after 6 April, sends last tax year's round-up once
    Try them first: previewSundayEmail("ethan"), previewYearReview("ethan") (both only write to the log), backupNow.
 
-   Privacy: each email is worked out from exactly the rows that person's phone gets (sync_ with canSee_), so the
+   Privacy: a backup is the whole sheet, so it is only made into a folder nobody else can open.
+   Each email is worked out from exactly the rows that person's phone gets (sync_ with canSee_), so the
    partner's private payments, pay and budgets never reach it unless the partner shares them. Emails never hold
    keys, connect links or the web app address. */
 
@@ -69,15 +70,16 @@ function exTaxYearLabel_(tys) { var y = +tys.slice(0, 4); return y + "/" + Strin
 // who gets the emails: settings rows email.sunday = true and email.to = an address, for a person in the people tab.
 // Only each person's own rows count (never a row for everyone), so nobody's money goes to someone else's address.
 function exRecipients_() {
-  var set = {};
+  // (no built-in keys: a row typed in for a "person" called __proto__ is nobody's, and can't stand in for anyone's)
+  var set = Object.create(null);
   readTable_("settings").rows.forEach(function (r) {
     if (exOn_(r.deleted) || !r.person || !/^email\./.test(String(r.key))) return;
-    (set[r.person] = set[r.person] || {})[String(r.key)] = r.value;
+    (set[r.person] = set[r.person] || Object.create(null))[String(r.key)] = r.value;
   });
   var out = [];
   readTable_("people").rows.forEach(function (p) {
     if (exOn_(p.deleted) || !p.id) return;
-    var s = set[p.id] || {}, to = String(s["email.to"] || "").trim();
+    var s = set[p.id] || Object.create(null), to = String(s["email.to"] || "").trim();
     if (!exOn_(s["email.sunday"])) return;
     if (!/^[^@\s,;<>]+@[^@\s,;<>]+\.[^@\s,;<>]+$/.test(to)) { Logger.log((p.name || p.id) + " turned the Sunday email on but the email address doesn't look right, so nothing was sent."); return; }
     out.push({id: p.id, name: p.name || p.id, to: to, colour: p.colour});
@@ -100,7 +102,7 @@ function exSpent_(db, p, b, from, to) {
   db.transactions.forEach(function (x) {
     if (x.date < from || x.date > to) return;
     var tb = db.byId[x.budget], same = x.budget === b.id || (!!tb && tb.person !== b.person && String(tb.name).toLowerCase() === String(b.name).toLowerCase());
-    if (same) t += Budgie.shareOf(db, x.split, p, +x.amount || 0, x.person);
+    if (same) t += Budgie.myShare(db, p, x);
   });
   return Budgie.round(t);
 }
@@ -173,8 +175,9 @@ function exSundayModel_(db, p, today) {
   var coming = Budgie.coming(db, p, today, 7);
   sections.push({title: "Coming up this week", rows: coming.map(function (c) { return {label: c.name, sub: Budgie.nice(c.date) + (c.account ? " · " + c.account : ""), value: (c.sign > 0 ? "+" : "") + exMoney_(c.amount)}; }),
     note: coming.length ? "" : "No bills or paydays in the next 7 days."});
-  // to do
-  var n = (t.todo || []).length;
+  // to do, counted as Today counts it: the payday moves are one thing, and so are new bank payments to check
+  var todo = t.todo || [], n = todo.filter(function (x) { return !x.payday; }).length + (todo.some(function (x) { return x.payday; }) ? 1 : 0) +
+    (db.transactions.some(function (x) { return x.person === p && exOn_(x.review); }) ? 1 : 0);
   sections.push({title: "To do", rows: [], note: n ? exPlural_(n, "thing is", "things are") + " waiting in To do in Budgie." : "Nothing waiting in To do. All sorted."});
   // LISA
   db.accounts.filter(function (a) { return a.owner === p && /lisa/.test(String(a.kind)); }).forEach(function (a) {
@@ -230,6 +233,19 @@ function previewSundayEmail(personId, date) {
 }
 
 // ---------- 2. weekly backup ----------
+// who else can open a folder: "" if nobody, else a short description (anyone with the link, or their addresses)
+// The folder's owner and the account this script runs as don't count: often they're the same person's two Google
+// accounts (a folder in one, shared with the other so the backup can be written there).
+function exSharedWith_(f) {
+  var mine = {}, out = [];
+  try { if (f.getOwner && f.getOwner()) mine[String(f.getOwner().getEmail() || "").toLowerCase()] = true; } catch (e) {}
+  try { mine[String(Session.getEffectiveUser().getEmail() || "").toLowerCase()] = true; } catch (e) {}
+  try { if (f.getSharingAccess && typeof DriveApp.Access !== "undefined" && f.getSharingAccess() !== DriveApp.Access.PRIVATE) out.push("anyone with the link"); } catch (e) {}
+  ["getEditors", "getViewers"].forEach(function (m) {
+    try { (f[m] ? f[m]() : []).forEach(function (u) { var e = String(u && u.getEmail ? u.getEmail() : u || "").toLowerCase(); if (e && !mine[e] && out.indexOf(e) < 0) out.push(e); }); } catch (e) {}
+  });
+  return out.join(", ");
+}
 /** Copies every tab's values into a new spreadsheet in the backup folder and keeps the newest 8 backups there.
     It's a new standalone spreadsheet, not a copy of this file, so the script and its properties (the keys) never go
     with it. Other files are never touched. */
@@ -238,6 +254,9 @@ function backupNow() {
   if (!id) { Logger.log("No backup made: add Script Property BACKUP_FOLDER_ID (Project Settings > Script Properties) with the backup folder's id."); return null; }
   try { folder = DriveApp.getFolderById(String(id).trim()); folder.getName(); }
   catch (e) { Logger.log("No backup made: can't open the backup folder " + id + ". Check it's shared with this account as an editor. (" + (e && e.message || e) + ")"); return null; }
+  // a backup is the whole sheet, both of your money in full, so it only goes in a folder nobody else can open
+  var shared = exSharedWith_(folder);
+  if (shared) { Logger.log("No backup made: the backup folder is shared (" + shared + "). A backup holds everything in the sheet, both of yours, so use a folder only you can open (or stop sharing this one)."); return null; }
   var name = EXTRAS_BACKUP_NAME + exTodayIso_(), copy;
   try {
     var src = ss_(), dest = SpreadsheetApp.create(name), blank = dest.getSheets()[0];
@@ -288,7 +307,7 @@ function exReviewBase_(db, p, tys, today) {
   var byBudget = {}, byMonth = {}, byDay = {};
   db.transactions.forEach(function (x) {
     if (x.date < from || x.date > last) return;
-    var s = Budgie.shareOf(db, x.split, p, +x.amount || 0, x.person); if (!(s > 0.004)) return;
+    var s = Budgie.myShare(db, p, x); if (!(s > 0.004)) return;
     var b = db.byId[x.budget], name = exName_(b && b.name ? b.name : "Other");
     byBudget[name] = (byBudget[name] || 0) + s; byMonth[x.date.slice(0, 7)] = (byMonth[x.date.slice(0, 7)] || 0) + s; byDay[x.date] = true;
   });
@@ -313,13 +332,15 @@ function exReviewData_(db, p, tys, today) {
   var v = exNum_(exPick_(yr, ["moneyIn", "in", "income", "totalIn"])); r.moneyIn = v !== undefined ? v : base.moneyIn;
   v = exNum_(exPick_(yr, ["saved", "save", "savings", "totalSaved"])); r.saved = v !== undefined ? v : base.saved;
   v = exNum_(exPick_(yr, ["savedPct", "savePct", "pctSaved", "savingRate", "saveRate", "savedPercent"])); if (v !== undefined) r.savedPct = v;
-  var tb = exPick_(yr, ["topBudgets", "top", "budgets", "categories"]);
+  // the engine's spending by budget ("spent") nets off refunds
+  var tb = exPick_(yr, ["topBudgets", "top", "budgets", "categories", "spent"]);
   r.topBudgets = Array.isArray(tb) && tb.length ? tb.slice(0, 3).map(function (b) { return {name: exName_(exPick_(b, ["name", "budget", "label"]) || ""), spent: exNum_(exPick_(b, ["spent", "amount", "total"])) || 0}; }) : base.topBudgets;
   var bm = exPick_(yr, ["biggestMonth", "topMonth", "bigMonth"]);
   r.biggestMonth = bm && typeof bm === "object" ? {month: String(exPick_(bm, ["month", "key", "ym", "start"]) || ""), label: exPick_(bm, ["name", "label"]), spent: exNum_(exPick_(bm, ["spent", "amount", "total"])) || 0} : base.biggestMonth;
   var ns = exPick_(yr, ["noSpendDays", "noSpend", "zeroDays"]); r.noSpendDays = Array.isArray(ns) ? ns.length : exNum_(ns) !== undefined ? exNum_(ns) : base.noSpendDays;
   var ls = exPick_(yr, ["lisa"]);
-  if (ls && typeof ls === "object") { var arr = Array.isArray(ls) ? ls : [ls]; r.lisa = arr.map(function (x, i) { var bb = base.lisa[i] || {}; var paid = exNum_(exPick_(x, ["paidIn", "paid", "paidThisYear", "in"])), bonus = exNum_(exPick_(x, ["bonus", "expectedBonus", "bonusThisYear"])); return {name: exPick_(x, ["name"]) || bb.name || "Lifetime ISA", paid: paid !== undefined ? paid : bb.paid || 0, bonus: bonus !== undefined ? bonus : bb.bonus || 0}; }); }
+  if (!base.lisa.length) r.lisa = [];   // no Lifetime ISA, nothing to say about one
+  else if (ls && typeof ls === "object") { var arr = Array.isArray(ls) ? ls : [ls]; r.lisa = arr.map(function (x, i) { var bb = base.lisa[i] || {}; var paid = exNum_(exPick_(x, ["paidIn", "paid", "paidThisYear", "in"])), bonus = exNum_(exPick_(x, ["bonus", "expectedBonus", "bonusThisYear"])); return {name: exPick_(x, ["name"]) || bb.name || "Lifetime ISA", paid: paid !== undefined ? paid : bb.paid || 0, bonus: bonus !== undefined ? bonus : bb.bonus || 0}; }); }
   else r.lisa = base.lisa;
   var gs = exPick_(yr, ["goals", "goalsMoved"]);
   r.goals = Array.isArray(gs) ? gs.map(function (g) { var to = exNum_(exPick_(g, ["to", "end", "saved", "now"])), fr = exNum_(exPick_(g, ["from", "start", "before"])), mv = exNum_(exPick_(g, ["moved", "change", "delta", "added"])); if (mv === undefined && to !== undefined && fr !== undefined) mv = Budgie.round(to - fr); return {name: exPick_(g, ["name"]) || "", from: fr, to: to, moved: mv || 0, target: exNum_(exPick_(g, ["target"])), pct: exNum_(exPick_(g, ["pct"]))}; }) : base.goals;
@@ -332,7 +353,7 @@ function exReviewModel_(db, p, tys, today, soFar) {
   (d.lisa || []).forEach(function (l) { sections.push({title: l.name || "Lifetime ISA", rows: [{label: "You paid in", value: exMoney_(l.paid)}, {label: "Government bonus", value: exMoney_(l.bonus)}], note: l.paid > 0.004 ? "That's " + exMoney_(Budgie.round(l.paid + l.bonus)) + " towards your first home." : ""}); });
   if (d.goals.length) sections.push({title: "Goals", rows: d.goals.map(function (g) { return {label: g.name, sub: g.to !== undefined ? "Now " + exMoney_(g.to) + (g.target ? " of " + exMoney_(g.target) : "") : "", value: g.moved > 0.004 ? "up " + exMoney_(g.moved) : g.moved < -0.004 ? "down " + exMoney_(-g.moved) : "no change"}; })});
   var more = [];
-  if (d.biggestMonth && d.biggestMonth.spent > 0) more.push({label: "Biggest month", sub: "Your busiest month for spending", value: (d.biggestMonth.label || (/^\d{4}-\d{2}/.test(d.biggestMonth.month) ? exMonthName_(d.biggestMonth.month) : d.biggestMonth.month)) + ", " + exMoney_(d.biggestMonth.spent)});
+  if (d.biggestMonth && d.biggestMonth.spent > 0) more.push({label: "Biggest month", sub: "Your busiest month for spending", value: (/^\d{4}-\d{2}/.test(d.biggestMonth.month) ? exMonthName_(d.biggestMonth.month) : d.biggestMonth.label || d.biggestMonth.month) + ", " + exMoney_(d.biggestMonth.spent)});
   more.push({label: "No-spend days", sub: "Days you didn't spend anything", value: String(d.noSpendDays)});
   sections.push({title: "And also", rows: more});
   var title = "Your " + label + " in money" + (soFar ? " so far" : "");

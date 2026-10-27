@@ -15,9 +15,11 @@ function fakeDrive(env) {
       makeCopy: (nm, folder) => { copies.push(nm); const c = File(nm, f.mime, new Date(), folder._id); return c.api; }, moveTo: (folder) => { f.parent = folder._id; return f.api; }};
     files[f.id] = f; return f;
   };
-  const Folder = (id) => {
-    folders[id] = {id};
-    return {_id: id, getName: () => "Budgie backups", getFiles: () => { const list = Object.values(files).filter(f => f.parent === id && !f.trashed); let i = 0; return {hasNext: () => i < list.length, next: () => list[i++].api}; }};
+  const Folder = (id, share) => {
+    folders[id] = {id}; share = share || {};
+    const user = (e) => ({getEmail: () => e});
+    return {_id: id, getName: () => "Budgie backups", getOwner: () => user(share.owner || "owner@example.com"), getSharingAccess: () => share.access || "PRIVATE",
+      getEditors: () => (share.editors || []).map(user), getViewers: () => (share.viewers || []).map(user), getFiles: () => { const list = Object.values(files).filter(f => f.parent === id && !f.trashed); let i = 0; return {hasNext: () => i < list.length, next: () => list[i++].api}; }};
   };
   const sheetFile = File("Budgie data", "application/vnd.google-apps.spreadsheet", new Date(2026, 9, 1), "root");
   env.ss.getId = () => sheetFile.id;
@@ -35,7 +37,7 @@ function fakeDrive(env) {
       deleteSheet: (api) => { const i = tabs.findIndex(t => t.api === api); tabs.splice(i, 1); }};
     made[file.id] = tabs; return ss;
   };
-  return {api, files, copies, made, create, addFolder: (id) => { const f = Folder(id); folders[id].api = f; return f; }, File};
+  return {api, files, copies, made, create, addFolder: (id, share) => { const f = Folder(id, share); folders[id].api = f; return f; }, File};
 }
 function setupEnv(mut) {
   const env = makeEnv(), c = env.ctx;
@@ -43,7 +45,7 @@ function setupEnv(mut) {
   Object.keys(fx).forEach(t => { const sh = env.sheets[t]; if (!sh) return; const head = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0]; fx[t].forEach(r => sh.appendRow(head.map(h => r[h] === undefined ? "" : r[h]))); });
   c.CACHE_ = {}; c.setup();
   env.mail = []; c.MailApp = {sendEmail: (o) => { env.mail.push(o); }};
-  env.drive = fakeDrive(env); c.DriveApp = env.drive.api; c.SpreadsheetApp.create = env.drive.create;
+  env.drive = fakeDrive(env); c.DriveApp = env.drive.api; c.DriveApp.Access = {PRIVATE: "PRIVATE", ANYONE_WITH_LINK: "ANYONE_WITH_LINK"}; c.SpreadsheetApp.create = env.drive.create;
   // triggers that remember how they were set up
   c.ScriptApp.WeekDay = {SUNDAY: "SUNDAY", MONDAY: "MONDAY"};
   c.ScriptApp.newTrigger = (fn) => { const calls = []; const b = new Proxy({}, {get: (t, k) => k === "create" ? () => { const tr = {getHandlerFunction: () => fn, calls}; env.triggers.push(tr); return tr; } : (...a) => { calls.push(k + "(" + a.join(",") + ")"); return b; }}); return b; };
@@ -86,7 +88,9 @@ const all = (m) => m.htmlBody + "\n" + m.body + "\n" + m.subject;
   ok("Ethan: food this week counts his half of the split shop", e.body.includes("£72.10 spent this week"), e.body);
   ok("Ethan: fun this week", e.body.includes("£12.50 spent this week"));
   ok("Ethan: next 7 days", e.body.includes("COMING UP THIS WEEK") && e.body.includes("- Phone: £20.00 (Thu 5 Nov") && !e.body.includes("Household bills"), e.body);
-  ok("Ethan: to do count", e.body.includes(t.todo.length + " thing" + (t.todo.length === 1 ? " is" : "s are") + " waiting in To do"), {n: t.todo.length});
+  // counted as Today counts it: the payday moves are one thing to do
+  const nTodo = t.todo.filter(x => !x.payday).length + (t.todo.some(x => x.payday) ? 1 : 0);
+  ok("Ethan: to do count, as Today counts it", t.todo.some(x => x.payday) && t.todo.length > nTodo && e.body.includes(nTodo + " thing" + (nTodo === 1 ? " is" : "s are") + " waiting in To do"), {n: nTodo, body: e.body});
   ok("Ethan: LISA value", e.body.includes("LIFETIME ISA") && e.body.includes("Worth about: " + B.money(B.lisa(view, "e-lisa", SUNDAY).balance)), e.body);
   ok("Ethan: goals", e.body.includes("- House deposit: 17% (£10,000.00 of £60,000.00)"), e.body);
   ok("Ethan: a goal doesn't look new in the first week", !/up £10,000/.test(e.body));
@@ -185,6 +189,23 @@ const all = (m) => m.htmlBody + "\n" + m.body + "\n" + m.subject;
   ok("BACKUP: still 8 after more runs", Object.values(env.drive.files).filter(f => f.parent === "fold1" && /^Budgie data backup \d{4}/.test(f.name) && f.mime === SHEET && !f.trashed).length === 8);
 }
 
+// a backup is everything in the sheet, both of yours: never into a folder someone else can open
+{
+  const {env, c} = setupEnv(), made = () => Object.values(env.drive.files).filter(f => /^Budgie data backup/.test(f.name)).length;
+  env.drive.addFolder("shared1", {editors: ["owner@example.com", "sophie@example.com"]}); env.props.BACKUP_FOLDER_ID = "shared1";
+  ok("BACKUP: not into a folder shared with someone", c.backupNow() === null && made() === 0 && env.logs.some(l => /backup folder is shared \(sophie@example\.com\)/.test(l)), env.logs.slice(-1));
+  env.drive.addFolder("link1", {access: "ANYONE_WITH_LINK"}); env.props.BACKUP_FOLDER_ID = "link1";
+  ok("BACKUP: nor one anyone with the link can open", c.backupNow() === null && made() === 0 && env.logs.some(l => /anyone with the link/.test(l)));
+  env.drive.addFolder("mine1", {editors: ["owner@example.com"]}); env.props.BACKUP_FOLDER_ID = "mine1";
+  ok("BACKUP: a folder only you can open is fine", !!c.backupNow() && made() === 1);
+  // the folder in your other Google account, shared only with the account the script runs as: still only you
+  c.Session = {getEffectiveUser: () => ({getEmail: () => "owner@example.com"})};   // the script runs as owner@
+  env.drive.addFolder("mine2", {owner: "main@example.com", editors: ["owner@example.com"]}); env.props.BACKUP_FOLDER_ID = "mine2";
+  ok("BACKUP: your own two accounts don't count as shared", !!c.backupNow() && made() === 2, env.logs.slice(-1));
+  env.drive.addFolder("mine3", {owner: "main@example.com", editors: ["owner@example.com", "sophie@example.com"]}); env.props.BACKUP_FOLDER_ID = "mine3";
+  ok("BACKUP: but anyone else still does", c.backupNow() === null && made() === 2);
+}
+
 // ================= 3. tax-year round-up =================
 // a year of money: payments each week from November to March, a private one of Sophie's every month
 const yearHousehold = (fx) => {
@@ -232,6 +253,15 @@ const yearHousehold = (fx) => {
   const y = withYR.env.mail.find(m => m.to === "ethan@example.com");
   ok("ROUND-UP: uses Budgie.yearReview when there", asked && asked[1] === "2026-04-06" && y.body.includes("Money in: £12,345.67") && y.body.includes("19% of what came in") && y.body.includes("You paid in: £2,664.00") && y.body.includes("Government bonus: £666.00") && y.body.includes("No-spend days: 42") && y.body.includes("up £3,330.00"), y && y.body);
   if (hadYR) c.Budgie.yearReview = hadYR;
+  // with the real engine: refunds are netted off, and someone without a Lifetime ISA gets nothing about one
+  const real = setupEnv(fx => { yearHousehold(fx); fx.transactions.push({id: "s-refund", date: "2026-11-20", person: "sophie", amount: -15, budget: "s-hobby", account: "s-main", note: "Refund"}); });
+  real.c.exYearReviewCheck_("2027-04-06");
+  const rs = real.env.mail.find(m => m.to === "sophie@example.com"), re = real.env.mail.find(m => m.to === "ethan@example.com");
+  const hob = real.c.Budgie.yearReview(real.c.exViewOf_("sophie", "2027-04-06"), "sophie", "2026-04-06").spent.find(x => x.name === "Hobbies");
+  const hobPaid = real.c.exViewOf_("sophie", "2027-04-06").transactions.filter(x => x.budget === "s-hobby" && x.amount > 0 && x.date < "2027-04-06").reduce((t, x) => t + x.amount, 0);
+  ok("ROUND-UP: spending nets off refunds", hob && rs.body.includes("- Hobbies: " + real.c.Budgie.money(hob.amount)) && Math.abs(hob.amount - (hobPaid - 15)) < 0.01, {hob, hobPaid, body: rs.body});
+  ok("ROUND-UP: no Lifetime ISA section without a Lifetime ISA", !/LIFETIME ISA|You paid in/.test(rs.body) && /LIFETIME ISA/.test(re.body), rs.body);
+  ok("ROUND-UP: biggest month in full", /Biggest month: [A-Z][a-z]{3,} 20\d\d, £/.test(re.body), re.body);
   // not opted in: nothing
   const none = setupEnv(fx => { yearHousehold(fx); fx.settings.find(s => s.id === "sophie:email.sunday").value = "no"; });
   delete none.c.Budgie.yearReview;
@@ -266,6 +296,25 @@ const yearHousehold = (fx) => {
   const clash = mine.filter(n => theirs.has(n) || n === "Budgie");
   ok("no clashes with Code.gs, Prices.gs or BankFeeds.gs", !clash.length, clash);
   ok("no clash with installTriggers or installPriceTrigger", mine.indexOf("installTriggers") < 0 && mine.indexOf("installPriceTrigger") < 0);
+}
+
+// ================= review 2026-10-27b (1.4.8) =================
+// P5: a settings row typed into the sheet for a "person" called __proto__ is nobody's: it can't turn the email on
+// for someone else, or send their money to its address
+{
+  const {env, c} = setupEnv(fx => { optIn(fx, "ethan", "ethan@example.com"); fx.settings.push({person: "__proto__", key: "email.sunday", value: "true"}, {person: "__proto__", key: "email.to", value: "someone@example.com"}); });
+  const sent = c.exSendSunday_(SUNDAY);
+  ok("P5: only Ethan, who turned it on, gets an email", JSON.stringify(sent) === JSON.stringify(["ethan"]) && env.mail.every(m => m.to === "ethan@example.com"), {sent, to: env.mail.map(m => m.to)});
+}
+
+// ================= review 2026-10-27e (1.4.11) =================
+// E1: the Sunday email counts a split payment as the app does: half of £20.15 paid by Ethan is his £10.07 (Sophie
+// pays him back £10.08)
+{
+  const {env, c} = setupEnv(fx => { optIn(fx, "ethan", "ethan@example.com"); fx.transactions.push({id: "e-odd", date: "2026-10-31", person: "ethan", amount: 20.15, budget: "e-fun", account: "e-main", split: "half"}); });
+  c.exSendSunday_(SUNDAY);
+  const e = env.mail.find(m => m.to === "ethan@example.com");
+  ok("E1: Ethan's fun this week is his £10.07 share", e && /- Fun: [^\n]*\(£10\.07 spent this week/.test(e.body), e && e.body);
 }
 
 console.log(fails ? fails + " failed, " + passes + " passed" : "All " + passes + " passed");

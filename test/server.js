@@ -12,6 +12,8 @@ fs.writeFileSync(path.join(__dirname, ".links.json"), JSON.stringify({ethan: lin
 const types = {".html": "text/html", ".js": "text/javascript", ".webmanifest": "application/manifest+json", ".png": "image/png", ".json": "application/json"};
 http.createServer((req, res) => {
   if (req.url.startsWith("/exec")) { let b = ""; req.on("data", d => b += d); req.on("end", () => { c.CACHE_ = {}; let body = {}; try { body = JSON.parse(b || "{}"); } catch (e) {} const out = c.handle_(body); res.writeHead(200, {"Content-Type": "application/json", "Access-Control-Allow-Origin": "*"}); res.end(out.text); }); return; }
+  // tests only: give a person a new Budgie key (or put back the one given), and answer with its connect link
+  if (req.url.startsWith("/rekey")) { const q = new URLSearchParams(req.url.split("?")[1] || ""), who = q.get("who"); const old = env.props["KEY_" + who]; env.props["KEY_" + who] = q.get("k") || c.makeKey_(); c.keysChanged_(); res.end(JSON.stringify({link: link(who), old})); return; }
   if (req.url.startsWith("/dump")) { const t = decodeURIComponent(req.url.split("?")[1] || "transactions"); c.CACHE_ = {}; res.end(JSON.stringify(c.readTable_(t).rows)); return; }
   let p = req.url.split("?")[0].split("#")[0]; if (p === "/") p = "/index.html";
   const f = path.join(ROOT, p);

@@ -8,11 +8,11 @@ const mk = (home, u, k) => home + "#connect=" + Buffer.from(JSON.stringify({u, k
 const SHEET = "https://script.google.com/macros/s/TEST/exec";
 const out = [], fail = [];
 const ok = (name, cond, extra) => { (cond ? out : fail).push(name + (cond ? "" : " :: " + JSON.stringify(extra || "").slice(0, 300))); };
-async function setup(b) {
+async function setup(b, slowHome) {
   const ctx = await b.newContext({...devices["Pixel 7"], locale: "en-GB", serviceWorkers: "block"});
   const csp = [], errs = [];
   await ctx.route("https://alertrobot.github.io/budgie/**", r => route(r, new URL(r.request().url()).pathname.replace(/^\/budgie/, "")));
-  await ctx.route("https://budgie-money.github.io/**", r => route(r, new URL(r.request().url()).pathname));
+  await ctx.route("https://budgie-money.github.io/**", async r => { if (slowHome) await new Promise(res => setTimeout(res, slowHome)); return route(r, new URL(r.request().url()).pathname); });
   await ctx.route("https://script.google.com/**", async r => {
     if (!r.request().url().startsWith(SHEET)) return r.fulfill({status: 404, body: "no"});
     const res = await r.fetch({url: "http://localhost:" + PORT + "/exec"}); return r.fulfill({response: res, headers: {...res.headers(), "access-control-allow-origin": "*"}});
@@ -69,6 +69,8 @@ async function setup(b) {
     const moved = T(await p.textContent("#main"));
     ok("old home shows Budgie has moved", /Budgie has moved/.test(T(await p.textContent("#top"))) && /budgie-money\.github\.io/.test(moved), moved.slice(0, 200));
     ok("old home shows no money", !/£/.test(moved));
+    await p.evaluate(() => window.BudgieApp.render()); await p.waitForTimeout(200);
+    ok("old home stays the moved screen when it redraws (after a sync while moving)", /Budgie has moved/.test(T(await p.textContent("#top"))) && !/£/.test(T(await p.textContent("#main"))) && !(await p.$("nav button")));
     await p.click('[data-a="moveme"]');
     await p.waitForURL(/budgie-money\.github\.io/, {timeout: 15000});
     await p.waitForFunction(() => /Hi /.test(document.querySelector("#top").textContent), null, {timeout: 15000});
@@ -78,6 +80,62 @@ async function setup(b) {
     ok("nothing of Budgie's is left at the old address", left.ls.length === 0 && left.dbs.indexOf("budgie") < 0, left);
     ok("no CSP complaints at the old home", csp.length === 0, csp);
     ok("no page errors at the old home", errs.length === 0, errs);
+    await ctx.close();
+  }
+  // 3) the old home with Show and tell left on and a payment still waiting: moving across still sends it first
+  {
+    const {ctx, csp, errs, watch} = await setup(b), p = await ctx.newPage(); watch(p);
+    await p.goto("https://alertrobot.github.io/budgie/");
+    await p.evaluate(([u, k]) => new Promise(res => {
+      localStorage.setItem("budgie.cfg", JSON.stringify({u, k})); localStorage.setItem("budgie.prefs", JSON.stringify({demo: true}));
+      const r = indexedDB.open("budgie", 1); r.onupgradeneeded = () => r.result.createObjectStore("kv");
+      r.onsuccess = () => { const tx = r.result.transaction("kv", "readwrite"); tx.objectStore("kv").put({tables: {}, since: 0, me: "ethan", queue: [{op: "put", table: "transactions", row: {id: "t-waiting-move", date: "2026-10-26", person: "ethan", amount: 3.21, budget: "e-fun", account: "e-main"}}]}, "data"); tx.oncomplete = () => { r.result.close(); res(); }; };
+    }), [SHEET, kE]);
+    await p.reload(); await p.waitForTimeout(1200);
+    await p.click('[data-a="moveme"]');
+    let landed = true; await p.waitForURL(/budgie-money\.github\.io/, {timeout: 15000}).catch(() => { landed = false; });
+    const tx = await (await p.request.get("http://localhost:" + PORT + "/dump?transactions")).json();
+    ok("Show and tell left on at the old home doesn't stop a waiting payment going across", landed && tx.some(r => r.id === "t-waiting-move"), {landed, toast: T(await p.textContent("#toast").catch(() => ""))});
+    ok("no page errors moving with Show and tell on", errs.length === 0, errs);
+    await ctx.close();
+  }
+  // 4) moving across when the sheet turns a waiting change down (so Budgie fetches everything again straight after)
+  // and the new address is slow to open: nothing that sync brings back is saved at the old address
+  {
+    const {ctx, errs, watch} = await setup(b, 2500), p = await ctx.newPage(); watch(p);
+    await p.goto("https://alertrobot.github.io/budgie/");
+    await p.evaluate(([u, k]) => new Promise(res => {
+      localStorage.setItem("budgie.cfg", JSON.stringify({u, k}));
+      const r = indexedDB.open("budgie", 1); r.onupgradeneeded = () => r.result.createObjectStore("kv");
+      r.onsuccess = () => { const tx = r.result.transaction("kv", "readwrite"); tx.objectStore("kv").put({tables: {}, since: Date.now() - 60000, me: "ethan", queue: [{op: "put", table: "transactions", row: {id: "t-refused-move", date: "2026-10-26", person: "ethan", amount: 1, budget: "e-fun", account: "s-main"}}]}, "data"); tx.oncomplete = () => { r.result.close(); res(); }; };
+    }), [SHEET, kE]);
+    await p.reload(); await p.waitForTimeout(1200);
+    // (watched from a page at the old address that stays open: anything written there after the wipe shows up)
+    const old = await ctx.newPage(); await old.goto("https://alertrobot.github.io/budgie/"); await old.waitForTimeout(300);
+    await p.click('[data-a="moveme"]');
+    await p.waitForURL(/budgie-money\.github\.io/, {timeout: 20000}).catch(() => {});
+    await old.waitForTimeout(500);
+    const left = await old.evaluate(() => Object.keys(localStorage).filter(k => /^budgie\./.test(k)));
+    ok("a sync still on its way while moving saves nothing at the old address", left.length === 0, left);
+    ok("no page errors moving while the sheet turns a change down", errs.length === 0, errs);
+    await ctx.close();
+  }
+  // 5) the old home with a key that's been changed since (a new one made after a lost phone): moving says why it can't,
+  // rather than blaming the phone signal
+  {
+    const {ctx, errs, watch} = await setup(b), p = await ctx.newPage(); watch(p);
+    await p.goto("https://alertrobot.github.io/budgie/");
+    await p.evaluate(([u, k]) => new Promise(res => {
+      localStorage.setItem("budgie.cfg", JSON.stringify({u, k}));
+      const r = indexedDB.open("budgie", 1); r.onupgradeneeded = () => r.result.createObjectStore("kv");
+      r.onsuccess = () => { const tx = r.result.transaction("kv", "readwrite"); tx.objectStore("kv").put({tables: {}, since: 0, me: "ethan", queue: [{op: "put", table: "transactions", row: {id: "t-old-key", date: "2026-10-26", person: "ethan", amount: 2, budget: "e-fun", account: "e-main"}}]}, "data"); tx.oncomplete = () => { r.result.close(); res(); }; };
+    }), [SHEET, "b".repeat(64)]);
+    await p.reload(); await p.waitForTimeout(1200);
+    await p.click('[data-a="moveme"]');
+    await p.waitForFunction(() => /connect link|signal/.test(document.querySelector("#toast").textContent), null, {timeout: 20000}).catch(() => {});
+    const said = T(await p.textContent("#toast"));
+    ok("moving with a changed key says the link has stopped working, not the signal", /connect link/.test(said) && !/signal/.test(said) && /alertrobot/.test(p.url()), said);
+    ok("no page errors moving with a changed key", errs.length === 0, errs);
     await ctx.close();
   }
   console.log("PASS\n  " + out.join("\n  ")); console.log("FAIL\n  " + fail.join("\n  ")); process.exitCode = fail.length ? 1 : 0;
