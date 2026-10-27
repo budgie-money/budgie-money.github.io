@@ -9,6 +9,8 @@ const fails = [], check = (name, cond, extra) => { if (cond) console.log("ok", n
   const errs = [];
   const newPage = async (date) => {
     const ctx = await browser.newContext({...devices["Pixel 7"], locale: "en-GB", timezoneId: "Europe/London", serviceWorkers: "block"});
+    // (the once-a-day "things to check" pop-up is marked as seen, so it can't land on top of a tap half a second in)
+    await ctx.addInitScript(d => { try { localStorage.setItem("budgie.checkSeen", JSON.stringify(d)); } catch (e) {} }, date || "2026-10-26");
     const page = await ctx.newPage();
     page.on("pageerror", e => errs.push("pageerror: " + e.message));
     page.on("console", m => { if (m.type() === "error" && !/fonts\.g/.test(m.text())) errs.push("console: " + m.text()); });
@@ -553,7 +555,7 @@ const fails = [], check = (name, cond, extra) => { if (cond) console.log("ok", n
     const t15 = T(await page.textContent("main"));
     check("Ethan's Between you two says what Sophie owes him in loans, and when the next repayment is", /Sophie owes you £600\.00 in loans ?Next £200\.00 on Mon 28 Dec/.test(t15) && /You owe Sophie £[\d,]+\.\d\d in loans/.test(t15) && !/You're all square/.test(t15), t15.slice(t15.indexOf("Between"), t15.indexOf("Between") + 300));
     check("and the shared bills line says it's only about those", /(All square on shared bills|owes you £[\d,.]+ for shared bills|You owe Sophie £[\d,.]+ for shared bills)/.test(t15), t15.slice(t15.indexOf("Between"), t15.indexOf("Between") + 200));
-    const ib = await page.$('[data-a="info"][data-v="between"]'); if (ib) { await ib.click(); await page.waitForTimeout(100); }
+    if (await page.$('[data-a="info"][data-v="between"]')) { await page.click('[data-a="info"][data-v="between"]'); await page.waitForTimeout(100); } // (by selector: a sync can re-draw the screen in between)
     check("how it's worked out is behind the (i)", /Shared bills are split by your rules/.test(await page.textContent("#sheets")));
     await page.context().close();
     page = await newPage("2026-11-02");
@@ -571,7 +573,7 @@ const fails = [], check = (name, cond, extra) => { if (cond) console.log("ok", n
     await page.evaluate(() => { document.querySelector("#sheets").innerHTML = ""; window.BudgieApp.go("today"); }); await page.waitForTimeout(150);
     await page.evaluate(() => { document.querySelector("#sheets").innerHTML = ""; });
     const hero = T(await page.textContent(".hero"));
-    check("the hero says it's the short first month", /Your short first month, until payday\./.test(hero), hero);
+    check("the hero says why it's a short month", /A short month: you started Budgie on Mon 26 Oct\./.test(hero), hero);
     check("and where the spare in Main goes", /£[\d,]+\.\d\d spare in your Main account goes to your Cash ISA on payday\./.test(hero), hero);
     check("the weekly note is behind an (i), not always on show", !/isn't counted as over/.test(T(await page.textContent("main"))) && !!(await page.$('[data-a="info"][data-v="pace"]')));
     await page.setViewportSize({width: 360, height: 800}); await page.waitForTimeout(100);
@@ -583,13 +585,69 @@ const fails = [], check = (name, cond, extra) => { if (cond) console.log("ok", n
     check("each pot says how far it is from where it should be", /Should be £[\d,]+\.\d\d: £[\d,]+\.\d\d (below|above), see To do|Where it should be/.test(pots) && (await page.$$('[data-a="potcheck"]')).length === (pots.match(/Should be £[\d,]+\.\d\d: |Where it should be/g) || []).length, pots.slice(0, 600));
     await page.context().close();
   }
-  // Money: a "what's left" budget with nothing this month says why, and what next payday puts in
+  // Money (1.4.17): it says what it's for, each section's title says what it answers, and each kind of money (coming
+  // in, bills, spending, saving) has its own colour wherever it shows, in light and dark. A "what's left" saving with
+  // nothing in the short first month says when it starts, and the savings show what they're worth, with an Update.
   {
+    const kinds = () => { const cs = getComputedStyle(document.documentElement); return ["in", "bill", "spend", "save"].map(k => cs.getPropertyValue("--k-" + k).trim()); };
+    const rgb = hex => { const n = parseInt(hex.slice(1), 16); return "rgb(" + (n >> 16) + ", " + (n >> 8 & 255) + ", " + (n & 255) + ")"; };
+    const pounds = s => +String(s).replace(/[£,]/g, "");
+    for (const scheme of ["light", "dark"]) {
+      const ctx = await browser.newContext({...devices["Pixel 7"], locale: "en-GB", timezoneId: "Europe/London", serviceWorkers: "block", colorScheme: scheme});
+      page = await ctx.newPage(); await page.clock.install({time: new Date("2026-10-28T19:30:00")});
+      await page.goto(links.ethan); await hiE(page);
+      // (once the first sync is done, so it can't re-draw the screen while it's being read)
+      await page.waitForFunction(() => !window.BudgieApp.S.syncing && window.BudgieApp.S.lastSync, null, {timeout: 8000}); await page.waitForTimeout(300);
+      await page.evaluate(() => { document.querySelector("#sheets").innerHTML = ""; window.BudgieApp.S.ui.monthOff = 0; window.BudgieApp.go("money"); }); await page.waitForTimeout(150);
+      const t17 = T(await page.textContent("main"));
+      const heads = await page.$$eval("main .card h2", hs => hs.map(h => h.textContent.trim()));
+      check("Money says what it's for (" + scheme + ")", /Your plan, payday to payday/.test(T(await page.textContent("#top"))), T(await page.textContent("#top")));
+      check("each section says what it answers (" + scheme + ")", ["Where it goes", "Coming in", "What you can spend", "What's saved"].every(h => heads.includes(h)), heads);
+      check("the short first month's dates say why it's short", /Started Tue 27 Oct · ends Wed 28 Oct|Started Mon 26 Oct · ends Wed 28 Oct/.test(t17), t17.slice(0, 200));
+      check("the Cash ISA's nothing this month says when it starts, and what it's worth", /Cash ISA ?Starts on payday: £[\d,]+\.\d\d ?£[\d,]+\.\d\d ?Update/.test(t17), t17.slice(t17.indexOf("What's saved"), t17.indexOf("What's saved") + 300));
+      check("no short-first-month sentence to puzzle over", !/short first month/.test(t17));
+      // the colours: four different ones, from the theme, the same on each section's chip and in the key
+      const ks = await page.evaluate(kinds), want = scheme === "light" ? ["#1F7A4D", "#6B4FBB", "#2369A8", "#B07A12"] : ["#6FD39C", "#B8A3F2", "#7DB8EE", "#EBC064"];
+      check("each kind of money has its own colour (" + scheme + ")", JSON.stringify(ks) === JSON.stringify(want), ks);
+      const chips = await page.evaluate(() => [...document.querySelectorAll("main .kchip")].map(c => [c.className.replace("kchip ", ""), getComputedStyle(c).color]));
+      check("each section's chip is its kind's colour (" + scheme + ")", chips.length >= 3 && chips.every(([k, c]) => c === ({"k-in": rgb(want[0]), "k-bill": rgb(want[1]), "k-spend": rgb(want[2]), "k-save": rgb(want[3])})[k]), chips);
+      const dots = await page.evaluate(() => [...document.querySelectorAll("main .legend .kdot")].map(d => getComputedStyle(d).backgroundColor));
+      check("the key uses the same colours (" + scheme + ")", JSON.stringify(dots) === JSON.stringify(want.map(rgb)), dots);
+      const spendBars = await page.evaluate(() => [...document.querySelectorAll("main .card .bar > i")].map(i => getComputedStyle(i).backgroundColor));
+      check("spending's bars are spending's colour (" + scheme + ")", spendBars.length >= 2 && spendBars.every(c => c === rgb(want[2])), spendBars);
+      // the key adds up: what comes in is what goes out plus what's left over
+      const leg = await page.$$eval("main .legend > div b", ns => ns.map(n => n.textContent)), left = (t17.match(/£([\d,]+\.\d\d) left over/) || [0, "0"])[1];
+      check("where it goes adds up", Math.abs(pounds(leg[0]) - pounds(leg[1]) - pounds(leg[2]) - pounds(leg[3]) - pounds(left)) < 0.011, [leg, left]);
+      if (scheme === "light") {
+        // next month has bills, coloured as bills, and the year view jumps to a month
+        await page.click('[data-a="month"][data-v="1"]'); await page.waitForTimeout(100);
+        check("next month has its bills to pay", (await page.$$eval("main .card h2", hs => hs.map(h => h.textContent.trim()))).includes("Bills to pay"));
+        await page.click('[data-a="moneyview"][data-v="year"]'); await page.waitForTimeout(100);
+        check("the year view says what it's for", /Your plan for the year/.test(T(await page.textContent("#top"))));
+        await page.click('[data-a="moneyjump"][data-v="2"]'); await page.waitForTimeout(100);
+        check("tapping a month in the year opens it", /Dec 2026/.test(T(await page.textContent("main"))) && !!(await page.$('[data-a="moneyview"][data-v="month"][aria-pressed="true"]')));
+        await page.evaluate(() => { window.BudgieApp.S.ui.monthOff = 0; window.BudgieApp.go("today"); }); await page.waitForTimeout(100);
+        check("Today's spending bars are spending's colour", (await page.evaluate(() => [...document.querySelectorAll(".tile .bar > i")].map(i => getComputedStyle(i).backgroundColor))).every(c => c === rgb(want[2])));
+        check("the hero says why the first month is short", /A short month: you started Budgie on Mon 26 Oct\./.test(T(await page.textContent(".hero"))), T(await page.textContent(".hero")));
+      }
+      await ctx.close();
+    }
+    // Sophie's too
     page = await newPage("2026-10-28");
-    await page.goto(links.ethan); await hiE(page);
-    await page.evaluate(() => { document.querySelector("#sheets").innerHTML = ""; window.BudgieApp.go("money"); }); await page.waitForTimeout(150);
-    const t17 = T(await page.textContent("main"));
-    check("the Cash ISA's £0 this month is explained, with what goes in on payday", /Nothing this month: it's a short first month\. £[\d,]+\.\d\d goes in tomorrow/.test(t17), t17.slice(t17.indexOf("Savings"), t17.indexOf("Savings") + 300));
+    await page.goto(links.sophie); await page.waitForFunction(() => /Hi Sophie/.test(document.querySelector("#top").textContent), null, {timeout: 8000});
+    await page.evaluate(() => { document.querySelector("#sheets").innerHTML = ""; window.BudgieApp.S.ui.monthOff = 0; window.BudgieApp.go("money"); }); await page.waitForTimeout(150);
+    const hs = await page.$$eval("main .card h2", h => h.map(x => x.textContent.trim()));
+    check("Sophie's Money has the same sections", ["Where it goes", "Coming in", "Bills to pay", "What you can spend", "What's saved"].every(h => hs.includes(h)), hs);
+    await page.context().close();
+    // the Cash ISA's Update asks what it's worth and shows it straight away (in Show and tell, so nothing is saved)
+    page = await newPage("2026-10-28");
+    await page.goto("http://localhost:" + PORT + "/"); await page.waitForSelector("main"); await page.click('[data-a="demo"][data-v="on"]'); await page.waitForTimeout(150);
+    await page.evaluate(() => window.BudgieApp.go("money")); await page.waitForTimeout(100);
+    await page.click('[data-a="potcheck"][data-v="a-isa"]'); await page.waitForTimeout(100);
+    const sh = T(await page.textContent("#sheets"));
+    check("the Cash ISA's Update asks what it's worth in the provider's app", /Cash ISA ?What's it worth in your provider's app today\?/.test(sh) && /Worth/.test(sh) && !!(await page.$("#potDate")), sh);
+    await page.fill("#potBal", "4321.99"); await page.click('[data-a="potsave"]'); await page.waitForTimeout(150);
+    check("and the new value shows in what's saved", /Cash ISA(?:(?!Update).)*£4,321\.99 ?Update/.test(T(await page.textContent("main"))), T(await page.textContent("main")).slice(-400));
     await page.context().close();
   }
   // going over a budget, once the move that covers it is ticked, isn't "Over budget" any more: it says what it was
@@ -599,8 +657,8 @@ const fails = [], check = (name, cond, extra) => { if (cond) console.log("ok", n
     await page.goto(links.ethan); await hiE(page);
     await page.evaluate(() => { document.querySelector("#sheets").innerHTML = ""; window.BudgieApp.go("today"); }); await page.waitForTimeout(150);
     check("over a budget and not covered yet: Over budget", T(await page.textContent(".hero .pill")) === "Over budget", T(await page.textContent(".hero .pill")));
-    const cov = await page.$('input[data-c="tick"][aria-label*="from Emergency pot to Main account"]');
-    if (cov) { await cov.click(); await page.waitForTimeout(400); }
+    const covSel = 'input[data-c="tick"][aria-label*="from Emergency pot to Main account"]'; // (by selector: a sync can re-draw To do in between)
+    if (await page.$(covSel)) { await page.click(covSel); await page.waitForTimeout(400); }
     await page.evaluate(() => { document.querySelector("#sheets").innerHTML = ""; });
     check("once covered, it names what went over instead", T(await page.textContent(".hero .pill")) === "Fun covered", T(await page.textContent(".hero .pill")));
     await page.click(".hero"); await page.waitForTimeout(150);

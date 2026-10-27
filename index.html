@@ -20,6 +20,7 @@
   --accent:#2E5E8C; --accent-ink:#FFFFFF; --soft:#E3ECF5; --good:#1F6E47; --warn:#9A4A06; --bad:#A3271A;
   --hero:var(--accent); --hero-ink:#FFFFFF; --font:'Plus Jakarta Sans', system-ui, sans-serif; --head:var(--font);
   --radius:16px; --pattern:none; --fs:15px; --shadow:none;
+  --k-in:#1F7A4D; --k-bill:#6B4FBB; --k-spend:#2369A8; --k-save:#B07A12;
 }
 *{box-sizing:border-box}
 html{background:var(--bg)}
@@ -149,13 +150,15 @@ label.check input,input.tick{width:24px;height:24px;accent-color:var(--accent);f
 .cal button{height:44px;border-radius:10px;border:0;background:var(--bg);display:flex;flex-direction:column;align-items:center;justify-content:center;font-size:13px;font-weight:600;padding:0;color:var(--ink)}
 .cal button.has{background:var(--soft)}
 .cal button.today{background:var(--accent);color:var(--accent-ink)}
-.cal button i{width:5px;height:5px;border-radius:3px;background:var(--accent);margin-top:2px}
+.cal button i{width:5px;height:5px;border-radius:3px;background:var(--k-bill);margin-top:2px}
 .cal button.today i{background:var(--accent-ink)}
-.cal button.in i{background:var(--good)}
+.cal button.in i{background:var(--k-in)}
 .bars{display:flex;align-items:flex-end;gap:6px;height:140px;margin-top:14px}
 .bars>div{flex:1;display:flex;flex-direction:column;align-items:center;gap:4px;min-width:0}
 .bars>div>i{width:100%;border-radius:5px 5px 2px 2px;background:var(--accent);display:block}
 .bars>div>i.plan{background:var(--soft)}
+.bars.k-save>div>i,.bars.k-spend>div>i{background:var(--kc)}
+.bars.k-save>div>i.plan,.bars.k-spend>div>i.plan{background:color-mix(in srgb, var(--kc) 30%, var(--card))}
 .bars span{font-size:11px;color:var(--muted)}
 .bars .stack{width:100%;display:flex;flex-direction:column-reverse}
 .bars .stack i{display:block;width:100%;background:var(--accent);border-radius:2px}
@@ -175,6 +178,21 @@ label.check input,input.tick{width:24px;height:24px;accent-color:var(--accent);f
 .empty{color:var(--muted);text-align:center;padding:30px 10px}
 .split2{display:flex;height:10px;border-radius:5px;overflow:hidden;background:var(--track)}
 .split2>i{display:block}
+/* the kinds of money (coming in, bills, spending, saving): one colour each, wherever they show */
+.k-in{--kc:var(--k-in)} .k-bill{--kc:var(--k-bill)} .k-spend{--kc:var(--k-spend)} .k-save{--kc:var(--k-save)} .k-left{--kc:var(--track)}
+.kchip{width:32px;height:32px;border-radius:10px;flex:none;display:inline-flex;align-items:center;justify-content:center;color:var(--kc);background:color-mix(in srgb, var(--kc) 16%, var(--card))}
+.khead{display:flex;align-items:center;gap:10px;min-width:0}
+.khead h2{min-width:0}
+.kdot{display:inline-block;width:10px;height:10px;border-radius:5px;background:var(--kc);flex:none}
+.split2.big{height:14px;border-radius:7px;margin:12px 0 4px;gap:2px}
+.split2>i:not(:last-child){border-right:2px solid var(--card)}
+.legend{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px 24px;margin-top:10px}
+.legend>div{display:flex;align-items:baseline;gap:7px;min-width:0;font-size:13px}
+.legend>div>span:nth-child(2){min-width:0;color:var(--muted);font-weight:600}
+.legend b{display:block;color:var(--ink);font-size:15px;font-weight:700;font-variant-numeric:tabular-nums;white-space:nowrap}
+.valup{display:flex;flex-direction:column;align-items:flex-end;flex:none}
+.valup .linkbtn{min-height:44px;padding:0 0 0 10px;margin:-8px 0 -12px}
+.date.k-in,.date.k-bill{background:color-mix(in srgb, var(--kc) 15%, var(--card))}
 .swatches{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
 .swatches button{flex:1 1 calc((100% - 24px) / 4 - .1px);min-width:44px;height:44px;border-radius:22px;border:3px solid var(--card);box-shadow:0 0 0 1px var(--line)}
 .swatches button[aria-pressed="true"]{box-shadow:0 0 0 3px var(--ink)}
