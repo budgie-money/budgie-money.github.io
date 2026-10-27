@@ -70,15 +70,16 @@ function exTaxYearLabel_(tys) { var y = +tys.slice(0, 4); return y + "/" + Strin
 // who gets the emails: settings rows email.sunday = true and email.to = an address, for a person in the people tab.
 // Only each person's own rows count (never a row for everyone), so nobody's money goes to someone else's address.
 function exRecipients_() {
-  var set = {};
+  // (no built-in keys: a row typed in for a "person" called __proto__ is nobody's, and can't stand in for anyone's)
+  var set = Object.create(null);
   readTable_("settings").rows.forEach(function (r) {
     if (exOn_(r.deleted) || !r.person || !/^email\./.test(String(r.key))) return;
-    (set[r.person] = set[r.person] || {})[String(r.key)] = r.value;
+    (set[r.person] = set[r.person] || Object.create(null))[String(r.key)] = r.value;
   });
   var out = [];
   readTable_("people").rows.forEach(function (p) {
     if (exOn_(p.deleted) || !p.id) return;
-    var s = set[p.id] || {}, to = String(s["email.to"] || "").trim();
+    var s = set[p.id] || Object.create(null), to = String(s["email.to"] || "").trim();
     if (!exOn_(s["email.sunday"])) return;
     if (!/^[^@\s,;<>]+@[^@\s,;<>]+\.[^@\s,;<>]+$/.test(to)) { Logger.log((p.name || p.id) + " turned the Sunday email on but the email address doesn't look right, so nothing was sent."); return; }
     out.push({id: p.id, name: p.name || p.id, to: to, colour: p.colour});

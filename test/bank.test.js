@@ -1496,6 +1496,168 @@ const grow = (G, t) => { G.c.CACHE_ = {}; return G.c.readTable_(t).rows; };
   ok("V9: a payment from the start of a long gap still comes in", grow(G, "transactions").some(r => r.id === "bk-starling-sfi-v9"));
   starling.feed = feed0;
 }
+{
+  // W1: £20 to a friend two days before the £20 phone bill. The bill is the payment most like it (the nearer day, or
+  // the same name), so the friend's £20 comes in as a payment and the bill's own payment doesn't (before, the friend's
+  // came first in date order, was taken for the bill and lost, and the bill came in as spending)
+  freshMonzo(); NOW = RealDate.parse("2026-11-17T12:00:00Z");
+  monzo.txns = [mtx("tx_w1friend", "2026-11-03", -2000, {counterparty: {name: "SAM SMITH"}, category: "general"}),
+    mtx("tx_w1dd", "2026-11-05", -2000, {counterparty: {name: "EE LIMITED"}, description: "EE LIMITED", category: "bills"}),
+    mtx("tx_w1pal", "2026-12-02", -2000, {counterparty: {name: "ALEX JONES"}, category: "general"}),
+    mtx("tx_w1card", "2026-12-04", -2000, {merchant: merchant("Phone Co", "bills"), category: "bills"})];
+  NOW = RealDate.parse("2026-12-10T12:00:00Z");
+  const G = bankEnv(); connectMonzo(G, {acc_00009main: "e-main"});
+  const ids = grow(G, "transactions").filter(r => /^bk-/.test(r.id) && r.deleted !== true).map(r => r.id).sort();
+  ok("W1: a payment of the same amount just before a bill isn't taken for it", ids.join() === "bk-monzo-tx_w1friend,bk-monzo-tx_w1pal", ids);
+  NOW = RealDate.parse("2026-11-17T12:00:00Z");
+}
+{
+  // W2: Ethan checks the bank's Tesco payment as food straight away, then logs the shop in Peckish, which posts it. It's
+  // the same shop: linked, keeping what he said it was for, and the bank's copy goes, so the food budget doesn't count
+  // it twice. One checked as something else, or one he logs by hand after checking (cash, more likely), stays its own
+  freshMonzo(); NOW = RealDate.parse("2026-11-17T12:00:00Z"); monzo.txns = monzoData(planned);
+  const G = bankEnv(); connectMonzo(G, {acc_00009main: "e-main"});
+  monzo.txns.push(mtx("tx_w2", "2026-11-17", -3810, {merchant: merchant("Tesco", "groceries"), category: "groceries", time: "11:01:00"}),
+    mtx("tx_w2fun", "2026-11-17", -2400, {merchant: merchant("Lidl", "groceries"), category: "groceries", time: "11:02:00"}),
+    mtx("tx_w2hand", "2026-11-17", -450, {merchant: merchant("Greggs", "eating_out"), category: "eating_out", time: "11:03:00"}));
+  NOW += 15 * 60000; G.c.bankPoll();
+  G.call({key: G.kE, ops: [{op: "put", table: "transactions", row: {id: "bk-monzo-tx_w2", budget: "e-food-b", split: "half", review: false}},
+    {op: "put", table: "transactions", row: {id: "bk-monzo-tx_w2fun", budget: "e-fun", review: false}},
+    {op: "put", table: "transactions", row: {id: "bk-monzo-tx_w2hand", budget: "e-fun", review: false}}]});
+  const pk = JSON.parse(Buffer.from(G.call({key: G.kE, action: "app.link", app: "peckish"}).link.split("#connect=")[1], "base64url").toString()).k;
+  const shop = (id, amount, note) => ({op: "put", table: "transactions", row: {id: id, date: "2026-11-17", person: "ethan", amount: amount, budget: "e-food-b", account: "", split: "", note: note, source: "peckish"}});
+  G.call({key: pk, ops: [shop("t-pk-w2", 36, "Tesco (Peckish)"), shop("t-pk-w2fun", 24, "Lidl (Peckish)")]});
+  G.call({key: G.kE, ops: [{op: "put", table: "transactions", row: {id: "app-w2hand", date: "2026-11-17", person: "ethan", amount: 4.5, budget: "e-fun", account: "e-main", note: "Greggs", source: "app"}}]});
+  NOW += 15 * 60000; G.c.bankPoll();
+  const r = (id) => grow(G, "transactions").find(x => x.id === id) || {};
+  const live = (id) => grow(G, "transactions").filter(x => (x.id === "bk-monzo-" + id || x.bankId === id) && x.deleted !== true).map(x => x.id);
+  ok("W2: a Peckish shop posted after the bank's copy was checked as food is linked to it", live("tx_w2").join() === "t-pk-w2" && r("bk-monzo-tx_w2").deleted === true && r("t-pk-w2").amount === 38.1, live("tx_w2"));
+  ok("W2: and keeps what Ethan said it was for", r("t-pk-w2").review === false && r("t-pk-w2").budget === "e-food-b" && r("t-pk-w2").split === "half", r("t-pk-w2"));
+  ok("W2: one checked as something else, or logged by hand after checking, is left as it is", live("tx_w2fun").join() === "bk-monzo-tx_w2fun" && !r("t-pk-w2fun").bankId && live("tx_w2hand").join() === "bk-monzo-tx_w2hand" && !r("app-w2hand").bankId);
+}
+{
+  // W3: linking one logged after the bank had it is two writes (link it, take the bank's copy off). If the sheet can't
+  // make the second, the next read takes the bank's copy off, so the payment isn't counted twice for good
+  freshMonzo(); NOW = RealDate.parse("2026-11-17T12:00:00Z"); monzo.txns = monzoData(planned);
+  const G = bankEnv(); connectMonzo(G, {acc_00009main: "e-main"});
+  monzo.txns.push(mtx("tx_w3", "2026-11-17", -1234, {merchant: merchant("Corner Shop", "groceries"), category: "groceries", time: "11:05:00"}));
+  NOW += 15 * 60000; G.c.bankPoll();
+  G.call({key: G.kE, ops: [{op: "put", table: "transactions", row: {id: "app-w3", date: "2026-11-17", person: "ethan", amount: 12.34, budget: "e-food-b", account: "e-main", note: "Corner Shop", source: "app"}}]});
+  const real = G.c.applyOne_; let hic = 1;
+  G.c.applyOne_ = function (p, op) { if (op && op.row && op.row.id === "bk-monzo-tx_w3" && op.row.deleted && hic-- > 0) throw new Error("Service Spreadsheets failed"); return real.apply(this, arguments); };
+  NOW += 15 * 60000; G.c.bankPoll();
+  const live = () => grow(G, "transactions").filter(r => (r.id === "bk-monzo-tx_w3" || r.bankId === "tx_w3") && r.deleted !== true).map(r => r.id);
+  ok("W3: the write that didn't go", hic === 0 && live().length === 2, live());
+  NOW += 15 * 60000; G.c.bankPoll();
+  G.c.applyOne_ = real;
+  ok("W3: the next read leaves one row for the payment", live().join() === "app-w3", live());
+}
+{
+  // W4: a second move into the bills pot the same week, of about the planned amount: it's a move of its own, not lost
+  // as "already ticked" (in a later read), nor counted as one with the payday tick (in the same read)
+  freshMonzo(); NOW = RealDate.parse("2026-11-03T12:00:00Z"); monzo.txns = monzoData(planned).filter(t => t.created < "2026-11-03");
+  monzo.txns.push(mtx("tx_w4same", "2026-10-31", -Math.round(planned.food * 100), {description: "pot_food", category: "savings", metadata: {pot_id: "pot_food"}}));
+  const G = bankEnv(); connectMonzo(G, {acc_00009main: "e-main", pot_bills: "e-bills", pot_food: "e-food"});
+  monzo.txns.push(mtx("tx_w4", "2026-11-03", -Math.round(planned.bills * 100), {description: "pot_bills", category: "savings", metadata: {pot_id: "pot_bills"}, time: "11:00:00"}));
+  NOW += 15 * 60000; G.c.bankPoll();
+  const mv = (id) => grow(G, "moves").find(m => m.id === "bk-monzo-" + id) || {};
+  ok("W4: a second payday-sized move in a later read comes in", mv("tx_w4").to === "e-bills" && mv("tx_w4").key === "bank:tx_w4" && mv("tx_potbills").key === "pay:2026-10-29:e-bills", [mv("tx_w4"), mv("tx_potbills").key]);
+  ok("W4: and one in the same read isn't counted as the same tick", mv("tx_w4same").key === "bank:tx_w4same" && mv("tx_potfood").key === "pay:2026-10-29:e-food", [mv("tx_w4same").key, mv("tx_potfood").key]);
+  const dups = B.load((() => { G.c.CACHE_ = {}; return G.c.allTables_(); })(), "2026-11-03").moves.filter(m => m.dup).map(m => m.id);
+  ok("W4: so both reach the pot (neither is set aside as a copy)", dups.length === 0, dups);
+}
+{
+  // W5: a first import in parts, where the part after the pay is only a day or two long: the part after that still
+  // weighs the pay the first part saw, so a pay-sized payment in a few days later can't take its place
+  freshMonzo(); NOW = RealDate.parse("2027-01-20T12:00:00Z");
+  const hm = (i) => String(10 + Math.floor(i / 60)).padStart(2, "0") + ":" + String(i % 60).padStart(2, "0") + ":00";
+  const hist = []; for (let i = 0; i < 99; i++) hist.push(mtx("tx_w5a" + String(i).padStart(3, "0"), B.addDays("2026-09-01", Math.floor(i / 2)), -300, {merchant: merchant("Cafe", "eating_out"), category: "eating_out"}));
+  const mid = []; for (let i = 0; i < 100; i++) mid.push(mtx("tx_w5b" + String(i).padStart(3, "0"), i < 50 ? "2026-10-29" : "2026-10-30", -200, {merchant: merchant("Shop", "shopping"), category: "shopping", time: hm(i)}));
+  monzo.txns = hist.concat([mtx("tx_w5pay", "2026-10-29", 239000, {counterparty: {name: "PAYROLL LTD"}, category: "income", time: "06:00:00"})], mid,
+    [mtx("tx_w5big", "2026-11-01", 200000, {counterparty: {name: "OLD SAVINGS CO"}, category: "general"}), mtx("tx_w5after", "2026-11-05", -500, {merchant: merchant("Cafe", "eating_out"), category: "eating_out"})]);
+  const G = bankEnv(); G.c.BANK_MAX_PAGES_ = 1;
+  connectMonzo(G); let n = 0;
+  while (n++ < 8 && G.env.triggers.some(t => t.getHandlerFunction() === "bankPendingImports")) { NOW += 60000; G.c.bankPendingImports(); }
+  const st = JSON.parse(G.env.props.BANK_STATUS_ethan), px = grow(G, "exceptions").find(x => x.id === "x-e-pay-2026-10-29-bank-ethan");
+  ok("W5: read in three parts or more", st.fullDone && n > 2 && grow(G, "transactions").some(r => r.id === "bk-monzo-tx_w5after"), {n, fullDone: st.fullDone});
+  ok("W5: the pay keeps its payday across a short part", px && px.amount === 2390, px);
+  G.c.BANK_MAX_PAGES_ = 300;
+}
+{
+  // X1: two Tesco trips three days apart, Monday's already checked as food. Thursday's shop, posted by Peckish, is
+  // Thursday's payment, whether the bank brings that in the same read or had it already: Monday's checked payment
+  // isn't moved onto it (before, it came first in date order and took the shop, its amount and its date)
+  const run = (thuFirst) => {
+    freshMonzo(); NOW = RealDate.parse("2026-11-17T12:00:00Z"); monzo.txns = monzoData(planned);
+    const G = bankEnv(); connectMonzo(G, {acc_00009main: "e-main"});
+    monzo.txns.push(mtx("tx_x1mon", "2026-11-14", -1200, {merchant: merchant("Tesco", "groceries"), category: "groceries"}));
+    NOW += 15 * 60000; G.c.bankPoll();
+    G.call({key: G.kE, ops: [{op: "put", table: "transactions", row: {id: "bk-monzo-tx_x1mon", budget: "e-food-b", split: "half", review: false}}]});
+    monzo.txns.push(mtx("tx_x1thu", "2026-11-17", -1050, {merchant: merchant("Tesco", "groceries"), category: "groceries", time: "11:30:00"}));
+    if (thuFirst) { NOW += 15 * 60000; G.c.bankPoll(); }
+    const pk = JSON.parse(Buffer.from(G.call({key: G.kE, action: "app.link", app: "peckish"}).link.split("#connect=")[1], "base64url").toString()).k;
+    G.call({key: pk, ops: [{op: "put", table: "transactions", row: {id: "t-pk-x1", date: "2026-11-17", person: "ethan", amount: 10, budget: "e-food-b", account: "", split: "", note: "Tesco (Peckish)", source: "peckish"}}]});
+    NOW += 15 * 60000; G.c.bankPoll();
+    const r = (id) => grow(G, "transactions").find(x => x.id === id) || {};
+    return {pk: r("t-pk-x1"), mon: r("bk-monzo-tx_x1mon"), thu: r("bk-monzo-tx_x1thu")};
+  };
+  let x = run(false);
+  ok("X1: Thursday's Peckish shop is Thursday's payment, not Monday's checked one", x.pk.bankId === "tx_x1thu" && x.pk.amount === 10.5 && x.mon.deleted !== true && x.mon.amount === 12 && x.mon.split === "half" && !x.thu.id, x);
+  x = run(true);
+  ok("X1: also when the bank brought Thursday's in first", x.pk.bankId === "tx_x1thu" && x.mon.deleted !== true && x.thu.deleted === true, x);
+}
+{
+  // X2: a one-off £300 to the household bills company the day before the bill (£420, it varies). Read alone, it's taken
+  // for the bill, and the bank feed notes the bill came to £300. When the £430 direct debit comes in on the bill's day,
+  // that's the bill (£430), and the £300 comes in as a payment: the £300 the feed noted itself doesn't make the one-off
+  // look like the bill to the penny
+  freshMonzo(); NOW = RealDate.parse("2026-10-31T12:00:00Z");
+  monzo.txns = monzoData(planned).filter(t => t.created < "2026-10-31");
+  monzo.txns.push(mtx("tx_x2oneoff", "2026-10-31", -30000, {counterparty: {name: "HOUSEHOLD BILLS LTD"}, category: "bills", time: "09:00:00"}));
+  const G = bankEnv(); connectMonzo(G, {acc_00009main: "e-main"});
+  const ex = () => (grow(G, "exceptions").find(x => x.id === "x-e-flat-2026-11-01-bank-ethan") || {}).amount;
+  const live = () => grow(G, "transactions").filter(r => /x2/.test(r.id) && r.deleted !== true).map(r => r.id).join();
+  ok("X2: read alone, the one-off is taken for the bill", ex() === 300 && live() === "", [ex(), live()]);
+  NOW = RealDate.parse("2026-11-02T12:00:00Z"); monzo.txns.push(mtx("tx_x2dd", "2026-11-01", -43000, {counterparty: {name: "HOUSEHOLD BILLS LTD"}, category: "bills", time: "07:00:00"}));
+  G.c.bankPoll();
+  ok("X2: the direct debit that then comes in is the bill, and the one-off a payment", ex() === 430 && live() === "bk-monzo-tx_x2oneoff", [ex(), live()]);
+  NOW += 15 * 60000; G.c.bankPoll();
+  ok("X2: and it stays that way", ex() === 430 && live() === "bk-monzo-tx_x2oneoff", [ex(), live()]);
+}
+{
+  // X3: a Peckish shop has no account. Linked to a payment from an account mapped to something other than the main
+  // account, it's that account's, as the bank's own copy would have been (not the main account's)
+  freshMonzo(); NOW = RealDate.parse("2026-11-17T12:00:00Z"); monzo.txns = monzoData(planned);
+  const G = bankEnv(); G.call({key: G.kE, ops: [{op: "put", table: "accounts", row: {id: "e-joint", owner: "ethan", name: "Food account", kind: "main", order: 6}}]});
+  connectMonzo(G, {acc_00009main: "e-joint"});
+  monzo.txns.push(mtx("tx_x3", "2026-11-17", -2210, {merchant: merchant("Aldi", "groceries"), category: "groceries", time: "11:00:00"}));
+  const pk = JSON.parse(Buffer.from(G.call({key: G.kE, action: "app.link", app: "peckish"}).link.split("#connect=")[1], "base64url").toString()).k;
+  G.call({key: pk, ops: [{op: "put", table: "transactions", row: {id: "t-pk-x3", date: "2026-11-17", person: "ethan", amount: 22, budget: "e-food-b", account: "", split: "", note: "Aldi (Peckish)", source: "peckish"}}]});
+  NOW += 15 * 60000; G.c.bankPoll();
+  const r = grow(G, "transactions").find(x => x.id === "t-pk-x3") || {};
+  ok("X3: a linked Peckish shop is the paying account's", r.bankId === "tx_x3" && r.account === "e-joint", r);
+}
+{
+  // X4: a pot's mapping taken off (deleted) in the sheet: mapping it again in Budgie works, rather than saving the
+  // choice on a row that stays taken off (which every read ignores)
+  freshMonzo(); NOW = RealDate.parse("2026-11-17T12:00:00Z"); monzo.txns = monzoData(planned);
+  const G = bankEnv(); connectMonzo(G, {acc_00009main: "e-main", pot_bills: "e-bills"});
+  const sh = G.env.sheets.settings, rowsS = grow(G, "settings"), m = rowsS.find(r => r.id === "ethan:bank.map.pot_bills"), head = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
+  sh.getRange(m._row, head.indexOf("deleted") + 1).setValue(true);
+  ok("X4: taken off, it's not mapped", G.call({key: G.kE, action: "bank.status"}).bank.accounts.find(a => a.extId === "pot_bills").mappedTo === null);
+  G.call({key: G.kE, action: "bank.map", extId: "pot_bills", account: "e-bills"});
+  ok("X4: mapped again, it is", G.call({key: G.kE, action: "bank.status"}).bank.accounts.find(a => a.extId === "pot_bills").mappedTo === "e-bills");
+}
+{
+  // X5: a saving budget of Ethan's typed into the sheet with Sophie's LISA as its account puts her LISA in his payday
+  // plan. His Moneybox payment of that amount still goes to his own LISA, never into hers
+  freshMonzo(); NOW = RealDate.parse("2026-11-17T12:00:00Z"); monzo.txns = monzoData(planned).filter(t => t.id !== "tx_moneybox");
+  monzo.txns.push(mtx("tx_x5", "2026-10-30", -12300, {counterparty: {name: "Moneybox"}, category: "savings", description: "MONEYBOX"}));
+  const G = bankEnv(t => { t.accounts.push({id: "s-lisa", owner: "sophie", name: "Sophie's LISA", kind: "lisa", order: 9}); t.budgets.push({id: "e-odd", person: "ethan", name: "Odd", amount: 123, mode: "saving", account: "s-lisa"}); });
+  connectMonzo(G, {acc_00009main: "e-main"});
+  const m = grow(G, "moves").find(x => x.id === "bk-monzo-tx_x5") || {};
+  ok("X5: a Moneybox payment is only ever a move into your own account", m.to !== "s-lisa" && (!m.to || ["e-lisa", "e-isa"].indexOf(m.to) >= 0), m);
+}
 // ================= read only, always =================
 const allowedPost = ["https://api.monzo.com/oauth2/token", "https://api.monzo.com/oauth2/logout"];
 const bad = reqs.filter(r => { const u = new URL(r.url); return !(r.method === "get" || (r.method === "post" && allowedPost.indexOf(u.origin + u.pathname) >= 0)); });

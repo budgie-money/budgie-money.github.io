@@ -356,21 +356,22 @@ const fails = [], check = (name, cond, extra) => { if (cond) console.log("ok", n
   check("an unknown look is just the standard one", errs.length === errN && /Hi Ethan/.test(T(await page.textContent("#top"))), errs.slice(errN));
   await page.evaluate(() => { const S = window.BudgieApp.S; S.prefs.special = ""; S.prefs.colour = ""; });
   await page.context().close();
-  // long titles fit at 320px (two lines at most, nothing cut off)
-  {
-    const ctx = await browser.newContext({viewport: {width: 320, height: 640}, isMobile: true, hasTouch: true, locale: "en-GB", timezoneId: "Europe/London", serviceWorkers: "block"});
+  // long titles fit at 320px, and on the couple's own phones (384 and 412px wide): two lines at most, nothing cut off
+  const cut = [];
+  for (const width of [320, 384, 412]) {
+    const ctx = await browser.newContext({viewport: {width, height: 640}, isMobile: true, hasTouch: true, locale: "en-GB", timezoneId: "Europe/London", serviceWorkers: "block"});
     page = await ctx.newPage(); await page.clock.install({time: new Date("2026-11-02T19:30:00")});
     await page.goto(links.ethan); await page.waitForFunction(() => /Hi Ethan/.test(document.querySelector("#top").textContent), null, {timeout: 8000});
-    const cut = [];
     for (const [s, p] of [["sharing", null], ["bank", null], ["edit", "income"], ["edit", "transfers"], ["edit", "loans"]]) {
       await page.evaluate(([s, p]) => { if (p) { document.querySelector("#main").insertAdjacentHTML("beforeend", '<button id="zz" type="button" data-a="new" data-v="' + p + '">x</button>'); document.querySelector("#zz").click(); } else window.BudgieApp.go(s); }, [s, p]);
       await page.waitForTimeout(80);
       const r = await page.evaluate(() => { const h = document.querySelector("#top h1"); return {t: h.textContent, cut: h.scrollWidth > h.clientWidth + 1 || h.scrollHeight > h.clientHeight + 1}; });
-      if (r.cut) cut.push(r.t);
+      if (r.cut) cut.push(width + ": " + r.t);
     }
-    check("long titles aren't cut off at 320px", !cut.length, cut);
     await ctx.close();
   }
+  check("long titles aren't cut off at 320px", !cut.some(x => /^320/.test(x)), cut);
+  check("or at 384 and 412px", !cut.length, cut);
   // a LISA bonus that's late says it was due, rather than "by" a day that's gone
   page = await newPage("2026-11-02");
   await page.goto("http://localhost:" + PORT + "/"); await page.click('[data-a="demo"][data-v="on"]'); await page.waitForTimeout(150);
@@ -378,6 +379,38 @@ const fails = [], check = (name, cond, extra) => { if (cond) console.log("ok", n
   const lisaT = T(await page.textContent("main"));
   check("a late LISA bonus says when it was due", /the first was due by/.test(lisaT) && !/the first by (Mon|Tue|Wed|Thu|Fri|Sat|Sun) \d+ (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct)\b/.test(lisaT), (lisaT.match(/Bonus on its way[^.]*\./) || [""])[0]);
   await page.context().close();
+
+  // ===== review 2026-10-27b (1.4.8) =====
+  // "Didn't happen", Undo, then "Didn't happen" again: the second one counts (its id is the same as the first's)
+  {
+    page = await newPage("2026-11-02");
+    await page.goto(links.ethan); await page.waitForFunction(() => /Hi Ethan/.test(document.querySelector("#top").textContent), null, {timeout: 8000});
+    // (the first of his own things in Coming up)
+    const occKey = await page.evaluate(() => { const f = [...document.querySelectorAll(".swipe")].find(x => x.querySelector(".acts") && /@/.test(x.querySelector(".face").dataset.v)); return f ? f.querySelector(".face").dataset.v : ""; });
+    const face = '.swipe .face[data-v="' + occKey + '"]', skip = '#sheets [data-a="occdo"][data-v="skip|' + occKey + '"]', exId = "x-" + occKey.replace("@", "-") + "-skip";
+    const skipIt = async () => { await page.click(face); await page.waitForTimeout(80); await page.click(skip); await page.waitForTimeout(80); };
+    await skipIt(); await page.click('#toast [data-a="undo"]'); await page.waitForTimeout(800);
+    await skipIt(); await page.waitForTimeout(1200);
+    const ex = (await (await page.request.get("http://localhost:" + PORT + "/dump?exceptions")).json()).filter(r => r.id === exId);
+    check("Didn't happen again after an Undo counts, on the phone", !(await page.$(face)), T(await page.textContent("main")).slice(0, 200));
+    check("and in the sheet", !!occKey && ex.length === 1 && ex[0].deleted !== true && ex[0].action === "skip", {occKey, ex});
+    // a sharing setting that was taken off (in the sheet, say) can be turned on again from the app
+    const kE2 = JSON.parse(Buffer.from(links.ethan.split("#connect=")[1], "base64url").toString()).k;
+    await page.request.post("http://localhost:" + PORT + "/exec", {data: JSON.stringify({key: kE2, ops: [{op: "put", table: "settings", row: {id: "ethan:share.payments", person: "ethan", key: "share.payments", value: "false"}}, {op: "delete", table: "settings", id: "ethan:share.payments"}]})});
+    await page.evaluate(() => window.BudgieApp.sync(true)); await page.waitForTimeout(800);
+    await page.evaluate(() => window.BudgieApp.go("sharing")); await page.waitForTimeout(100);
+    await page.click('input[data-c="share"][data-v="payments"]'); await page.waitForTimeout(1200);
+    const sp = (await (await page.request.get("http://localhost:" + PORT + "/dump?settings")).json()).filter(r => r.id === "ethan:share.payments");
+    check("a sharing setting taken off can be turned on again", sp.length === 1 && sp[0].deleted !== true && /^true$/i.test(String(sp[0].value)) && await page.isChecked('input[data-c="share"][data-v="payments"]'), sp);
+    await page.click('input[data-c="share"][data-v="payments"]'); await page.waitForTimeout(800);
+    // a phone whose key has been changed (a new one made after a lost phone) is told what to do, in plain words
+    await page.route("**/exec", r => r.fulfill({status: 200, contentType: "application/json", body: JSON.stringify({ok: false, error: "Wrong app key"})}));
+    await page.evaluate(() => window.BudgieApp.sync(false)); await page.waitForTimeout(400);
+    const keyErr = await page.evaluate(() => window.BudgieApp.S.lastError);
+    await page.unroute("**/exec");
+    check("an old link's key is said in plain words", /connect link/.test(keyErr) && !/app key/i.test(keyErr), keyErr);
+    await page.context().close();
+  }
 
   console.log(errs.length ? "ERRORS:\n" + errs.join("\n") : "No errors");
   console.log(fails.length ? "FAIL\n  " + fails.join("\n  ") : "All checks passed");

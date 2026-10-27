@@ -693,6 +693,19 @@ const phone = (F, k) => { const P = {T: {}, since: 0}; P.sync = (ops) => { const
   ok("R3: an id too long is refused for good (not retried), and the next change still saves", r.rejected.length === 1 && r.rejected[0].retry === false && r.applied.length === 1 && r.applied[0].id === "t-after-long", r.rejected.map(x => [x.error, x.retry]));
 }
 
+// W6: a setting's id ("ethan:share.payments") and a one-date change's id ("x-e-rent-2026-12-15-skip") can't be taken
+// ahead of time in another tab by the other one of you, which would stop the owner making that setting or change
+{
+  const F = fresh();
+  const sq = F.call({key: F.kS, ops: [{op: "put", table: "transactions", row: {id: "ethan:share.payments", date: "2026-10-27", person: "sophie", amount: 1, budget: "s-fun", account: "s-main"}},
+    {op: "put", table: "gifts", row: {id: "ethan:bank.map.pot_bills", person: "sophie", name: "x"}},
+    {op: "put", table: "transactions", row: {id: "x-e-rent-2026-12-15-skip", date: "2026-10-27", person: "sophie", amount: 1, budget: "s-fun", account: "s-main"}},
+    {op: "put", table: "transactions", row: {id: "t-r4-hers", date: "2026-10-27", person: "sophie", amount: 1, budget: "s-fun", account: "s-main"}}]});
+  ok("W6: those ids are refused in other tabs (her own payment still saves)", sq.rejected.map(x => x.i).join() === "0,1,2" && sq.applied.map(x => x.id).join() === "t-r4-hers" && sq.rejected.every(x => /can't change that/.test(x.error)), sq);
+  const e = F.call({key: F.kE, ops: [{op: "put", table: "settings", row: {person: "ethan", key: "share.payments", value: "true"}}, {op: "put", table: "exceptions", row: {id: "x-e-rent-2026-12-15-skip", item: "e-rent", date: "2026-12-15", action: "skip"}}]});
+  ok("W6: so Ethan can still make them", !e.rejected.length && e.applied.length === 2, e.rejected);
+}
+
 // #5 the one-file backend (apps-script/Budgie.gs, made by migrate/build.js) must be built from the current files
 {
   const fs = require("fs"), path = require("path"), dir = path.join(__dirname, ".."), bundle = path.join(dir, "apps-script/Budgie.gs");
@@ -739,6 +752,22 @@ const phone = (F, k) => { const P = {T: {}, since: 0}; P.sync = (ops) => { const
   const F = fresh(), c = F.c;
   ok("P3: 20 digits are kept as text", c.cell_("12345678901234567890") === "'12345678901234567890" && c.cell_("-1234567890123456.5") === "'-1234567890123456.5", [c.cell_("12345678901234567890"), c.cell_("-1234567890123456.5")]);
   ok("P3: ordinary numbers are still numbers to the sheet", c.cell_("123456789012345") === "123456789012345" && c.cell_("12.5") === "12.5" && c.cell_("0.05") === "0.05" && c.cell_("-40") === "-40" && c.cell_(1234567890123456789) === 1234567890123456789);
+}
+
+// ================= review 2026-10-27b (1.4.8) =================
+// K1: Peckish sending its shop again (a name change, or its list catching up), for one the bank matched and you took
+// off in Budgie, isn't Peckish taking it off: it stays off, stays Peckish's, and its note isn't changed
+{
+  const F = fresh(), c = F.c;
+  const kP = JSON.parse(Buffer.from(c.appLink("ethan", "peckish").split("#connect=")[1], "base64url").toString()).k;
+  const shop = {id: "t-pk-k1", date: new Date().toISOString().slice(0, 10), person: "ethan", amount: 12, budget: "e-food-b", note: "Aldi (Peckish)", source: "peckish"};
+  F.call({key: kP, ops: [{op: "put", table: "transactions", row: shop}]});
+  c.CACHE_ = {}; c.applyOne_("ethan", {op: "put", table: "transactions", row: {id: "t-pk-k1", bankId: "monzo:tx_k1"}}, Date.now(), "bank", {sys: true}); c.CACHE_ = {};
+  F.call({key: F.kE, ops: [{op: "delete", table: "transactions", id: "t-pk-k1"}]});
+  const again = F.call({key: kP, ops: [{op: "put", table: "transactions", row: Object.assign({}, shop, {note: "Aldi big shop (Peckish)", deleted: false})}]});
+  c.CACHE_ = {}; const row = c.readTable_("transactions").rows.find(x => x.id === "t-pk-k1");
+  ok("K1: it stays off, and is still Peckish's, without a note saying Peckish took it off", again.applied.length === 1 && row.deleted === true && row.source === "peckish" && !/taken off in Peckish/.test(row.note) && row.review !== true, row);
+  ok("K1: Peckish really taking it off still works", F.call({key: kP, ops: [{op: "delete", table: "transactions", id: "t-pk-k1"}]}).applied.length === 1);
 }
 
 console.log(fails ? fails + " failed, " + passes + " passed" : "All " + passes + " passed");

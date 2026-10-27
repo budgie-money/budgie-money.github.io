@@ -1,7 +1,7 @@
 /* Budgie app: screens, syncing and offline queue. The maths lives in engine.js. */
 (function () {
   "use strict";
-  var B = window.Budgie, TH = window.BudgieThemes, APP_VERSION = "1.4.7";
+  var B = window.Budgie, TH = window.BudgieThemes, APP_VERSION = "1.4.8";
   var $ = function (s) { return document.querySelector(s); };
   var esc = function (s) { return String(s === undefined || s === null ? "" : s).replace(/[&<>"']/g, function (c) { return {"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]; }); };
   // wiped: Budgie's copy at the old address has been wiped (it's moving across), so nothing is saved here again
@@ -66,6 +66,9 @@
   }
   function put(t, row, quiet) {
     row = Object.assign({}, row, {updated: Date.now(), by: me()});
+    // a setting, or a change to one date, has an id made from what it is: making it again after it was taken off
+    // (Undo, or in the sheet) brings it back, rather than leaving it off on the phone and in the sheet
+    if ((t === "settings" || t === "exceptions") && row.deleted === undefined) row.deleted = false;
     upsert(t, row);
     if (!demoOn()) { S.data.queue.push({op: "put", table: t, row: row}); persist(); syncSoon(); }
     dirty(); if (!quiet) render();
@@ -109,6 +112,8 @@
     catch (e) { if (e && e.name === "AbortError") throw e; throw new Error("Couldn't reach your Google Sheet. Check your signal and try again."); }
     try { return await res.json(); } catch (e) { if (e && e.name === "AbortError") throw e; throw new Error("Your Google Sheet didn't answer properly (Google may be busy). Try again in a minute."); }
   }
+  // what the sheet said no with, in plain words (a key that's been changed, after a lost phone, says what to do)
+  function sheetSaid(j) { var e = String(j && j.error || ""); return /^(Wrong|No) app key$/.test(e) ? "This phone's connect link has stopped working, as a new one was made. Open the newest connect link from your Google Sheet." : e || "The sheet said no"; }
   async function sync(full) {
     if (demoOn() || !S.cfg) return;
     // one at a time: a full one asked for meanwhile (Full refresh, a new link) runs as soon as this one is done
@@ -123,7 +128,7 @@
       var ops = S.data.queue.slice(0, 40);
       var j = await askSheet({key: S.cfg.k, since: full ? 0 : S.data.since, full: !!full || !S.data.since, ops: ops}, ctl ? ctl.signal : undefined);
       if (S.cfg !== cfgAt || S.data !== dataAt) return; // disconnected or switched sheets while this was on its way
-      if (!j.ok) throw new Error(j.error || "The sheet said no");
+      if (!j.ok) throw new Error(sheetSaid(j));
       // a change the sheet couldn't save for a passing reason (retry) goes back in the queue. It's only given up on once
       // it has failed a few times over several hours, so a Google hiccup (which can last a while, with a few things
       // logged during it) never loses anything; changes the sheet turned down are dropped (the sheet's copy comes back
@@ -946,7 +951,7 @@
   // ----- Bank connection (read-only: balances, payments, pots or Spaces)
   async function bankCall(action, extra) {
     if (demoOn() || !S.cfg) throw new Error("Not connected to your sheet");
-    var j = await askSheet(Object.assign({key: S.cfg.k, action: action}, extra || {})); if (!j.ok) throw new Error(j.error || "The sheet said no");
+    var j = await askSheet(Object.assign({key: S.cfg.k, action: action}, extra || {})); if (!j.ok) throw new Error(sheetSaid(j));
     return j;
   }
   function bankRefresh() { return bankCall("bank.status").then(function (j) { S.bank = j.bank || {}; S.bank.at = Date.now(); render(true); return S.bank; }, function (e) { S.bank = Object.assign(S.bank || {}, {err: e.message}); render(true); }); }
@@ -1677,7 +1682,8 @@
     toast("Sending anything waiting…");
     S.prefs.demo = false;   // (Show and tell left on here would stop anything being sent; it isn't saved, as this copy is wiped)
     for (var i = 0; i < 5 && S.data.queue.length; i++) { await sync(false); if (S.data.queue.length) await new Promise(function (r) { setTimeout(r, 1500); }); }
-    if (S.data.queue.length) { toast("Couldn't reach your sheet yet. Try again when you have signal."); return; }
+    // (what the sheet said, when it answered: a link whose key has been changed can't move across, whatever the signal)
+    if (S.data.queue.length) { toast(S.lastError && !/^Offline/.test(S.lastError) ? S.lastError : "Couldn't reach your sheet yet. Try again when you have signal."); return; }
     var link = HOME + "#connect=" + btoa(unescape(encodeURIComponent(JSON.stringify({u: S.cfg.u, k: S.cfg.k})))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
     // wipe the old copy so nothing at this address can read it. From here nothing is saved at this address again, and
     // a sync still on its way (one fetching everything again after a refused change, say) is dropped when it answers

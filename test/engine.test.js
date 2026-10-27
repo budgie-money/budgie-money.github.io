@@ -481,7 +481,7 @@ const savedUp = (pl, id) => lineAmt(pl, l => l.setAside && l.bill === id && l.ki
   const bs = B.budgetState(c, me, per);
   eq("compat: budgetState(db, me, per)", ["amount", "spent", "left", "avail", "carryIn", "carryOut", "over"].every(k => k in bs["e-fun"]) && bs["e-fun"].period.start === per.start, true);
   eq("compat: still exported", ["load", "coming", "periodAt", "planFor", "budgetState", "today", "checks", "lisa", "yearly", "yearReview"].every(k => typeof B[k] === "function"), true);
-  eq("compat: version", B.VERSION, "1.4.7");
+  eq("compat: version", B.VERSION, "1.4.8");
 })();
 
 // C3: a payday move ticked in the app and by the bank feed counts once (the latest)
@@ -608,6 +608,50 @@ eq("R1: half of £20.15 shows as what's owed", B.money(B.shareOf(db(), "half", "
   eq("S2: and tells Ethan £100 is coming", B.todo(L, "ethan", "2027-01-28").filter(x => x.type === "loan").map(x => x.amount), [100]);
   eq("S2: Coming up says the same", B.coming(B.load(t, "2027-01-20"), "sophie", "2027-01-20", 14).filter(c => c.table === "loans").map(c => c.amount), [100]);
   eq("S2: Debts lists £100 then £200", B.loans(L, "sophie", "2027-01-20")[0].plan.map(r => r.amount), [100, 200]);
+}
+// ================= review 2026-10-27b (1.4.8) =================
+// L2: a repayment ticked for its own date pays that one, so one still owed from an earlier month stays in To do
+{
+  const t = fixture(), d = "2027-01-28";
+  // December's £200 wasn't ticked; on 28 January Sophie ticks January's, the one due today
+  t.settlements.push({id: "s-jan", date: d, from: "sophie", to: "ethan", amount: 200, loan: "sofa", key: "loan:sofa:2027-01-28"});
+  const L = B.load(t, d), loanTodo = (p, L2, d2) => B.todo(L2, p, d2).filter(x => x.type === "loan").map(x => [x.key, x.amount]);
+  eq("L2: December's repayment is still asked for", loanTodo("sophie", L, d), [["loan:sofa:2026-12-28", 200]]);
+  eq("L2: and Ethan is still told it's coming", loanTodo("ethan", L, d), [["loan:sofa:2026-12-28", 200]]);
+  eq("L2: Debts lists December's and February's as still to pay", B.loans(L, "sophie", d)[0].plan.map(r => r.date + " " + r.amount), ["2026-12-28 200", "2027-02-28 200"]);
+  // money paid early without a repayment's key still pays the earliest first
+  const u = fixture(); u.settlements.push({id: "s-early", date: "2026-12-01", from: "sophie", to: "ethan", amount: 250, loan: "sofa", key: "loan:sofa:early"});
+  eq("L2: an early payment still pays the earliest first", B.loans(B.load(u, "2026-12-02"), "sophie", "2026-12-02")[0].plan.map(r => r.date + " " + r.amount), ["2027-01-28 150", "2027-02-28 200"]);
+  // more than a repayment's own amount under its key: the rest pays the earliest still owed
+  const w = fixture(); w.settlements.push({id: "s-big", date: d, from: "sophie", to: "ethan", amount: 300, loan: "sofa", key: "loan:sofa:2027-01-28"});
+  eq("L2: anything over a repayment pays the earliest still owed", B.loans(B.load(w, d), "sophie", d)[0].plan.map(r => r.date + " " + r.amount), ["2026-12-28 100", "2027-02-28 200"]);
+}
+// T1: a payday move ticked in a new tax year (March's LISA money moved on 7 April) is dated when it was moved, as
+// the bank feed dates it, so it counts towards this tax year's £4,000 and not last year's
+{
+  eq("T1: ticked in the same tax year: dated on payday", B.moveDate("pay:2027-03-25:e-lisa", "2027-04-05"), "2027-03-25");
+  eq("T1: ticked after 6 April: dated the day it was ticked", B.moveDate("pay:2027-03-25:e-lisa", "2027-04-07"), "2027-04-07");
+  const t = fixture(); t.moves.push({id: "m-lisa", date: B.moveDate("pay:2027-03-25:e-lisa", "2027-04-07"), person: "ethan", from: "e-main", to: "e-lisa", amount: 300, key: "pay:2027-03-25:e-lisa"});
+  eq("T1: and the LISA counts it in the new tax year", B.lisa(B.load(t, "2027-04-08"), "e-lisa", "2027-04-08").paidThisYear, 300);
+}
+// P4: a setting typed into the sheet for a person or key called like a built-in name is just a setting
+{
+  const t = fixture(); t.settings.push({person: "__proto__", key: "split", value: "half"}, {person: "ethan", key: "x", value: "1"});
+  const L = B.load(t, "2026-10-28");
+  eq("P4: nothing leaks into JavaScript's own objects", [({}).split, Object.prototype.hasOwnProperty.call(Object.prototype, "split")], [undefined, false]);
+  eq("P4: a setting that isn't there is the default, whatever its name", [B.setting(L, "ethan", "constructor", "d"), B.setting(L, "ethan", "toString", "d"), B.setting(L, "nobody", "valueOf", "d")], ["d", "d", "d"]);
+}
+// P6: an account, budget or payment called like a built-in name (typed into the sheet) adds up like any other
+{
+  const t = fixture(), d = "2026-11-02";
+  t.accounts.push({id: "constructor", owner: "ethan", name: "Odd pot", kind: "pot", order: 6}, {id: "toString", owner: "ethan", name: "Odd LISA", kind: "lisa", order: 7});
+  t.valuations.push({id: "v-odd", account: "constructor", date: "2026-10-26", amount: 70}, {id: "v-odd2", account: "toString", date: "2026-10-26", amount: 500});
+  t.moves.push({id: "isPrototypeOf", date: "2026-10-30", person: "ethan", from: "e-main", to: "toString", amount: 40, key: "lisa:in:1"});
+  t.transactions.push({id: "hasOwnProperty", date: "2026-10-30", person: "ethan", amount: 5, budget: "e-fun", account: "constructor"});
+  const L = B.load(t, d);
+  eq("P6: its balance is its last check plus what's happened since", B.balances(L, d).constructor, 65);
+  eq("P6: and a payment in called isPrototypeOf counts towards the LISA's allowance", B.lisa(L, "toString", d).paidThisYear, 40);
+  eq("P6: and the payment from it is asked back from the pot it's for", B.todo(L, "ethan", d).filter(x => x.type === "move" && x.to === "constructor").map(x => x.amount), [5]);
 }
 console.log(fails ? fails + " failed, " + passes + " passed" : "All " + passes + " passed");
 process.exit(fails ? 1 : 0);

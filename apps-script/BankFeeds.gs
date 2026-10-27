@@ -27,6 +27,8 @@ var STARLING_OK_ = ["account-list:read", "balance:read", "transaction:read", "ac
 var BANK_MAX_STATES_ = 10, BANK_SCOPE_CHECK_ = 86400000, BANK_HISTORY_WINDOW_ = 5 * 60000, BANK_PENDING_DROP_DAYS_ = 7;
 var BANK_DAY_ = 86400000, BANK_STATE_LIFE_ = 10 * 60000, BANK_FIRST_WINDOW_ = 20 * 60000, BANK_RECENT_DAYS_ = 35, BANK_WIDE_DAYS_ = 89;
 var BANK_NAMES_ = {monzo: "Monzo", starling: "Starling"};
+// a food budget, as Peckish sees one (Code.gs)
+var BANK_FOOD_ = typeof APP_RULES_ !== "undefined" && APP_RULES_.peckish && APP_RULES_.peckish.food ? APP_RULES_.peckish.food : /food|grocer/i;
 // Apps Script stops a run after 6 minutes. A first read of years of history stops reading after this long (from the
 // start of the run), saves what it has and carries on from there a minute later, so nothing read is lost
 var BANK_READ_BUDGET_ = 3.5 * 60000, BANK_MAX_PAGES_ = 300, BANK_T0_ = 0;
@@ -510,7 +512,8 @@ function bankMap_(me, b) {
   if (!extId || !(s.accounts || []).some(function (a) { return a.extId === extId; })) return {ok: false, error: "That isn't one of your bank accounts."};
   if (acc) { var a = byId_("accounts", acc); if (!a || a.owner !== me || bankTrue_(a.deleted)) return {ok: false, error: "That isn't one of your accounts in Budgie."}; }
   var lock = LockService.getScriptLock(); lock.waitLock(25000);
-  try { applyOne_(me, {op: "put", table: "settings", row: {id: me + ":bank.map." + extId, person: me, key: "bank.map." + extId, value: acc}}, Date.now(), me); SpreadsheetApp.flush(); }
+  // (one taken off in the sheet is brought back: it's the mapping you've just chosen)
+  try { applyOne_(me, {op: "put", table: "settings", row: {id: me + ":bank.map." + extId, person: me, key: "bank.map." + extId, value: acc, deleted: false}}, Date.now(), me); SpreadsheetApp.flush(); }
   finally { lock.releaseLock(); }
   // the next read goes back further, so moves to a pot you've just mapped come in: bankRun_ sees the mapping row is
   // newer than its last wide read (the status isn't changed here, so this can't undo a read finishing meanwhile)
@@ -583,9 +586,12 @@ function bankRun_(p) {
     // could take the place of the pay the part before saw)
     var payTail = function (d) {
       var to = lastOf(d); if (!to) return [];
-      var from = Budgie.addDays(to, -7);
-      return d.txns.filter(function (t) { return t && t.amount < 0 && !t.pot && !t.card && !t.load && !t.declined && !t.reversed && t.date >= from; }).slice(-10)
-        .map(function (t) { return {id: t.id, acc: t.acc, date: t.date, amount: t.amount, name: String(t.name || "").slice(0, 40)}; });
+      var from = Budgie.addDays(to, -7), have = {};
+      var tail = d.txns.filter(function (t) { return t && t.amount < 0 && !t.pot && !t.card && !t.load && !t.declined && !t.reversed && t.date >= from; })
+        .map(function (t) { have[t.id] = true; return {id: t.id, acc: t.acc, date: t.date, amount: t.amount, name: String(t.name || "").slice(0, 40)}; });
+      // (a short part, of a few days, keeps what the part before it carried from that week too)
+      var before = cursor && Array.isArray(s.payCarry) ? s.payCarry.filter(function (x) { return x && x.id && !have[x.id] && String(x.date) >= from; }) : [];
+      return before.concat(tail).sort(function (x, y) { return x.date < y.date ? -1 : x.date > y.date ? 1 : 0; }).slice(-10);
     };
     var cutNote = function (d) { var last = lastOf(d); return "Monzo stopped sharing older payments part-way through, so Budgie has them " + (last ? "up to " + last + " " : "") + "and the last 90 days"; };
     try { data = read(full, wide); }
@@ -712,7 +718,7 @@ function bankApply_(p, data, windowFrom, payCarry) {
     var rank = function (r) { return (bankTrue_(r.deleted) ? 2 : 0) + (/^bk-/.test(String(r.id)) ? 1 : 0); };
     rawTx.forEach(function (r) { if (r.bankId && r.person === p) { var k = String(r.bankId), cur = byBank[k]; if (!cur || rank(r) < rank(cur)) byBank[k] = r; } byIdRow[r.id] = r; });
     var moveRows = {}; readTable_("moves").rows.forEach(function (r) { moveRows[r.id] = r; });
-    var used = {}, usedOcc = {}, newRows = {transactions: [], moves: [], valuations: [], exceptions: []}, updates = [];
+    var used = Object.create(null), usedOcc = {}, newRows = {transactions: [], moves: [], valuations: [], exceptions: []}, updates = [];
     var near = function (a, b) { return Math.abs(a - b) <= 0.0105; };
     var update = function (t, id, fields) { updates.push({t: t, row: Object.assign({id: id}, fields)}); };
     var create = function (t, row) { newRows[t].push(row); };
@@ -730,27 +736,37 @@ function bankApply_(p, data, windowFrom, payCarry) {
     // estimate: the shop's name, within 15% or £5, within 3 days)
     // needName: only one that names the same shop (linking one logged after the bank had it: one you log by hand then
     // is more likely cash, which a card payment of the same amount mustn't swallow)
-    var findDupe = function (t, needName) {
-      var dupe = null, words = bankMerchantKey_(t.name).split(" ").filter(function (w) { return w.length > 2; });
+    // pkOnly: only a Peckish shop
+    // every row it could be, each with how alike they are (lower is more alike)
+    var dupesOf = function (t, needName, pkOnly) {
+      var out = [], words = bankMerchantKey_(t.name).split(" ").filter(function (w) { return w.length > 2; });
       for (var off = -3; off <= 3; off++) (candDays[D.addDays(t.date, off)] || []).forEach(function (c) {
-        var r = c.r, a = c.a, dd = Math.abs(off); if (used[r.id] || r.bankId) return;
+        var r = c.r, a = c.a, dd = Math.abs(off); if (r.bankId || (pkOnly && !c.pk)) return;
         if (c.pk ? (dd > 3 || Math.abs(a - t.amount) > Math.max(5, t.amount * 0.15)) : (dd > 2 || !near(a, t.amount))) return;
         if (!c.noteWords) c.noteWords = bankMerchantKey_(r.note).split(" ");
         var nameHit = words.some(function (w) { return c.noteWords.indexOf(w) >= 0; });
         // a Peckish shop is only an estimate, so it has to name the shop too: otherwise one posted for any amount could
         // take over a nearby payment somewhere else, carrying the bank's amount back to Peckish and hiding the payment
         if ((c.pk || needName) && !nameHit) return;
-        var score = (nameHit ? 0 : 10) + dd + Math.abs(a - t.amount) / 100;
-        if (!dupe || score < dupe.score || (score === dupe.score && c.i < dupe.i)) dupe = {r: r, score: score, i: c.i};
+        out.push({r: r, score: (nameHit ? 0 : 10) + dd + Math.abs(a - t.amount) / 100, i: c.i});
       });
-      return dupe;
+      return out;
     };
+    // Which row each payment is linked to is picked over the whole read (below, linkPick), like the bills and the pay:
+    // going through the payments in date order, an earlier shop at the same place (Monday's Tesco, already checked as
+    // food) would take the Peckish shop posted for Thursday's, and Thursday's payment would come in on its own
+    var linkPick = {};
+    var findDupe = function (t) { var d = linkPick[t.id]; return d && !used[d.r.id] ? d : null; };
     // link it instead of adding it twice
-    var linkDupe = function (t, dupe) {
+    // was: the bank's copy you'd already checked (what you said it was for stays)
+    var linkDupe = function (t, dupe, was) {
       used[dupe.r.id] = true; byBank[t.id] = dupe.r;
       // the payer's own hand-logged payment is already checked; a Peckish shop still asks them
       var link = {bankId: t.id, review: dupe.r.source === "peckish"};
+      if (was) { link.review = false; link.budget = was.budget || ""; link.split = was.split || ""; }
       if (!near(+dupe.r.amount, t.amount)) link.amount = t.amount;
+      // a shop logged without an account (Peckish's) was paid from the account the bank says (a spending Space, say)
+      var acc = accOf(t.acc, true); if (acc && (dupe.r.account === undefined || dupe.r.account === null || dupe.r.account === "")) link.account = acc;
       update("transactions", dupe.r.id, link);
     };
 
@@ -763,20 +779,29 @@ function bankApply_(p, data, windowFrom, payCarry) {
         if (hit || !pk || !pk.pay || pk.opening) return; var dd = D.diff(pk.start, date); if (dd < 0 || dd > 7) return;
         D.payday(db, p, pk).moves.forEach(function (m) {
           if (hit) return; var acc = accRow[m.to] || {};
-          if (!(to ? m.to === to : kindRe.test(String(acc.kind)))) return;
+          // (only ever to one of your own accounts: a plan typed in the sheet that names your partner's LISA mustn't
+          // turn your Moneybox payment into a move into theirs)
+          if (acc.owner !== p || !(to ? m.to === to : kindRe.test(String(acc.kind)))) return;
           var h = {key: "pay:" + pk.start + ":" + m.to, to: m.to, start: pk.start};
           if (near(m.amount, amount)) hit = h; else if (Math.abs(m.amount - amount) <= m.amount * 0.1) close.push(h);
         });
       });
       return hit || (close.length === 1 ? close[0] : null);
     };
+    // your payday ticks: "app" if one was ticked in your app (or the sheet), "bank" if only by the bank feed
+    var payTicks = {}; db.moves.forEach(function (m) { if (m.person !== p || !/^pay:/.test(String(m.key || ""))) return; payTicks[m.key] = /^bk-/.test(String(m.id)) && payTicks[m.key] !== "app" ? "bank" : "app"; });
     var putMove = function (t, from, to, amount, key, review, note) {
       var id = "bk-" + provider + "-" + t.id, ex = moveRows[id];
       if (ex && ex.person !== p) { Logger.log("Bank feed skipped moves " + id + ": it isn't " + p + "'s."); return; }
       if (ex) { if (!bankTrue_(ex.deleted) && (!near(+ex.amount, amount) || ex.from !== from || ex.to !== to)) update("moves", id, {amount: amount, from: from, to: to}); return; }
       // already ticked in your app: nothing new to add (only your own ticks count: your partner can write any key on
       // a move of theirs, and that mustn't hide one of yours)
-      if (key && /^pay:/.test(key) && db.moveKeysBy[p + "|" + key]) return;
+      // Ticked by another payment from the bank, though, it's a second move of its own (a top-up the same week, say):
+      // it comes in as a move that isn't the payday tick, as two moves with one payday key would count as one
+      if (key && /^pay:/.test(key)) {
+        if (payTicks[key] === "app") return;
+        if (payTicks[key] === "bank") key = "bank:" + t.id; else payTicks[key] = "bank";
+      }
       // a payday move is dated on payday, unless it landed in the next tax year (a LISA or ISA payment on 6 April for a
       // 1 April payday counts towards the new year's allowance and bonus, as the provider counts it)
       var day = t.date; if (/^pay:/.test(key)) { var pd = D.moveDate(key, t.date); if (D.taxYearStart(pd) === D.taxYearStart(t.date)) day = pd; }
@@ -787,25 +812,36 @@ function bankApply_(p, data, windowFrom, payCarry) {
     // to match anyone's payment)
     var partnerWords = bankMerchantKey_(partnerId).split(" ").filter(function (w) { return w.length > 2; });
     var namesPartner = function (t) { return !!partnerWords.length && bankMerchantKey_(t.name).split(" ").some(function (w) { return partnerWords.indexOf(w) >= 0; }); };
-    var plannedOut = function (t, needName) {
-      var toPartner = namesPartner(t);
-      var a = t.amount, win = function (item) { return D.occurrences(db, item, D.addDays(t.date, -3), D.addDays(t.date, 4)); }, hit = null;
+    // every planned item a payment could be, each with how alike they are (lower is more alike: the same name first,
+    // then the nearer day, then the amount to the penny)
+    var bankX = Object.create(null); db.exceptions.forEach(function (x) { if (String(x.id) === "x-" + x.item + "-" + x.date + "-bank-" + p) bankX[x.item + "|" + x.date] = true; });
+    var plannedCands = function (t, needName) {
+      var toPartner = namesPartner(t), out = [], words = bankMerchantKey_(t.name).split(" ").filter(function (w) { return w.length > 2; });
+      var a = t.amount, win = function (item) { return D.occurrences(db, item, D.addDays(t.date, -3), D.addDays(t.date, 4)); };
       db.bills.forEach(function (b) {
-        if (hit || b.person !== p) return;
+        if (b.person !== p) return;
+        var bw = bankMerchantKey_(b.name).split(" "), nameHit = words.some(function (w) { return bw.indexOf(w) >= 0; });
+        if (needName && !nameHit) return;   // a card payment only counts as a bill if the names agree (a subscription, say)
         win(b).forEach(function (o) {
-          if (hit || usedOcc[o.key]) return;
-          var base = D.amountAt(db, b, o.orig), nameHit = bankMerchantKey_(t.name).split(" ").some(function (w) { return w.length > 2 && bankMerchantKey_(b.name).split(" ").indexOf(w) >= 0; });
-          if (needName && !nameHit) return;   // a card payment only counts as a bill if the names agree (a subscription, say)
-          if (near(a, o.amount) || near(a, base) || (b.variable && nameHit && Math.abs(a - base) <= base * 0.5)) hit = {kind: "bill", item: b, occ: o};
+          // (an amount the bank feed itself set for that date, from the payment an earlier read took for it, isn't what
+          // was expected: weighed against it, that payment would keep the bill when the bill's own payment comes in)
+          var base = D.amountAt(db, b, o.orig), exact = near(a, base) || (!bankX[b.id + "|" + o.orig] && near(a, o.amount));
+          if (exact || (b.variable && nameHit && Math.abs(a - base) <= base * 0.5)) out.push({kind: "bill", item: b, occ: o, score: (nameHit ? 0 : 10) + Math.abs(D.diff(o.date, t.date)) + (exact ? 0 : 1 + Math.abs(a - base) / base)});
         });
       });
-      if (!hit && needName) return null;
-      if (!hit) db.transfers.forEach(function (tr) { if (!hit && tr.from === p) win(tr).forEach(function (o) { if (!hit && !usedOcc[o.key] && near(a, o.amount)) hit = {kind: "transfer", occ: o}; }); });
+      if (needName) return out;
+      db.transfers.forEach(function (tr) { if (tr.from === p) win(tr).forEach(function (o) { if (near(a, o.amount)) out.push({kind: "transfer", occ: o, score: (toPartner ? 0 : 10) + Math.abs(D.diff(o.date, t.date)) + 0.001}); }); });
       // a payment between you two logged by your partner only counts if the bank names them (else a made-up one could
       // hide one of your payments)
-      if (!hit) db.settlements.forEach(function (s) { if (!hit && s.from === p && !usedOcc["set:" + s.id] && near(a, +s.amount) && Math.abs(D.diff(s.date, t.date)) <= 2 && (/^(|sheet)$/.test(String(s.by || "")) || s.by === p || toPartner)) hit = {kind: "settlement", occ: {key: "set:" + s.id}}; });
-      return hit;
+      db.settlements.forEach(function (s) { if (s.from === p && near(a, +s.amount) && Math.abs(D.diff(s.date, t.date)) <= 2 && (/^(|sheet)$/.test(String(s.by || "")) || s.by === p || toPartner)) out.push({kind: "settlement", occ: {key: "set:" + s.id}, score: (toPartner ? 0 : 10) + Math.abs(D.diff(s.date, t.date)) + 0.002}); });
+      return out;
     };
+    // Which payment each planned item is: the one most like it over the whole read, as for the pay. Going through the
+    // payments in date order instead, a different payment of the same amount a few days before a bill (£20 to a friend
+    // before a £20 phone bill) would be taken for the bill and left out, and the bill's own payment would come in as
+    // spending. Only payments that would be looked at for a planned item are weighed.
+    var planPick = {};
+    var plannedOut = function (t) { var h = planPick[t.id]; return h && !usedOcc[h.occ.key] ? h : null; };
     // Which money in is the pay: each payday goes to the one most like it (the amount expected, on the day), never a
     // top-up (Monzo's is_load) or money from your partner, and each payment is at most one payday. Picked over the whole
     // read at once, so a pay-sized transfer from savings a day before payday can't take the pay's place.
@@ -845,6 +881,39 @@ function bankApply_(p, data, windowFrom, payCarry) {
     var last = {}; data.txns.forEach(function (t, i) { if (t && t.id) last[t.id] = i; });
     var txList = data.txns.filter(function (t, i) { return t && t.id && last[t.id] === i; }).sort(function (x, y) { return x.date < y.date ? -1 : x.date > y.date ? 1 : 0; });
     payScan(txList.concat((payCarry || []).filter(function (x) { return x && x.id && x.date && !bankHas_(last, x.id); }).map(function (x) { return {id: String(x.id), acc: x.acc, date: String(x.date), amount: +x.amount, name: String(x.name || "")}; })));
+    // (the same payments the loop below would ask about a planned item: money out, not a move, no row yet)
+    var lisaAcc = D.accountsOf(db, p).filter(function (a) { return a.kind === "lisa"; })[0], isaAcc = D.accountsOf(db, p).filter(function (a) { return a.kind === "isa"; })[0];
+    var planPairs = [];
+    txList.forEach(function (t, i) {
+      if (!t.date || t.declined || t.reversed || !(t.amount > 0) || t.pot || !accOf(t.acc, true)) return;
+      if (byBank[t.id] || byIdRow["bk-" + provider + "-" + t.id]) return;
+      var mv = moveRows["bk-" + provider + "-" + t.id]; if (mv && mv.person === p && !bankTrue_(mv.deleted)) return;
+      if (/moneybox/i.test(t.name) && (lisaAcc || isaAcc || paydayMatch(null, t.amount, t.date, /lisa|isa/))) return;
+      plannedCands(t, t.card).forEach(function (h) { planPairs.push({t: t, i: i, h: h}); });
+    });
+    planPairs.sort(function (x, y) { return x.h.score - y.h.score || x.i - y.i; });
+    var planTook = {}; planPairs.forEach(function (x) { if (planTook[x.h.occ.key] || planPick[x.t.id]) return; planTook[x.h.occ.key] = true; planPick[x.t.id] = x.h; });
+    // Which row you logged (by hand, or Peckish) each payment is, over the whole read: each pair the loop below could
+    // link, best first, each row and each payment at most once. Which pairs those are follows the loop exactly:
+    // - a payment with no row yet (not a pot move, Moneybox move or planned item): one logged to the penny, or a
+    //   Peckish shop that names the shop
+    // - the bank's copy, not checked yet: one that names the shop
+    // - the bank's copy, checked as food: a Peckish shop that names the shop
+    var linkPairs = [];
+    txList.forEach(function (t, ti) {
+      if (!t.date || t.declined || t.reversed || !(t.amount > 0) || t.pot || !accOf(t.acc, true)) return;
+      var mine = byBank[t.id] || byIdRow["bk-" + provider + "-" + t.id], mv = moveRows["bk-" + provider + "-" + t.id];
+      if ((mine && mine.person !== p) || (mv && mv.person === p && !bankTrue_(mv.deleted))) return;
+      var box = /moneybox/i.test(t.name) && !!(lisaAcc || isaAcc || paydayMatch(null, t.amount, t.date, /lisa|isa/)), mode = null;
+      if (!mine) mode = box || planPick[t.id] ? null : {};
+      else if (/^bk-/.test(mine.id) && !bankTrue_(mine.deleted)) {
+        if (bankTrue_(mine.review)) mode = box ? null : {needName: true};
+        else { var mb = db.byId[mine.budget]; mode = mb && mb.person === p && db.budgets.indexOf(mb) >= 0 && BANK_FOOD_.test(String(mb.name || "")) ? {needName: true, pkOnly: true} : null; }
+      }
+      if (mode) dupesOf(t, mode.needName, mode.pkOnly).forEach(function (d) { linkPairs.push({t: t, ti: ti, d: d}); });
+    });
+    linkPairs.sort(function (x, y) { return x.d.score - y.d.score || x.ti - y.ti || x.d.i - y.d.i; });
+    var linkTook = Object.create(null); linkPairs.forEach(function (x) { if (linkTook[x.d.r.id] || linkPick[x.t.id]) return; linkTook[x.d.r.id] = true; linkPick[x.t.id] = x.d; });
     txList.forEach(function (t) {
       if (!t.date) return;
       seen[t.id] = true;
@@ -890,7 +959,6 @@ function bankApply_(p, data, windowFrom, payCarry) {
         if (/moneybox/i.test(t.name)) {
           var lisaB = null; db.budgets.forEach(function (b) { if (!lisaB && b.person === p && b.mode === "saving" && /lisa/.test(String((db.byId[b.account] || {}).kind))) lisaB = b; });
           var pmx = paydayMatch(null, t.amount, t.date, /lisa|isa/);
-          var lisaAcc = D.accountsOf(db, p).filter(function (a) { return a.kind === "lisa"; })[0], isaAcc = D.accountsOf(db, p).filter(function (a) { return a.kind === "isa"; })[0];
           var target = lisaB && near(D.amountAt(db, lisaB, t.date), t.amount) && lisaAcc ? lisaAcc : (isaAcc || lisaAcc);
           if ((pmx || target) && asMove()) {
             if (pmx) putMove(t, acc, pmx.to, t.amount, pmx.key, false, t.name); else putMove(t, acc, target.id, t.amount, "bank:" + t.id, true, t.name);
@@ -899,7 +967,7 @@ function bankApply_(p, data, windowFrom, payCarry) {
         }
         if (isMove) return;
         {
-          var po = mine ? null : plannedOut(t, t.card);
+          var po = mine ? null : plannedOut(t);
           if (po) {
             usedOcc[po.occ.key] = true;
             if (po.kind === "bill" && !near(t.amount, po.occ.amount)) exception(po.item.id, po.occ.orig, t.amount, "from " + label);
@@ -921,10 +989,19 @@ function bankApply_(p, data, windowFrom, payCarry) {
       // posted later) and haven't checked yet: the one you logged is linked to it and the bank's copy is taken off, so it
       // isn't counted twice. (The same rules as linking one you logged before the bank saw it, and it has to name the
       // same shop.)
-      if (mine && /^bk-/.test(mine.id) && !bankTrue_(mine.deleted) && bankTrue_(mine.review) && t.amount > 0) {
-        var later = findDupe(t, true);
-        if (later) { linkDupe(t, later); update("transactions", mine.id, {deleted: true}); return; }
+      // A Peckish shop posted after you'd already checked the bank's copy as food is the same shop too (Peckish posts
+      // when you log the shop there, whether or not you've checked it in Budgie yet): it's linked the same way, and
+      // keeps what you said the payment was for. One you log by hand after checking the bank's copy is left as its own
+      // payment (more likely cash).
+      // (which ones qualify is worked out with the pairs above)
+      if (mine && /^bk-/.test(mine.id) && !bankTrue_(mine.deleted) && t.amount > 0) {
+        var later = findDupe(t);
+        if (later) { linkDupe(t, later, bankTrue_(mine.review) ? null : mine); update("transactions", mine.id, {deleted: true}); return; }
       }
+      // one payment, one row: the bank's own copy of one that's linked to a row you logged (left by a write the sheet
+      // couldn't make, between linking the one you logged and taking the bank's copy off) is taken off
+      var twin = byIdRow["bk-" + provider + "-" + t.id];
+      if (mine && !/^bk-/.test(mine.id) && !bankTrue_(mine.deleted) && twin && twin !== mine && twin.person === p && String(twin.bankId) === String(t.id) && !bankTrue_(twin.deleted)) update("transactions", twin.id, {deleted: true});
       if (mine) {
         var f = {}, confirmed = !bankTrue_(mine.review);
         // dismissed on a phone: it stays dismissed. Taken off by the bank feed itself (a hold that seemed to have gone):

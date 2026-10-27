@@ -298,5 +298,14 @@ const yearHousehold = (fx) => {
   ok("no clash with installTriggers or installPriceTrigger", mine.indexOf("installTriggers") < 0 && mine.indexOf("installPriceTrigger") < 0);
 }
 
+// ================= review 2026-10-27b (1.4.8) =================
+// P5: a settings row typed into the sheet for a "person" called __proto__ is nobody's: it can't turn the email on
+// for someone else, or send their money to its address
+{
+  const {env, c} = setupEnv(fx => { optIn(fx, "ethan", "ethan@example.com"); fx.settings.push({person: "__proto__", key: "email.sunday", value: "true"}, {person: "__proto__", key: "email.to", value: "someone@example.com"}); });
+  const sent = c.exSendSunday_(SUNDAY);
+  ok("P5: only Ethan, who turned it on, gets an email", JSON.stringify(sent) === JSON.stringify(["ethan"]) && env.mail.every(m => m.to === "ethan@example.com"), {sent, to: env.mail.map(m => m.to)});
+}
+
 console.log(fails ? fails + " failed, " + passes + " passed" : "All " + passes + " passed");
 process.exit(fails ? 1 : 0);

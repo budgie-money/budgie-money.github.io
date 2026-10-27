@@ -6,7 +6,7 @@
   else root.Budgie = factory();
 })(this, function () {
   "use strict";
-  var VERSION = "1.4.7";
+  var VERSION = "1.4.8";
 
   // ---------- dates ----------
   function D(s) { var p = String(s).split("-"); return new Date(Date.UTC(+p[0], +p[1] - 1, +p[2])); }
@@ -138,6 +138,9 @@
   // results are cached per loaded data set (the data never changes after load)
   // a value asked for while it's still being worked out (the first tracked month looking back) gets the fallback
   var BUSY = {};
+  // a map keyed by ids or names with no built-in keys, so an account or payment called "constructor" or "valueOf"
+  // (typed into the sheet) is only ever itself
+  function dict() { return Object.create(null); }
   function memo(db, key, fn, fallback) {
     var c = db._c; if (!c) return fn();
     if (Object.prototype.hasOwnProperty.call(c, key)) return c[key] === BUSY ? (typeof fallback === "function" ? fallback() : fallback) : c[key];
@@ -170,13 +173,14 @@
     db.exceptions.forEach(function (x) { (db.byItem.exceptions[x.item] = db.byItem.exceptions[x.item] || []).push(x); });
     db.accounts.sort(function (a, b) { return (+a.order || 99) - (+b.order || 99); });
     ["accounts", "income", "bills", "budgets", "splits", "transfers", "loans", "goals", "people"].forEach(function (t) { db[t].forEach(function (r) { db.byId[r.id] = r; }); });
-    db.set = {};
-    db.settings.forEach(function (s) { var p = s.person || "all"; (db.set[p] = db.set[p] || {})[s.key] = s.value; });
+    // (no built-in keys either: a setting typed in for a person or key called "__proto__" or "constructor" is just a setting)
+    db.set = Object.create(null);
+    db.settings.forEach(function (s) { var p = s.person || "all"; (db.set[p] = db.set[p] || Object.create(null))[s.key] = s.value; });
     // a payday move ticked twice (in the app and by the bank feed) counts once: the latest one
     var payTick = {};
     db.moves.forEach(function (m) { if (!/^pay:/.test(m.key || "")) return; var k = m.person + "|" + m.key, c = payTick[k]; if (!c || (+m.updated || 0) >= (+c.updated || 0)) payTick[k] = m; });
     db.moves.forEach(function (m) { if (/^pay:/.test(m.key || "") && payTick[m.person + "|" + m.key] !== m) m.dup = true; });
-    db.moveKeys = {}; db.moveKeysBy = {};
+    db.moveKeys = dict(); db.moveKeysBy = dict();
     db.moves.forEach(function (m) { if (m.key && !m.dup) { db.moveKeys[m.key] = (db.moveKeys[m.key] || 0) + (+m.amount || 0) + 1e-9; var pk = m.person + "|" + m.key; db.moveKeysBy[pk] = (db.moveKeysBy[pk] || 0) + (+m.amount || 0) + 1e-9; } });
     // a LISA payment copied from the provider's statement that is the same money as a move ticked in Budgie
     // (same account and amount, within 5 days) only counts once
@@ -184,7 +188,7 @@
       if (!/^lisa:in/.test(m.key || "") || !m.to) return;
       m.dup = db.moves.some(function (o) { return o !== m && !o.dup && !/^lisa:/.test(o.key || "") && o.to === m.to && Math.abs((+o.amount || 0) - (+m.amount || 0)) < 0.005 && Math.abs(diff(o.date, m.date)) <= 5; });
     });
-    db.settleKeys = {};
+    db.settleKeys = dict();
     db.settlements.forEach(function (s) { if (s.key) db.settleKeys[s.key] = true; });
     // yearly costs: a bill that comes round every 3 months or more has money set aside for it each pay period,
     // unless setAside is turned off ("FALSE"); left blank, it follows the schedule
@@ -206,7 +210,8 @@
     }
     return false;   // once
   }
-  function setting(db, person, key, dflt) { var v = (db.set[person] || {})[key]; if (v === undefined || v === "") v = (db.set.all || {})[key]; return v === undefined || v === "" ? dflt : v; }
+  var NO_SETTINGS = Object.freeze(Object.create(null));
+  function setting(db, person, key, dflt) { var v = (db.set[person] || NO_SETTINGS)[key]; if (v === undefined || v === "") v = (db.set.all || NO_SETTINGS)[key]; return v === undefined || v === "" ? dflt : v; }
   function person(db, id) { return db.byId[id] || {id: id, name: id}; }
   function partnerOf(db, p) { var me = person(db, p); if (me.partner) return me.partner; var o = db.people.filter(function (x) { return x.id !== p; })[0]; return o ? o.id : ""; }
   function accountsOf(db, p) { return db.accounts.filter(function (a) { return a.owner === p; }); }
@@ -217,8 +222,10 @@
   // what one person has ticked off under a key (a move is always its own person's, so the other one's moves never
   // tick off something of yours, whatever key they carry)
   function ticked(db, p, key) { return db.moveKeysBy[p + "|" + key] || 0; }
-  // the day a ticked move should be dated: payday moves belong to their payday, everything else to the day you tick it
-  function moveDate(key, today) { var m = String(key || "").match(/^pay:(\d{4}-\d{2}-\d{2}):/); return m && m[1] <= today ? m[1] : today; }
+  // the day a ticked move should be dated: payday moves belong to their payday, everything else to the day you tick it.
+  // A payday move ticked once a new tax year has begun (March's LISA money moved on 7 April) is dated the day it moved,
+  // as the bank feed dates it, so it counts towards the tax year it really went in
+  function moveDate(key, today) { var m = String(key || "").match(/^pay:(\d{4}-\d{2}-\d{2}):/); return m && m[1] <= today && taxYearStart(m[1]) === taxYearStart(today) ? m[1] : today; }
   // to the penny, halves away from zero, without the float slips (1.005 is £1.01, and -0.005 is -£0.01)
   var round = function (n) { n = +n || 0; var a = Math.round(Math.abs(n) * 100 + 1e-7) / 100; return n < 0 && a ? -a : a; };
 
@@ -229,7 +236,7 @@
     var sp = db.byId[splitId], txt = sp ? sp.shares : (splitId === "half" ? "" : splitId);
     var people = db.people.map(function (x) { return x.id; });
     if (!txt || /^half$/i.test(txt)) return people.indexOf(who) >= 0 ? amount / Math.max(1, people.length) : 0;
-    var fixed = {}, parts = {}, rest = amount;
+    var fixed = dict(), parts = dict(), rest = amount;
     String(txt).split(/[,;]+/).forEach(function (bit) {
       var m = bit.trim().match(/^([a-z0-9_-]+)\s*([:=])\s*([\d.]+)$/i); if (!m) return;
       if (m[2] === "=") { fixed[m[1].toLowerCase()] = +m[3]; } else parts[m[1].toLowerCase()] = +m[3];
@@ -334,9 +341,9 @@
   function budgetState(db, p, per) { return memo(db, "bs|" + p + "|" + per.start, function () { return bs0(db, p, per); }, {}); }
   // one pay period at a time, building on the one before
   function bs0(db, p, per) {
-    var st = startOf(db, p), res = {};
+    var st = startOf(db, p), res = dict();
     if (per.next <= st) return res;
-    var pv = per.start > st ? prevPeriod(db, p, per) : null, prev = pv && pv.start < per.start ? budgetState(db, p, pv) : {};
+    var pv = per.start > st ? prevPeriod(db, p, per) : null, prev = pv && pv.start < per.start ? budgetState(db, p, pv) : dict();
     var plan = planFor(db, p, per);
     budgetsOf(db, p, per).forEach(function (b) {
       if (!isSpend(db, b)) return;
@@ -356,7 +363,7 @@
   // happened that day, so payday on the first day isn't counted twice)
   function startBalances(db, p) {
     return memo(db, "sb|" + p, function () {
-      var st = startOf(db, p), res = Object.assign({}, balances(db, st));
+      var st = startOf(db, p), res = Object.assign(dict(), balances(db, st));
       flows(db, addDays(st, -1), st).forEach(function (f) { if (res[f.account] !== undefined) res[f.account] = round(res[f.account] - f.amount); });
       return res;
     });
@@ -444,19 +451,19 @@
     // money saved into a pot for something later (a sinking fund) is kept for that pot's bills, carried from period to period
     var pvR = per.opening ? null : prevPeriod(db, p, per), prevPl = pvR && pvR.start < from && pvR.next > st ? planFor(db, p, pvR) : null;
     // saIn: what's been set aside so far for each yearly cost (by bill), kept apart from the saving-budget reserve
-    var resIn = prevPl ? (prevPl.reserveOut || {}) : {}, saIn = prevPl ? (prevPl.setAside || {}) : {}, reserveOut = {}, setOut = {}, saShort = {};
+    var resIn = prevPl ? (prevPl.reserveOut || dict()) : dict(), saIn = prevPl ? (prevPl.setAside || dict()) : dict(), reserveOut = dict(), setOut = dict(), saShort = dict();
     var potOk = function (id) { var a = db.byId[id]; return a && a.owner === p && a.kind === "pot" && !a.fallback; };
     Object.keys(resIn).forEach(function (id) { reserveOut[id] = resIn[id]; });
-    var est = !per.opening && from >= st && (!db.today || from <= addDays(db.today, 1) || upcoming), bal = {}, keepOf = function () { return 0; };
+    var est = !per.opening && from >= st && (!db.today || from <= addDays(db.today, 1) || upcoming), bal = dict(), keepOf = function () { return 0; };
     if (est) {
-      var first = from === st, dayBefore = addDays(from, -1), pv = prevPeriod(db, p, per), bst = !first && pv && pv.start < from ? budgetState(db, p, pv) : {};
-      bal = Object.assign({}, first ? startBalances(db, p) : balances(db, dayBefore));
+      var first = from === st, dayBefore = addDays(from, -1), pv = prevPeriod(db, p, per), bst = !first && pv && pv.start < from ? budgetState(db, p, pv) : dict();
+      bal = Object.assign(dict(), first ? startBalances(db, p) : balances(db, dayBefore));
       // what each budget keeps in its pot: what carries over, and before payday whatever is still left to spend
       // (including "whatever is left" budgets, which can still be spent until payday)
       keepOf = function (accId) { var k = 0; Object.keys(bst).forEach(function (id) { var s = bst[id]; if ((s.budget.account || main) !== accId || s.budget.mode === "saving") return; k += upcoming ? Math.max(s.carryOut || 0, (s.avail || 0) - (s.spent || 0), 0) : (s.carryOut || 0); }); return k; };
       // moves still on the To do count as done, so a forgotten tick doesn't ask for the money twice;
       // but a balance checked on or after the move already includes it, so that side is left alone
-      var vd = {}; db.valuations.forEach(function (v) { if (v.date <= dayBefore && v.date > (vd[v.account] || "")) vd[v.account] = v.date; });
+      var vd = dict(); db.valuations.forEach(function (v) { if (v.date <= dayBefore && v.date > (vd[v.account] || "")) vd[v.account] = v.date; });
       var pendMove = function (from2, to2, amt, when) {
         if (bal[from2] !== undefined && !(vd[from2] >= when)) bal[from2] = round(bal[from2] - amt);
         if (bal[to2] !== undefined && !(vd[to2] >= when)) bal[to2] = round(bal[to2] + amt);
@@ -473,9 +480,9 @@
     // The money set aside is carried in plan.setAside (by bill), like the saving-budget reserve (fix #13), but kept
     // apart: it only ever pays its own bill. A pot can also have a saving budget of its own (say "Car fund"): both
     // are kept, and neither counts the other's money, so nothing is counted twice.
-    var held = {}, usedE = {}, saDue = {};
+    var held = dict(), usedE = dict(), saDue = dict();
     if (!per.opening && from >= st) {
-      var sab = setAsideBills(db, p), saReal = {}, byAcc = {};
+      var sab = setAsideBills(db, p), saReal = dict(), byAcc = dict();
       sab.forEach(function (b) { var acc = b.account || main; (byAcc[acc] = byAcc[acc] || []).push(b); });
       // once the period has started (or is next), only what's really in the pot counts as set aside
       Object.keys(byAcc).forEach(function (acc) {
@@ -538,16 +545,27 @@
   function loanPaid(db, l, upTo) {
     var t = 0; db.settlements.forEach(function (s) { if (s.loan === l.id && (!upTo || s.date <= upTo)) t += +s.amount || 0; }); return round(t);
   }
-  // planned repayments: repay amount on repayDay each month from repayFrom until cleared; settled ones marked
+  // planned repayments: repay amount on repayDay each month from repayFrom until cleared; settled ones marked.
+  // A payment ticked for one repayment (its key names the loan and that date) pays that one; anything else (paid
+  // early in one go, or more than that repayment) pays the earliest still owed. So ticking this month's while last
+  // month's is still owed leaves last month's in To do (it's never hidden by this month's key).
   function loanPlan(db, l) {
     var out = [], left = +l.amount || 0, paid = loanPaid(db, l), rp = +l.repay || 0;
     if (!rp || !l.repayFrom) return out;
     var dates = scheduleDates({unit: "month", on: l.repayDay || +l.repayFrom.slice(8, 10), start: l.repayFrom}, l.repayFrom, addDays(l.repayFrom, 3660));
-    var credit = paid;
+    var own = Object.create(null);
+    db.settlements.forEach(function (s) { if (s.loan === l.id && s.key && +s.amount > 0) own[s.key] = (own[s.key] || 0) + (+s.amount); });
     for (var i = 0; i < dates.length && left > 0.004; i++) {
-      var a = Math.min(rp, left), covered = Math.min(a, credit); credit -= covered; left -= a;
-      out.push({date: dates[i], amount: round(a), paid: covered >= a - 0.004, left: round(a - covered), key: "loan:" + l.id + ":" + dates[i]});
+      var a = Math.min(rp, left), key = "loan:" + l.id + ":" + dates[i], mine = Math.min(a, own[key] || 0); left -= a;
+      if (mine) own[key] -= mine;
+      out.push({date: dates[i], amount: round(a), covered: mine, key: key});
     }
+    var credit = paid; out.forEach(function (r) { credit -= r.covered; });
+    out.forEach(function (r) {
+      var more = Math.min(r.amount - r.covered, Math.max(0, credit)); credit -= more;
+      var covered = r.covered + more; delete r.covered;
+      r.paid = covered >= r.amount - 0.004; r.left = round(r.amount - covered);
+    });
     return out;
   }
 
@@ -596,7 +614,7 @@
   // (flows on a valuation's own date are already in it)
   function balances(db, date) { return memo(db, "bal|" + date, function () { return bal0(db, date); }); }
   function bal0(db, date) {
-    var res = {}, base = {}, vdate = {}, vupd = {};
+    var res = dict(), base = dict(), vdate = dict(), vupd = dict();
     db.accounts.forEach(function (a) { res[a.id] = 0; base[a.id] = addDays(startOf(db, a.owner), -1); });
     db.valuations.forEach(function (v) {
       if (v.date > date || res[v.account] === undefined) return;
@@ -628,9 +646,9 @@
         list.filter(own).forEach(function (x) { left -= myShare(db, p, x); });
         // one combined move per pot and reason, so ten small shops make one To do item
         var lastDate = list[list.length - 1].date;
-        var agg = {}, bump = function (key, from, to, a, kind, date) { if (!(a > 0.004)) return; var g = agg[key] = agg[key] || {key: key, from: from, to: to, amount: 0, kind: kind, name: b.name.toLowerCase(), date: ""}; g.amount += a; if (date > g.date) g.date = date; };
+        var agg = dict(), bump = function (key, from, to, a, kind, date) { if (!(a > 0.004)) return; var g = agg[key] = agg[key] || {key: key, from: from, to: to, amount: 0, kind: kind, name: b.name.toLowerCase(), date: ""}; g.amount += a; if (date > g.date) g.date = date; };
         // payments and refunds through each other account, netted (only my share: the other share comes back from my partner)
-        var byPayer = {}, payerDate = {}, payers = [];
+        var byPayer = dict(), payerDate = dict(), payers = [];
         list.filter(function (x) { return !own(x); }).forEach(function (x) {
           var payer = x.account || main; if (byPayer[payer] === undefined) { byPayer[payer] = 0; payers.push(payer); }
           byPayer[payer] += myShare(db, p, x); if (!payerDate[payer] || x.date > payerDate[payer]) payerDate[payer] = x.date;
@@ -655,7 +673,7 @@
   // returns pending moves and reminders for a person today
   function todo(db, p, today) {
     var per = periodAt(db, p, today), main = mainOf(db, p), fb = fallbackOf(db, p), st = startOf(db, p);
-    var bal = balances(db, today), items = [], pend = {};
+    var bal = balances(db, today), items = [], pend = dict();
     var avail = function (a) { return round((bal[a] || 0) + (pend[a] || 0)); };
     var plan = function (key, from, to, amount, what, why, extra) {
       amount = round(amount); if (!(amount > 0.004) || from === to) return;
@@ -680,7 +698,7 @@
       });
     });
     // the same move from older months or other budgets becomes one item (ticking it saves each part)
-    var grouped = [], at = {}, joinNames = function (a) { a = a.filter(function (x, i) { return a.indexOf(x) === i; }); return a.length < 2 ? a.join("") : a.slice(0, -1).join(", ") + " and " + a[a.length - 1]; };
+    var grouped = [], at = dict(), joinNames = function (a) { a = a.filter(function (x, i) { return a.indexOf(x) === i; }); return a.length < 2 ? a.join("") : a.slice(0, -1).join(", ") + " and " + a[a.length - 1]; };
     items.forEach(function (it) {
       it.keys = [{key: it.key, amount: it.amount}];
       if (it.type !== "move" || it.payday || !it.names) { grouped.push(it); return; }
@@ -695,8 +713,8 @@
     items = grouped;
     // 3. a pot that will run short before payday
     var flowsAhead = flows(db, today, addDays(per.next, -1));
-    var run = {}; Object.keys(bal).forEach(function (a) { run[a] = avail(a); });
-    var warned = {};
+    var run = dict(); Object.keys(bal).forEach(function (a) { run[a] = avail(a); });
+    var warned = dict();
     flowsAhead.sort(function (a, c) { return a.date < c.date ? -1 : 1; }).forEach(function (f) {
       if (run[f.account] === undefined || (db.byId[f.account] || {}).owner !== p) return;
       run[f.account] = round(run[f.account] + f.amount);
@@ -736,7 +754,7 @@
   // ---------- payday sort ----------
   function payday(db, p, per) { return memo(db, "pd|" + p + "|" + per.start + "|" + per.next, function () { return pd0(db, p, per); }); }
   function pd0(db, p, per) {
-    var pl = planFor(db, p, per), main = mainOf(db, p), need = {}, why = {};
+    var pl = planFor(db, p, per), main = mainOf(db, p), need = dict(), why = dict();
     var payAcc = (pl.lines.filter(function (l) { return l.isPay; })[0] || {}).account || main;
     pl.lines.forEach(function (l) {
       if (l.kind === "in") { if (l.account !== payAcc && !l.isPay) { need[l.account] = (need[l.account] || 0) - l.amount; } return; }
@@ -827,7 +845,7 @@
     });
     var cash = 0, main = mainOf(db, p);
     // cap by money actually there (spending accounts minus what's still due before payday)
-    var spendAccs = {}; tiles.forEach(function (t) { var b = db.byId[t.id]; if (t.day !== null) spendAccs[b.account || main] = true; });
+    var spendAccs = dict(); tiles.forEach(function (t) { var b = db.byId[t.id]; if (t.day !== null) spendAccs[b.account || main] = true; });
     var committed = 0; flows(db, date, addDays(per.next, -1)).forEach(function (f) { if (spendAccs[f.account]) committed += f.amount; });
     Object.keys(spendAccs).forEach(function (a) { cash += bal[a] || 0; });
     // money set aside for a yearly cost that isn't due before payday isn't spare
@@ -861,7 +879,7 @@
 
   // ---------- pots view ----------
   function pots(db, p, date) {
-    var bal = balances(db, date), items = todo(db, p, date), pend = {};
+    var bal = balances(db, date), items = todo(db, p, date), pend = dict();
     items.forEach(function (t) { if (t.type === "move") { pend[t.from] = (pend[t.from] || 0) - t.amount; pend[t.to] = (pend[t.to] || 0) + t.amount; } });
     return accountsOf(db, p).filter(function (a) { return /main|pot|saving/.test(a.kind || "pot"); }).map(function (a) {
       return {id: a.id, name: a.name, kind: a.kind, purpose: a.purpose, now: round(bal[a.id] || 0), should: round((bal[a.id] || 0) + (pend[a.id] || 0)), pending: round(pend[a.id] || 0), fallback: !!a.fallback};
@@ -901,7 +919,7 @@
   function lisa(db, accId, date) {
     var tys = taxYearStart(date), paid = 0, all = 0;
     // history copied from the provider's statement lives in moves with keys lisa:in / lisa:bonus / lisa:fee
-    var bonusIds = {}, feeIds = {}, bonusIn = 0, fees = 0;
+    var bonusIds = dict(), feeIds = dict(), bonusIn = 0, fees = 0;
     db.moves.forEach(function (m) {
       if (/^lisa:bonus/.test(m.key || "") && m.to === accId) { bonusIds[m.id] = 1; if (m.date >= tys && m.date <= date) bonusIn += +m.amount || 0; }
       if (/^lisa:fee/.test(m.key || "") && m.from === accId) { feeIds[m.id] = 1; if (m.date >= tys && m.date <= date) fees += +m.amount || 0; }
@@ -1024,7 +1042,7 @@
   function yearReview(db, p, tys) {
     var from = taxYearStart(parseDate(tys) || db.today || startOf(db, p)), to = addDays(ymd(+from.slice(0, 4) + 1, 3, 6), -1), st = startOf(db, p);
     var until = db.today && db.today < to ? db.today : to, lo = maxS(from, st), end = addDays(until, 1), live = lo <= until;
-    var main = mainOf(db, p), tin = 0, tbill = 0, billsBy = {}, billList = [];
+    var main = mainOf(db, p), tin = 0, tbill = 0, billsBy = dict(), billList = [];
     var addBill = function (id, name, amt) { var x = billsBy[id]; if (!x) { x = billsBy[id] = {id: id, name: name, amount: 0, count: 0}; billList.push(x); } x.amount += amt; x.count++; tbill += amt; };
     if (live) {
       db.income.forEach(function (i) { if (i.person === p) occurrences(db, i, lo, end).forEach(function (o) { tin += o.amount; }); });
@@ -1049,7 +1067,7 @@
       db.transactions.forEach(function (x) { if (x.date >= lo && x.date <= until && mineSaving(x.account)) saved -= +x.amount || 0; });
     }
     // spending by budget and by calendar month, and the days you spent nothing
-    var spentBy = {}, spentList = [], months = {}, spendDay = {}, byName = {};
+    var spentBy = dict(), spentList = [], months = {}, spendDay = {}, byName = dict();
     db.budgets.forEach(function (b) { if (b.person === p) byName[String(b.name).toLowerCase()] = b; });
     if (live) db.transactions.forEach(function (x) {
       if (x.date < lo || x.date > until) return;
@@ -1072,7 +1090,7 @@
     });
     Object.keys(L).forEach(function (k) { L[k] = round(L[k]); });
     // goals at the start: the day before the tax year, or, when tracking started during it, the balances you started with
-    var gStart = lo > st ? addDays(lo, -1) : lo, g0 = {}; goals(db, p, gStart).forEach(function (g) { g0[g.id] = g.saved; });
+    var gStart = lo > st ? addDays(lo, -1) : lo, g0 = dict(); goals(db, p, gStart).forEach(function (g) { g0[g.id] = g.saved; });
     billList.forEach(function (x) { x.amount = round(x.amount); });
     saved = round(saved); tin = round(tin);
     return {from: from, to: to, until: until, "in": tin, bills: round(tbill), billsBy: billList.sort(function (a, b) { return b.amount - a.amount; }),
@@ -1087,7 +1105,7 @@
   // that hasn't had its value checked in the last 30 days. It isn't stored: a new valuation clears it, and
   // "It's right" (settings check:<id> = done) hides it for that month only, as the id carries the month.
   function checks(db, p, date) {
-    var s = db.set[p] || {}, out = [];
+    var s = db.set[p] || NO_SETTINGS, out = [];
     Object.keys(s).forEach(function (k) {
       if (!/^check:/.test(k) || !s[k] || /^done$/i.test(String(s[k]))) return;
       var c; try { c = JSON.parse(s[k]); } catch (e) { c = {t: String(s[k])}; }

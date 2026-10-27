@@ -412,6 +412,10 @@ function applyOne_(me, op, now, by, opts) {
     if (/^t-pk-/.test(id) && app !== "peckish") throw refuse_("That id is kept for Peckish");
     if (t === "settings" && (String(src.person) !== String(me) || id !== me + ":" + src.key)) throw refuse_("A setting's id is your name and its key");
     if (t === "exceptions" && !exceptionIdOk_(id, src.item)) throw cant();
+    // the shapes of the ids a setting and a one-date change get ("ethan:bank.map.…", "x-<item>-<date>-…") are kept for
+    // those tabs: anywhere else, one made ahead of time would stop its owner making that setting or change (mapping a
+    // pot, turning on sharing, skipping a bill on a date)
+    if ((t !== "settings" && id.indexOf(":") >= 0) || (t !== "exceptions" && /^x-/.test(id))) throw cant();
     // an id another tab already uses (someone else's account, a bill) is turned away, with the same wording as
     // any other refusal, so it never shows whether a row exists
     if (idUsedElsewhere_(t, id)) throw cant();
@@ -439,7 +443,8 @@ function applyOne_(me, op, now, by, opts) {
     row.id = id;
   }
   if (!sys && !app) { var will = writers_(t, row); if (will !== null && will.indexOf(me) < 0) throw cant(); }
-  if (app && existing && existing.bankId && (op.op === "delete" || toBoolCell_(row.deleted))) {
+  // (only when Peckish asks to take it off: sending its shop again, for one you took off in Budgie, leaves it as it is)
+  if (app && existing && existing.bankId && (op.op === "delete" || toBoolCell_(src.deleted))) {
     // the bank has matched this shop to a real payment: Peckish taking it off only unlinks it from Peckish, and the
     // payment stays in Budgie for its person to check, so a real payment can't vanish
     if (existing.person !== me || existing.source !== app) throw refuse_(NOT_ALLOWED_);

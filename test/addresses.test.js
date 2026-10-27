@@ -120,6 +120,24 @@ async function setup(b, slowHome) {
     ok("no page errors moving while the sheet turns a change down", errs.length === 0, errs);
     await ctx.close();
   }
+  // 5) the old home with a key that's been changed since (a new one made after a lost phone): moving says why it can't,
+  // rather than blaming the phone signal
+  {
+    const {ctx, errs, watch} = await setup(b), p = await ctx.newPage(); watch(p);
+    await p.goto("https://alertrobot.github.io/budgie/");
+    await p.evaluate(([u, k]) => new Promise(res => {
+      localStorage.setItem("budgie.cfg", JSON.stringify({u, k}));
+      const r = indexedDB.open("budgie", 1); r.onupgradeneeded = () => r.result.createObjectStore("kv");
+      r.onsuccess = () => { const tx = r.result.transaction("kv", "readwrite"); tx.objectStore("kv").put({tables: {}, since: 0, me: "ethan", queue: [{op: "put", table: "transactions", row: {id: "t-old-key", date: "2026-10-26", person: "ethan", amount: 2, budget: "e-fun", account: "e-main"}}]}, "data"); tx.oncomplete = () => { r.result.close(); res(); }; };
+    }), [SHEET, "b".repeat(64)]);
+    await p.reload(); await p.waitForTimeout(1200);
+    await p.click('[data-a="moveme"]');
+    await p.waitForFunction(() => /connect link|signal/.test(document.querySelector("#toast").textContent), null, {timeout: 20000}).catch(() => {});
+    const said = T(await p.textContent("#toast"));
+    ok("moving with a changed key says the link has stopped working, not the signal", /connect link/.test(said) && !/signal/.test(said) && /alertrobot/.test(p.url()), said);
+    ok("no page errors moving with a changed key", errs.length === 0, errs);
+    await ctx.close();
+  }
   console.log("PASS\n  " + out.join("\n  ")); console.log("FAIL\n  " + fail.join("\n  ")); process.exitCode = fail.length ? 1 : 0;
   await b.close();
 })();
