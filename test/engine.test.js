@@ -481,7 +481,7 @@ const savedUp = (pl, id) => lineAmt(pl, l => l.setAside && l.bill === id && l.ki
   const bs = B.budgetState(c, me, per);
   eq("compat: budgetState(db, me, per)", ["amount", "spent", "left", "avail", "carryIn", "carryOut", "over"].every(k => k in bs["e-fun"]) && bs["e-fun"].period.start === per.start, true);
   eq("compat: still exported", ["load", "coming", "periodAt", "planFor", "budgetState", "today", "checks", "lisa", "yearly", "yearReview"].every(k => typeof B[k] === "function"), true);
-  eq("compat: version", B.VERSION, "1.4.9");
+  eq("compat: version", B.VERSION, "1.4.10");
 })();
 
 // C3: a payday move ticked in the app and by the bank feed counts once (the latest)
@@ -677,6 +677,42 @@ eq("R1: half of £20.15 shows as what's owed", B.money(B.shareOf(db(), "half", "
   const L = B.load(t, d);
   eq("L3: To do asks Sophie for the £50 left of December's", B.todo(L, "sophie", d).filter(x => x.type === "loan").map(x => [x.key, x.amount]), [["loan:sofa:2026-12-28", 50]]);
   eq("L3: as Debts does", B.loans(L, "sophie", d)[0].plan.map(r => r.date + " " + r.amount)[0], "2026-12-28 50");
+}
+// ================= review 2026-10-27d (1.4.10) =================
+// S1: what a split payment owes is to the penny, so settling up the £10.08 shown for half of £20.15 leaves nothing
+// over: half of a later £9 is £4.50 owed, not £4.51
+{
+  const t = fixture(), d = "2026-11-02";
+  t.transactions.push({id: "t-s1a", date: d, person: "ethan", amount: 20.15, budget: "e-fun", account: "e-main", split: "half"});
+  t.settlements.push({id: "s-s1", date: d, from: "sophie", to: "ethan", amount: 10.08, key: "split:" + d});
+  t.transactions.push({id: "t-s1b", date: d, person: "sophie", amount: 9, budget: "s-food", account: "s-main", split: "half"});
+  const L = B.load(t, d);
+  eq("S1: Ethan owes Sophie £4.50", B.between(L, "ethan", d).iOwe, 4.5);
+  eq("S1: and Sophie's phone says the same", B.between(L, "sophie", d).owedToMe, 4.5);
+  eq("S1: To do asks for £4.50", B.todo(L, "ethan", d).filter(x => x.type === "settle").map(x => x.amount), [4.5]);
+}
+// F2: a pot filled from the fallback pot before a payment (the main account couldn't) is put back on the next payday,
+// like covering for going over
+{
+  const t = fixture(), d = "2026-11-10";
+  const L0 = B.load(t, "2026-10-30"), per = B.periodAt(L0, "ethan", "2026-10-30");
+  B.payday(L0, "ethan", per).moves.forEach((m, i) => t.moves.push({id: "pm" + i, date: per.start, person: "ethan", from: m.from, to: m.to, amount: m.amount, key: "pay:" + per.start + ":" + m.to}));
+  t.transactions.push({id: "t-f2", date: "2026-11-09", person: "ethan", amount: 100, budget: "e-fun", account: "e-main"});
+  t.exceptions.push({id: "x-e-rent-2026-11-16-amount", item: "e-rent", date: "2026-11-16", action: "amount", amount: 1500});
+  const fill = B.todo(B.load(t, d), "ethan", d).filter(x => x.fill);
+  eq("F2: the fill comes from the Emergency pot, and says it's put back", fill.map(x => [x.from, x.to, x.amount, /next pay tops the Emergency pot back up/.test(x.why)]), [["e-emergency", "e-bills", 300, true]]);
+  t.moves.push({id: "m-f2", date: d, person: "ethan", from: "e-emergency", to: "e-bills", amount: 300, key: fill[0].keys[0].key});
+  const L = B.load(t, "2026-11-27"), pl = B.planFor(L, "ethan", B.periodAt(L, "ethan", "2026-11-27"));
+  eq("F2: the next payday tops the Emergency pot back up", pl.lines.filter(l => l.kind === "topup").map(l => [l.account, l.amount]), [["e-emergency", 300]]);
+}
+// F3: a pot filled before a payment that then needs more (the bill came in higher after the move was ticked) is asked
+// for the rest, rather than the ticked move hiding it
+{
+  const t = fixture(), d = "2026-11-02"; t.valuations.push({id: "v-sm", account: "s-main", date: "2026-10-26", amount: 2000});
+  t.moves.push({id: "m-f3", date: d, person: "sophie", from: "s-main", to: "s-rent", amount: 640, key: "fill:s-rent:2026-11-13"});
+  eq("F3: (once it's ticked, nothing more is asked)", B.todo(B.load(t, d), "sophie", d).filter(x => x.fill).length, 0);
+  t.exceptions.push({id: "x-s-to-e-rent-2026-11-13-amount", item: "s-to-e-rent", date: "2026-11-13", action: "amount", amount: 550});
+  eq("F3: £50 more is asked for when the payment goes up", B.todo(B.load(t, d), "sophie", d).filter(x => x.fill).map(x => [x.from, x.to, x.amount]), [["s-main", "s-rent", 50]]);
 }
 console.log(fails ? fails + " failed, " + passes + " passed" : "All " + passes + " passed");
 process.exit(fails ? 1 : 0);

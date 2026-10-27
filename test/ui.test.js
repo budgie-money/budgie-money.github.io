@@ -453,6 +453,27 @@ const fails = [], check = (name, cond, extra) => { if (cond) console.log("ok", n
     await page.context().close();
   }
 
+  // ===== review 2026-10-27d (1.4.10) =====
+  // a bill's real amount is for the one that came in (not the next one due), and says which; one left empty isn't saved as £0
+  {
+    page = await newPage("2026-11-20");
+    await page.goto(links.ethan); await page.waitForFunction(() => /Hi Ethan/.test(document.querySelector("#top").textContent), null, {timeout: 8000});
+    await page.evaluate(() => { document.querySelector("#sheets").innerHTML = ""; window.BudgieApp.go("add"); });
+    await page.click('[data-a="addmode"][data-v="bill"]'); await page.click('[data-a="addpick"][data-v="bill:e-flat"]');
+    await page.fill("#addAmt", "431.20"); await page.click('[data-a="addsave"]'); await page.waitForTimeout(150);
+    const said = T(await page.textContent("#toast"));
+    check("a bill's real amount is for the one that came in, and says which", /Household bills on Sun 1 Nov saved as £431\.20/.test(said), said);
+    await page.waitForTimeout(1500); const ex4 = (await (await page.request.get("http://localhost:" + PORT + "/dump?exceptions")).json()).filter(r => r.item === "e-flat" && r.action === "amount");
+    check("(saved for 1 Nov, not 1 Dec)", ex4.length === 1 && ex4[0].date === "2026-11-01" && +ex4[0].amount === 431.2, ex4);
+    await page.evaluate(() => window.BudgieApp.go("today")); await page.waitForTimeout(100);
+    const occ3 = await page.evaluate(() => { const f = [...document.querySelectorAll(".swipe")].find(x => x.querySelector(".acts")); return f ? f.querySelector(".face").dataset.v : ""; });
+    await page.click('.swipe .face[data-v="' + occ3 + '"]'); await page.waitForTimeout(80); await page.click('#sheets [data-a="occdo"][data-v="amount|' + occ3 + '"]'); await page.waitForTimeout(80);
+    await page.fill("#occAmt", ""); await page.click('[data-a="occsave"][data-v="amount"]'); await page.waitForTimeout(1500);
+    const ex3 = (await (await page.request.get("http://localhost:" + PORT + "/dump?exceptions")).json()).filter(r => r.id === "x-" + occ3.replace("@", "-") + "-amount");
+    check("an empty real amount isn't saved as £0", !ex3.some(r => +r.amount === 0), ex3);
+    await page.context().close();
+  }
+
   console.log(errs.length ? "ERRORS:\n" + errs.join("\n") : "No errors");
   console.log(fails.length ? "FAIL\n  " + fails.join("\n  ") : "All checks passed");
   process.exitCode = fails.length ? 1 : 0;

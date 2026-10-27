@@ -6,7 +6,7 @@
   else root.Budgie = factory();
 })(this, function () {
   "use strict";
-  var VERSION = "1.4.9";
+  var VERSION = "1.4.10";
 
   // ---------- dates ----------
   function D(s) { var p = String(s).split("-"); return new Date(Date.UTC(+p[0], +p[1] - 1, +p[2])); }
@@ -440,6 +440,8 @@
         reimbursements(db, p, pvT, addDays(pvT.next, -1)).forEach(function (g) { if (g.kind === "over" && g.from === fb) top += g.amount; });
         // (by person: you can both be paid on the same day, and the key doesn't say whose pay it was)
         if (pvT.pay && !pvT.opening) top += db.moveKeysBy[p + "|pay:" + pvT.start + ":cover"] || 0;
+        // and what it really put into a pot that would have run short before a payment (a ticked move to fill it)
+        db.moves.forEach(function (m) { if (!m.dup && m.person === p && m.from === fb && /^fill:/.test(m.key || "") && m.date >= pvT.start && m.date < pvT.next) top += +m.amount || 0; });
       }
       top = round(top);
       if (top > 0.004) lines.push({kind: "topup", name: "Top up " + accName(db, fb), amount: top, account: fb, id: "topup"});
@@ -678,7 +680,9 @@
     var plan = function (key, from, to, amount, what, why, extra) {
       amount = round(amount); if (!(amount > 0.004) || from === to) return;
       if (extra && extra.partial) { amount = round(amount - ticked(db, p, key)); if (!(amount > 0.004)) return; what = "Move " + money(amount) + " from " + accName(db, from) + " to " + accName(db, to); }
-      else if (ticked(db, p, key)) return;
+      // (a move to fill a pot is only asked for while the pot is still short, with what it's ticked already counted, so
+      // one that's been ticked doesn't hide a shortfall that's grown since)
+      else if (!(extra && extra.fill) && ticked(db, p, key)) return;
       // keys: what ticking it saves (a move added after the grouping below, like one to fill a pot, is ticked by its own key)
       var it = {key: key, type: "move", from: from, to: to, fromName: accName(db, from), toName: accName(db, to), amount: amount, what: what, why: why, short: false, keys: [{key: key, amount: amount}]};
       for (var k in extra) it[k] = extra[k];
@@ -725,7 +729,7 @@
         // the main account if it will have the money by then, else the fallback pot; only shown once the money is actually there
         var src = (run[main] || 0) - need >= -0.004 ? main : (fb && fb !== f.account && (run[fb] || 0) - need >= -0.004 ? fb : "");
         if (src && avail(src) - need >= -0.004) {
-          plan("fill:" + f.account + ":" + f.date, src, f.account, need, "Move " + money(need) + " from " + accName(db, src) + " to " + accName(db, f.account), f.what + " on " + nice(f.date) + " needs it.", {fill: true});
+          plan("fill:" + f.account + ":" + f.date, src, f.account, need, "Move " + money(need) + " from " + accName(db, src) + " to " + accName(db, f.account), f.what + " on " + nice(f.date) + " needs it." + (src === fb ? " Your next pay tops the " + accName(db, fb) + " back up." : ""), {fill: true});
           run[src] = round(run[src] - need); run[f.account] = 0;
         } else if (!src) {
           // "Got it" saves a move with this key: the warning stays away (a new date or pot makes a new one)
@@ -793,15 +797,17 @@
   function between(db, p, today) {
     var q = partnerOf(db, p), owed = 0; // + means q owes p
     var st = maxS(startOf(db, p), startOf(db, q)), monthStart = today.slice(0, 8) + "01", month = {bills: 0, myShare: 0, theirShare: 0, paidIn: 0, paidOut: 0};
+    // what each payment or bill owes is to the penny (half of £20.15 is the £10.08 that's settled), so settling up
+    // leaves nothing over to drift into the next amount owed
     db.transactions.forEach(function (x) {
       if (!x.split || x.date > today || x.date < st) return;
-      if (x.person === p) owed += shareOf(db, x.split, q, +x.amount, x.person);
-      if (x.person === q) owed -= shareOf(db, x.split, p, +x.amount, x.person);
+      if (x.person === p) owed += round(shareOf(db, x.split, q, +x.amount, x.person));
+      if (x.person === q) owed -= round(shareOf(db, x.split, p, +x.amount, x.person));
     });
     db.bills.forEach(function (b) {
       if (!b.split || (b.person !== p && b.person !== q)) return;
       occurrences(db, b, st, addDays(today, 1)).forEach(function (o) {
-        var theirs = shareOf(db, b.split, b.person === p ? q : p, o.amount, b.person), sign = b.person === p ? 1 : -1;
+        var theirs = round(shareOf(db, b.split, b.person === p ? q : p, o.amount, b.person)), sign = b.person === p ? 1 : -1;
         if (o.date < monthStart) owed += sign * theirs;
         else { month.bills += o.amount; if (b.person === p) month.theirShare += theirs; else month.myShare += theirs; }
       });

@@ -1,7 +1,7 @@
 /* Budgie app: screens, syncing and offline queue. The maths lives in engine.js. */
 (function () {
   "use strict";
-  var B = window.Budgie, TH = window.BudgieThemes, APP_VERSION = "1.4.9";
+  var B = window.Budgie, TH = window.BudgieThemes, APP_VERSION = "1.4.10";
   var $ = function (s) { return document.querySelector(s); };
   var esc = function (s) { return String(s === undefined || s === null ? "" : s).replace(/[&<>"']/g, function (c) { return {"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]; }); };
   // wiped: Budgie's copy at the old address has been wiped (it's moving across), so nothing is saved here again
@@ -1308,7 +1308,7 @@
     calday: function (v) { calDay(v); }, occ: function (v) { occSheet(v); }, occskip: function (v) { occSheet(v); occDo("skip"); }, occdo: function (v) { var k = v.split("|"); occDo(k[0]); },
     occsave: function (v) {
       var o = S.ui.occ, c = o.c, id = "x-" + c.item + "-" + o.orig;
-      if (v === "amount") { var a = +String(($("#occAmt") || {}).value || "").replace(/[£,\s]/g, ""); if (!(a >= 0)) return; put("exceptions", {id: id + "-amount", item: c.item, date: o.orig, action: "amount", amount: B.round(a)}); }
+      if (v === "amount") { var raw = String(($("#occAmt") || {}).value || "").replace(/[£,\s]/g, ""), a = +raw; if (raw === "" || !(a >= 0)) return; put("exceptions", {id: id + "-amount", item: c.item, date: o.orig, action: "amount", amount: B.round(a)}); }
       if (v === "move") { var nd = ($("#occDate") || {}).value; if (!nd) return; put("exceptions", {id: id + "-move", item: c.item, date: o.orig, action: "move", newDate: nd}); }
       closeSheet(); toast("Saved. Your budget has updated.");
     },
@@ -1409,11 +1409,13 @@
       var date = a.date || todayIso();
       if (a.mode === "bill") {
         var b = db().byId[a.bill]; if (!b) { toast("Choose which bill it was"); return; }
-        var occ = B.occurrences(db(), b, B.addDays(date, -25), B.addDays(date, 26)).sort(function (x, y) { return Math.abs(B.diff(x.date, date)) - Math.abs(B.diff(y.date, date)); })[0];
+        // the one it was ("When was it?"): the latest on or before that day, or failing that the next one due
+        var near = B.occurrences(db(), b, B.addDays(date, -25), B.addDays(date, 26)), was = near.filter(function (o) { return o.date <= date; });
+        var occ = was.length ? was[was.length - 1] : near[0];
         if (!occ) { toast("That bill isn't due near that date"); return; }
         var orig = occ.key.split(/[@+]/)[1];
         put("exceptions", {id: "x-" + b.id + "-" + orig + "-amount", item: b.id, date: orig, action: "amount", amount: amt});
-        toast(b.name + " saved as " + M(amt) + (b.split ? " and re-split" : ""));
+        toast(b.name + " on " + B.nice(occ.date) + " saved as " + M(amt) + (b.split ? " and re-split" : ""));
       } else {
         var row = put("transactions", {id: newId("t"), date: date, person: me(), amount: amt, budget: a.budget, account: a.account || B.mainOf(db(), me()), split: a.split ? (a.splitId || "half") : "", note: a.note || "", source: "app"}, true);
         toast("Logged " + M(amt), {t: "transactions", ids: [row.id]});
