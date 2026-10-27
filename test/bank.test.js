@@ -987,7 +987,7 @@ const grow = (G, t) => { G.c.CACHE_ = {}; return G.c.readTable_(t).rows; };
   const render = (bank, personBank) => {
     const ctx = {SCREENS: {}, S: {bank: bank, cfg: {u: "https://script.google.com/macros/s/X/exec"}, ui: {}}, B: {accountsOf: () => [{id: "e-main", name: "Main"}], mainOf: () => "e-main", accName: (d, id) => id, nice: (x) => x},
       demoOn: () => false, person: () => ({bank: personBank}), card: (h) => "<div class=card>" + h + "</div>", esc: (x) => String(x), bankRefresh: () => {}, db: () => ({}), me: () => "ethan",
-      M: (n) => "£" + n, ago: () => "now", reviewRows: () => [], bankName: () => bank.provider === "starling" ? "Starling" : "Monzo"};
+      M: (n) => "£" + n, ago: () => "now", reviewRows: () => [], infoBtn: () => "", bankName: () => bank.provider === "starling" ? "Starling" : "Monzo"};
     vm.createContext(ctx); vm.runInContext(src, ctx); return ctx.SCREENS.bank();
   };
   const base = {connected: false, needsReconnect: true, needsSetup: false, accounts: [{extId: "acc_1", name: "Current", kind: "main", mappedTo: "e-main"}], lastError: "Monzo needs reconnecting"};
@@ -1079,6 +1079,59 @@ const grow = (G, t) => { G.c.CACHE_ = {}; return G.c.readTable_(t).rows; };
   ok("T1b: an item id in two tabs: its changes are nobody's to see or make", !so.rows.exceptions.some(x => /e-energy/.test(x.id)) && ed.rejected.length === 1 && ed.applied.length === 0, {ex: so.rows.exceptions, ed});
   ok("T1b: and the bank doesn't make one for it", !grow(G, "exceptions").some(x => x.id === "x-e-energy-2026-11-10-bank-ethan"));
   ok("T1b: an account sharing its id with another tab's row still takes the bank's payments", grow(G, "transactions").some(r => r.id === "bk-monzo-tx_boots" && r.account === "e-main") && grow(G, "valuations").some(v => v.id === "bk-acc_00009main-2026-11-17"), grow(G, "transactions").map(r => r.id));
+}
+
+{
+  // T1c: a bill paid a day before it was planned is moved to the day it went out, so the balance the bank gives (which
+  // already has it taken off) doesn't have it taken off again the next day and the pot doesn't look short; once only,
+  // and not across a payday (that period's moves would change)
+  freshMonzo(); NOW = RealDate.parse("2026-11-27T20:00:00Z");
+  monzo.txns = [mtx("tx_voxi", "2026-11-27", -1200, {counterparty: {name: "VOXI"}, category: "bills"}), mtx("tx_gym", "2026-11-25", -2700, {counterparty: {name: "GYM CO"}, category: "bills"})];
+  const G = bankEnv(t => {
+    t.bills.push({id: "e-voxi2", person: "ethan", name: "VOXI phone", amount: 12, account: "e-main", unit: "month", on: "28", start: "2026-11-01"});
+    t.bills.push({id: "e-gym2", person: "ethan", name: "Gym", amount: 27, account: "e-main", unit: "month", on: "26", start: "2026-11-01"});
+  });
+  connectMonzo(G, {acc_00009main: "e-main"});
+  const mv = () => grow(G, "exceptions").filter(x => /bankday/.test(x.id));
+  ok("T1c: the bill paid a day early is moved to that day", mv().length === 1 && mv()[0].id === "x-e-voxi2-2026-11-28-bankday-ethan" && mv()[0].action === "move" && mv()[0].newDate === "2026-11-27" && mv()[0].date === "2026-11-28", mv());
+  ok("T1c: and it's still the bill, not a payment", !grow(G, "transactions").some(r => r.id === "bk-monzo-tx_voxi" || r.id === "bk-monzo-tx_gym"), grow(G, "transactions").map(r => r.id));
+  G.c.CACHE_ = {}; const db = B.load(G.c.allTables_(), "2026-11-27");
+  ok("T1c: the engine has it on the day it went out", B.occurrences(db, db.byId["e-voxi2"], "2026-11-01", "2026-12-01").map(o => o.date).join() === "2026-11-27", B.occurrences(db, db.byId["e-voxi2"], "2026-11-01", "2026-12-01"));
+  ok("T1c: one paid the day before payday (another pay period) isn't moved", !mv().some(x => /e-gym2/.test(x.id)));
+  NOW += 20 * 60000; const n0 = grow(G, "exceptions").length, r2 = G.call({key: G.kE, action: "bank.syncNow"});
+  ok("T1c: a later read finds the same bill and changes nothing", r2.ok && grow(G, "exceptions").length === n0 && mv().length === 1 && !grow(G, "transactions").some(r => r.id === "bk-monzo-tx_voxi"), {r2, ex: mv()});
+}
+
+{
+  // T1d: pay that comes in the day before payday starts the new pay period that day: the pay's day is moved, payday's
+  // moves into the pots that same morning are payday's (not left asking again), and the next read changes nothing.
+  // Pay on its own day, or late, isn't moved.
+  const early = (day) => {
+    // connected the day before, so the pay and that morning's moves come in one ordinary read
+    freshMonzo(); NOW = RealDate.parse("2026-10-27T12:00:00Z");
+    const all = monzoData(planned);
+    monzo.txns = all.filter(t => t.created < "2026-10-28");
+    const G = bankEnv(); connectMonzo(G, {acc_00009main: "e-main", pot_bills: "e-bills", pot_food: "e-food"});
+    NOW = RealDate.parse(day + "T12:00:00Z");
+    all.filter(t => /tx_pay|tx_pot/.test(t.id)).forEach(t => monzo.txns.push(Object.assign({}, t, {created: t.created.replace("2026-10-29", day), settled: t.settled.replace("2026-10-29", day)})));
+    G.c.bankPoll();
+    return G;
+  };
+  let G = early("2026-10-28");
+  const bd = () => grow(G, "exceptions").filter(x => /bankday/.test(x.id) && x.deleted !== true);
+  ok("T1d: pay a day early is moved to that day", bd().length === 1 && bd()[0].id === "x-e-pay-2026-10-29-bankday-ethan" && bd()[0].newDate === "2026-10-28", bd());
+  G.c.CACHE_ = {}; let db = B.load(G.c.allTables_(), "2026-10-28");
+  ok("T1d: and the new pay period starts that day", B.periodAt(db, "ethan", "2026-10-28").start === "2026-10-28", B.periodAt(db, "ethan", "2026-10-28"));
+  const keys = () => grow(G, "moves").filter(m => /tx_pot/.test(m.id)).map(m => m.key).sort().join();
+  ok("T1d: that morning's moves into the pots are payday's", keys() === "pay:2026-10-28:e-bills,pay:2026-10-28:e-food", keys());
+  const pdLeft = () => { G.c.CACHE_ = {}; const d = B.load(G.c.allTables_(), "2026-10-28"); return B.todo(d, "ethan", "2026-10-28").filter(x => x.payday && (x.to === "e-bills" || x.to === "e-food")).length; };
+  ok("T1d: so payday doesn't ask for them again", pdLeft() === 0, pdLeft());
+  NOW += 15 * 60000; const n0 = grow(G, "exceptions").length; G.c.bankPoll();
+  ok("T1d: the next read changes nothing", grow(G, "exceptions").length === n0 && bd().length === 1 && keys() === "pay:2026-10-28:e-bills,pay:2026-10-28:e-food" && pdLeft() === 0, {ex: bd(), keys: keys()});
+  G = early("2026-10-29");
+  ok("T1d: pay on its own day isn't moved", !grow(G, "exceptions").some(x => /bankday/.test(x.id)));
+  G = early("2026-10-30");
+  ok("T1d: nor pay that comes in late", !grow(G, "exceptions").some(x => /bankday/.test(x.id)));
 }
 
 {
@@ -1619,11 +1672,14 @@ const grow = (G, t) => { G.c.CACHE_ = {}; return G.c.readTable_(t).rows; };
   const ex = () => (grow(G, "exceptions").find(x => x.id === "x-e-flat-2026-11-01-bank-ethan") || {}).amount;
   const live = () => grow(G, "transactions").filter(r => /x2/.test(r.id) && r.deleted !== true).map(r => r.id).join();
   ok("X2: read alone, the one-off is taken for the bill", ex() === 300 && live() === "", [ex(), live()]);
+  const bday = () => grow(G, "exceptions").filter(x => x.id === "x-e-flat-2026-11-01-bankday-ethan").map(x => (x.deleted === true ? "off:" : "") + x.newDate).join();
+  ok("X2: and the bill is moved to the day before, when it seemed to go out", bday() === "2026-10-31", bday());
   NOW = RealDate.parse("2026-11-02T12:00:00Z"); monzo.txns.push(mtx("tx_x2dd", "2026-11-01", -43000, {counterparty: {name: "HOUSEHOLD BILLS LTD"}, category: "bills", time: "07:00:00"}));
   G.c.bankPoll();
   ok("X2: the direct debit that then comes in is the bill, and the one-off a payment", ex() === 430 && live() === "bk-monzo-tx_x2oneoff", [ex(), live()]);
   NOW += 15 * 60000; G.c.bankPoll();
   ok("X2: and it stays that way", ex() === 430 && live() === "bk-monzo-tx_x2oneoff", [ex(), live()]);
+  ok("X2: and the bill is back on its own day", bday() === "off:2026-10-31", bday());
 }
 {
   // X3: a Peckish shop has no account. Linked to a payment from an account mapped to something other than the main

@@ -34,6 +34,7 @@ header.top .t{flex:1;min-width:0}
 header.top .sub{font-size:13px;color:var(--muted)}
 header.top h1{font-size:24px;line-height:1.15;letter-spacing:-.3px;overflow:hidden;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow-wrap:anywhere}
 @media (max-width:380px){header.top h1{font-size:21px}}
+@media (max-width:300px){header.top h1{-webkit-line-clamp:3}}
 .round{width:44px;height:44px;border-radius:22px;border:1px solid var(--line);background:var(--card);display:flex;align-items:center;justify-content:center;flex:none;padding:0}
 .avatar{border:0;background:var(--accent);color:var(--accent-ink);font-weight:700;font-size:17px}
 main{flex:1;padding:0 16px calc(env(safe-area-inset-bottom,0px) + 96px)}
@@ -70,6 +71,8 @@ nav.bottom .plus{width:52px;height:52px;border-radius:26px;background:var(--acce
 .grid2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
 .tile{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:14px;box-shadow:var(--shadow)}
 .tile .n{color:var(--muted);font-size:13px;font-weight:600}
+button.tile{display:flex;flex-direction:column;justify-content:flex-start;align-items:stretch;font-size:inherit}
+.grid2>.tile:last-child:nth-child(odd){grid-column:1/-1}
 .tile .v{font-size:24px;font-weight:800;font-variant-numeric:tabular-nums;margin:2px 0 6px;font-family:var(--head)}
 .tile .v small{font-size:13px;font-weight:500;color:var(--muted);font-family:var(--font)}
 .date{width:46px;flex:none;text-align:center;background:var(--soft);border-radius:10px;padding:4px 0;font-size:12px;font-weight:700;line-height:1.2;color:var(--ink)}
@@ -91,8 +94,9 @@ nav.bottom .plus{width:52px;height:52px;border-radius:26px;background:var(--acce
 .amount-in .cur{font-size:40px;font-weight:800;font-family:var(--head);color:var(--muted)}
 .amount-in input{border:0;outline:0;background:transparent;width:6ch;field-sizing:content;min-width:3.2ch;max-width:100%;font-size:48px;font-weight:800;font-variant-numeric:tabular-nums;letter-spacing:-1px;font-family:var(--head);color:var(--ink);padding:4px 0}
 .amount-in input::placeholder{color:var(--line)}
-.budgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(max(7em,calc((100% - 16px) / 3)),1fr));gap:8px;margin-top:14px;font-size:calc(var(--fs) - 1px)}
-.budgrid.two{grid-template-columns:repeat(auto-fill,minmax(max(9em,calc((100% - 8px) / 2)),1fr))}
+.budgrid{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px;font-size:calc(var(--fs) - 1px)}
+.budgrid>.budtile{flex:1 1 calc((100% - 16px) / 3 - .1px);min-width:7em}
+.budgrid.two>.budtile{flex-basis:calc((100% - 8px) / 2 - .1px);min-width:9em}
 .budgrid.two .budtile{flex-direction:row;min-height:60px;justify-content:flex-start;padding:10px 14px;text-align:left}
 .budtile{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;min-width:0;min-height:76px;padding:10px 5px;border-radius:16px;border:1px solid var(--line);background:var(--card);color:var(--ink);font-weight:600;font-size:inherit;line-height:1.15;text-align:center}
 .budtile span{min-width:0;max-width:100%;overflow-wrap:break-word;hyphens:auto}
@@ -102,7 +106,7 @@ nav.bottom .plus{width:52px;height:52px;border-radius:26px;background:var(--acce
 .budtile[aria-pressed="true"] svg{color:var(--accent-ink)}
 .budtile.others{border-style:dashed;color:var(--muted)}
 .details{display:flex;flex-wrap:wrap;justify-content:center;gap:6px;margin-top:14px}
-.detail{border:0;background:var(--soft);color:var(--ink);border-radius:999px;min-height:40px;padding:0 14px;font-size:14px;font-weight:600}
+.detail{border:0;background:var(--soft);color:var(--ink);border-radius:999px;min-height:44px;padding:0 14px;font-size:14px;font-weight:600}
 .detail.on{background:color-mix(in srgb, var(--accent) 22%, var(--card))}
 .btn.logit{margin-top:16px;min-height:56px;font-size:17px}
 .info{border:0;background:none;color:var(--muted);width:36px;height:36px;padding:0;margin:-10px 0 -10px 2px;display:inline-flex;align-items:center;justify-content:center;vertical-align:middle}
@@ -125,6 +129,12 @@ label.f textarea{padding:10px 12px;min-height:80px}
 label.check{display:flex;align-items:center;gap:12px;padding:12px 0;font-weight:600}
 label.check input,input.tick{width:24px;height:24px;accent-color:var(--accent);flex:none;margin:0}
 .two{display:flex;gap:10px}.two>*{flex:1;min-width:0}
+/* a group of buttons that's never ragged: app.js (fitRows) picks one line, equal columns or one under another */
+.fit{display:flex;flex-wrap:wrap;align-items:stretch}
+.fit>*{flex:1 1 auto;min-width:0;white-space:nowrap;margin:0}
+.fit.loose>*{white-space:normal}
+.fit>.chip,.fit>.detail{padding:0 10px}
+.btn.fitlink{display:flex;align-items:center;justify-content:center;text-decoration:none}
 .sheet-bg{position:fixed;inset:0;z-index:50;background:rgba(10,16,24,.48);display:flex;align-items:flex-end;justify-content:center;animation:fade .15s}
 .sheet{width:100%;max-width:560px;max-height:88vh;overflow-y:auto;background:var(--card);color:var(--ink);border-radius:22px 22px 0 0;padding:18px 18px calc(env(safe-area-inset-bottom,0px) + 22px);animation:up .18s}
 .sheet h2{font-size:20px}
@@ -165,12 +175,15 @@ label.check input,input.tick{width:24px;height:24px;accent-color:var(--accent);f
 .empty{color:var(--muted);text-align:center;padding:30px 10px}
 .split2{display:flex;height:10px;border-radius:5px;overflow:hidden;background:var(--track)}
 .split2>i{display:block}
-.swatches{display:flex;flex-wrap:wrap;gap:10px;margin-top:8px}
-.swatches button{width:44px;height:44px;border-radius:22px;border:3px solid var(--card);box-shadow:0 0 0 1px var(--line)}
+.swatches{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
+.swatches button{flex:1 1 calc((100% - 24px) / 4 - .1px);min-width:44px;height:44px;border-radius:22px;border:3px solid var(--card);box-shadow:0 0 0 1px var(--line)}
 .swatches button[aria-pressed="true"]{box-shadow:0 0 0 3px var(--ink)}
 .theme-card{border:1px solid var(--line);border-radius:14px;padding:12px;text-align:left;background:var(--card);display:flex;gap:12px;align-items:center;width:100%;margin-top:8px}
 .theme-card[aria-pressed="true"]{border:2px solid var(--accent)}
 .theme-card .sw{width:46px;height:46px;border-radius:12px;flex:none}
+.theme-card .grow{flex:1;min-width:0}
+.theme-card .what{display:block;font-weight:600}
+.theme-card .why{display:block;color:var(--muted);font-size:13px}
 .sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
 .easy .hide-easy{display:none!important}
 :focus-visible{outline:3px solid var(--accent);outline-offset:2px}

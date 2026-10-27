@@ -128,7 +128,7 @@ const fails = [], check = (name, cond, extra) => { if (cond) console.log("ok", n
   check("Payday shows the payday still to sort", /^Payday: Thu 29 Oct/.test(pdText) && ticks.length > 0 && ticks.every(x => !x), {pdText: pdText.slice(0, 80), ticks});
   // stopping a budget mid-month keeps it for this pay period (its money was sorted on payday)
   await page.click('nav [data-v="more"]'); await page.click('main [data-a="go"][data-v="settings"]'); await page.click('main [data-a="go"][data-v="list:budgets"]');
-  await page.click('[data-a="edit"][data-v="budgets:e-fun"]'); check("a budget says when it stops", /Stop after this pay period/.test(T(await page.textContent("main"))));
+  await page.click('[data-a="edit"][data-v="budgets:e-fun"]'); check("a budget says when it stops", /Stop at next payday/.test(T(await page.textContent("main"))));
   await page.click('[data-a="editstop"]'); await page.waitForTimeout(1200);
   const fun = (await (await page.request.get("http://localhost:" + PORT + "/dump?budgets")).json()).find(r => r.id === "e-fun");
   await page.click('nav [data-v="today"]');
@@ -624,6 +624,98 @@ const fails = [], check = (name, cond, extra) => { if (cond) console.log("ok", n
       check("and the More button is laid out like the others at " + width + "px", more === "flex column", more);
       await ctx.close();
     }
+  }
+
+  // ===== polish 2026-10-27 (1.4.15): on every screen and sheet, at 320, 384 and 412px, with Larger text and with the
+  // phone's text at 130%, no button's text runs past its edge, no one-line button wraps, no row of buttons is ragged
+  // (all on one line, even lines, or one under another) and nothing is wider than the screen. Long names, big amounts.
+  {
+    const kS = JSON.parse(Buffer.from(links.sophie.split("#connect=")[1], "base64url").toString()).k, ex = (key, ops) => page.request.post("http://localhost:" + PORT + "/exec", {data: JSON.stringify({key, ops})});
+    page = await newPage("2027-03-02");
+    await ex(kE12, [{op: "put", table: "people", row: {id: "ethan", name: "Ethan Whitfield", bank: "Monzo", potWord: "pot", partner: "sophie"}},
+      {op: "put", table: "accounts", row: {id: "e-pz1", owner: "ethan", name: "Gifts & birthdays pot", kind: "pot", order: 6, purpose: "Christmas, birthdays and anniversaries"}},
+      {op: "put", table: "accounts", row: {id: "e-pz2", owner: "ethan", name: "Saving Challenge (2026)", kind: "saving", order: 7}},
+      {op: "put", table: "accounts", row: {id: "e-pz3", owner: "ethan", name: "Moneybox cash ISA", kind: "isa", order: 10}},
+      {op: "put", table: "valuations", row: {id: "v-pz3", account: "e-pz3", date: "2027-02-27", amount: 12653.14}},
+      {op: "put", table: "budgets", row: {id: "e-pzb", person: "ethan", name: "Gifts & birthdays", amount: 60, mode: "oneoff", account: "e-pz1"}},
+      {op: "put", table: "bills", row: {id: "e-pzi", person: "ethan", name: "Car insurance (MultiCar)", amount: 1265.31, account: "e-car", unit: "year", start: "2027-03-20", category: "insurance"}},
+      {op: "put", table: "loans", row: {id: "l-pz", lender: "ethan", borrower: "sophie", name: "Saving Challenge (2026)", amount: 12653.14, date: "2027-02-01", repay: 450, repayFrom: "2027-03-28", repayDay: "28"}},
+      {op: "put", table: "transactions", row: {id: "t-pzr", date: "2027-03-01", person: "ethan", amount: 12653.14, account: "e-main", note: "SAINSBURYS SUPERMARKETS LTD 0123", review: true, source: "monzo"}}]);
+    await ex(kS, [{op: "put", table: "people", row: {id: "sophie", name: "Sophie Marchetti", bank: "Starling", potWord: "Space", partner: "ethan"}}]);
+    await page.context().close();
+    const bank = {provider: "monzo", connected: true, lastSync: Date.parse("2027-03-02T19:00:00Z"), accounts: [{extId: "a1", name: "Personal account", kind: "main", balance: 12653.14, mappedTo: "e-main"},
+      {extId: "a2", name: "Gifts & birthdays pot", kind: "pot", balance: 212.5}, {extId: "a3", name: "Holiday to Lanzarote with Sophie", kind: "pot", balance: 0, mappedTo: ""}]};
+    // the phone's text size (Android scales the text, not the page): every font size in the page, times z
+    const textScale = z => { if (z === 1) return; const sc = v => String(v).replace(/(\d*\.?\d+)px/g, (m, n) => (n * z).toFixed(2) + "px"), sp = CSSStyleDeclaration.prototype.setProperty;
+      CSSStyleDeclaration.prototype.setProperty = function (k, v, p) { return sp.call(this, k, k === "--fs" ? sc(v) : v, p); };
+      const walk = r => { if (r.cssRules) [...r.cssRules].forEach(walk); if (r.style && r.style.fontSize) r.style.fontSize = sc(r.style.fontSize); };
+      const inl = () => document.querySelectorAll('[style*="font-size"]').forEach(el => { if (el.__z !== el.getAttribute("style")) { el.style.fontSize = sc(el.style.fontSize); el.__z = el.getAttribute("style"); } });
+      document.addEventListener("DOMContentLoaded", () => { [...document.styleSheets].forEach(walk); inl(); new MutationObserver(inl).observe(document.body, {childList: true, subtree: true}); }); };
+    const problems = () => {
+      const T = s => (s || "").replace(/\s+/g, " ").trim(), out = [], vw = document.documentElement.clientWidth;
+      const shown = el => el.getClientRects().length > 0 && getComputedStyle(el).visibility !== "hidden" && !el.closest(".swipe:not(.open) .acts");
+      const texts = el => { const w = document.createTreeWalker(el, NodeFilter.SHOW_TEXT), a = []; while (w.nextNode()) if (w.currentNode.data.trim()) a.push(w.currentNode); return a; };
+      const rects = n => { const r = document.createRange(); r.selectNodeContents(n); return [...r.getClientRects()].filter(x => x.width > 0.5); };
+      const where = el => (el.closest("#sheets") ? "sheet " : "") + T(el.getAttribute("aria-label") || el.textContent).slice(0, 50);
+      if (document.documentElement.scrollWidth > vw + 1) out.push("wider than the screen");
+      document.querySelectorAll("button, a.btn, .chip, .detail, .pill, select").forEach(el => {
+        if (!shown(el)) return;
+        const r = el.getBoundingClientRect(), cs = getComputedStyle(el);
+        if (el.tagName === "SELECT") { const c = document.createElement("canvas").getContext("2d"); c.font = cs.fontWeight + " " + cs.fontSize + " " + cs.fontFamily; [...el.options].forEach(o => { if (c.measureText(o.text).width + parseFloat(cs.paddingLeft) + 22 > el.clientWidth + 1) out.push("cut off: " + o.text); }); return; }
+        if (r.right > vw + 1 || r.left < -1) out.push("off the screen: " + where(el));
+        // text past the edge (a few pixels into the padding is fine)
+        const L = r.left + Math.max(0, parseFloat(cs.paddingLeft) - 4), R = r.right - Math.max(0, parseFloat(cs.paddingRight) - 4);
+        if (el.scrollWidth > el.clientWidth + 1 || texts(el).some(n => rects(n).some(x => x.right > R + 0.5 || x.left < L - 0.5))) out.push("runs past its edge: " + where(el));
+        // a one-line button on more than one line
+        if (!el.matches(".li, .tile, .budtile, .hero, .more button, .theme-card, .banner, .card, .cal button, .face") && !el.closest(".li, .tile, .budtile, .hero, .theme-card, .more") && !el.querySelector("br, div, p, .what")) {
+          const mids = []; texts(el).forEach(n => rects(n).forEach(x => { const m = (x.top + x.bottom) / 2; if (!mids.some(t => Math.abs(t - m) < x.height * 0.45)) mids.push(m); }));
+          if (mids.length > 1) out.push("wraps: " + where(el));
+        }
+      });
+      // a row of buttons: one line, lines that each have as many and fill the width, or the first alone above even lines
+      const BTN = ".btn, a.btn, .chip, .detail, .seg > button, .linkbtn, .swatches > button, .budtile";
+      new Set([...document.querySelectorAll(BTN)].filter(shown).map(e => e.parentElement)).forEach(P => {
+        const kids = [...P.children].filter(k => shown(k) && k.matches(BTN) && getComputedStyle(k).position !== "absolute"); if (kids.length < 2) return;
+        const rows = []; kids.forEach(k => { const r = k.getBoundingClientRect(), row = rows.find(x => Math.abs(x.top - r.top) < Math.min(r.height, x.h) / 2); if (row) row.n.push(r); else rows.push({top: r.top, h: r.height, n: [r]}); });
+        if (rows.length < 2) return;
+        const cs = getComputedStyle(P), pr = P.getBoundingClientRect(), L = pr.left + P.clientLeft + parseFloat(cs.paddingLeft), R = pr.left + P.clientLeft + P.clientWidth - parseFloat(cs.paddingRight);
+        const full = rows.every(x => Math.abs(Math.min(...x.n.map(q => q.left)) - L) <= 2 && Math.abs(Math.max(...x.n.map(q => q.right)) - R) <= 2 && Math.max(...x.n.map(q => q.width)) - Math.min(...x.n.map(q => q.width)) < 2);
+        const cnt = rows.map(x => x.n.length), rest = cnt.slice(1), even = cnt.every(c => c === cnt[0]) || (cnt[0] === 1 && rest.every(c => c === rest[0]));
+        if (!full || (!even && !kids.every(k => k.matches(".budtile, .swatches > button")))) out.push("ragged: " + cnt.join("+") + " " + kids.map(k => T(k.textContent) || k.getAttribute("aria-label")).join(" | ").slice(0, 90));
+      });
+      return out;
+    };
+    const screens = ["today", "money", "add", "partner", "more", "payday", "pots", "bills", "goals", "lisa", "house", "networth", "debts", "insights", "gifts", "settings", "themes", "bank", "review", "linked", "emailset", "sharing", "sync", "importcsv", "list:income", "list:budgets", "list:accounts", "list:splits"];
+    // [screen, what to tap for a sheet or form] (each tap is a data-a, and data-v if given)
+    const taps = [["add", "adddatepick"], ["add", "addsplit2"], ["add", "addmode:bill"], ["today", "who"], ["payday", "payedit"], ["pots", "potcheck"], ["partner", "settle"], ["lisa", "lisapaid"], ["bank", "bankoff"], ["review", "revmore"], ["linked", "applink:peckish"],
+      ["list:budgets", "edit"], ["list:income", "new:income"], ["bills", "new:bills"], ["bills", "edit"], ["list:accounts", "new:accounts"], ["list:splits", "new:splits"], ["list:transfers", "new:transfers"], ["debts", "new:loans"], ["goals", "new:goals"], ["gifts", "new:gifts"], ["list:budgets", "new:budgets"]];
+    const found = {};
+    for (const [w, size, z] of [[320, "normal", 1], [320, "larger", 1], [384, "normal", 1], [384, "larger", 1], [412, "normal", 1], [412, "larger", 1], [384, "normal", 1.3], [412, "normal", 1.3], [295, "normal", 1]]) {
+      const tag = w + "px " + size + (z !== 1 ? " text " + z * 100 + "%" : "");
+      for (const who of ["ethan", "sophie", "demo"]) {
+        const ctx = await browser.newContext({viewport: {width: w, height: 760}, deviceScaleFactor: 2, isMobile: true, hasTouch: true, locale: "en-GB", timezoneId: "Europe/London", serviceWorkers: "block"});
+        await ctx.route("**/exec", r => /"bank\.status"/.test(r.request().postData() || "") ? r.fulfill({contentType: "application/json", body: JSON.stringify({ok: true, bank})}) : r.continue());
+        await ctx.addInitScript(textScale, z); await ctx.addInitScript(() => { try { localStorage.setItem("budgie.checkSeen", JSON.stringify("2027-03-02")); } catch (e) {} });
+        page = await ctx.newPage(); await page.clock.install({time: new Date("2027-03-02T19:30:00")});
+        if (who === "demo") { await page.goto("http://localhost:" + PORT + "/"); await page.waitForSelector("main"); (found[tag + " connect"] = await page.evaluate(problems)); await page.click('[data-a="demo"][data-v="on"]'); }
+        else { await page.goto(links[who]); await page.waitForFunction(() => /Hi /.test(document.querySelector("#top").textContent), null, {timeout: 8000}); }
+        await page.evaluate(sz => { window.BudgieApp.S.prefs.size = sz; }, size);
+        const goTo = s => page.evaluate(s => { const u = window.BudgieApp.S.ui; Object.assign(u, {money: "month", monthOff: 0, calOff: 0}); if (u.add) u.add.mode = "spend"; document.querySelector("#sheets").innerHTML = ""; if (/^list:/.test(s)) window.BudgieApp.go("list", {table: s.slice(5)}); else window.BudgieApp.go(s); }, s);
+        for (const s of screens) { await goTo(s); await page.waitForTimeout(s === "bank" || s === "linked" ? 150 : 20); found[tag + " " + who + " " + s] = await page.evaluate(problems); }
+        await goTo("money"); await page.click('[data-a="moneyview"][data-v="year"]'); found[tag + " " + who + " money year"] = await page.evaluate(problems);
+        for (const [s, t] of taps) {
+          await goTo(s); await page.waitForTimeout(s === "bank" || s === "linked" ? 150 : 20);
+          const [a, v] = t.split(":"), sel = '[data-a="' + a + '"]' + (v ? '[data-v="' + v + '"]' : "");
+          if (!(await page.$("#main " + sel + ", #sheets " + sel))) continue;
+          await page.evaluate(sel => document.querySelector("#main " + sel + ", #sheets " + sel).click(), sel); await page.waitForTimeout(a === "applink" ? 300 : 40);
+          found[tag + " " + who + " " + s + " > " + t] = await page.evaluate(problems);
+        }
+        await ctx.close();
+      }
+    }
+    const bad = Object.entries(found).filter(x => x[1].length).map(x => x[0] + ": " + [...new Set(x[1])].join("; "));
+    check("no button runs past its edge, wraps or sits in a ragged row, at 320 to 412px, Larger text and 130% text", !bad.length, bad.slice(0, 12));
+    check("(and the check covered the screens)", Object.keys(found).length > 600, Object.keys(found).length);
   }
 
   console.log(errs.length ? "ERRORS:\n" + errs.join("\n") : "No errors");
