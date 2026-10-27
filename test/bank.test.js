@@ -112,7 +112,8 @@ function starlingRoute(method, url, params) {
   const send = (code, body, headers) => ({code, body: JSON.stringify(body), headers: headers || {}});
   const scopes = starling.identity[tok];
   if (!scopes) return send(401, {error: "invalid_token"});
-  if (starling.rate) return send(429, {}, {"Retry-After": "60"});
+  if (starling.rate && u.pathname !== "/api/v2/identity/token") return send(429, {}, {"Retry-After": "60"});
+  if (starling.rateN > 0 && u.pathname !== "/api/v2/identity/token") { starling.rateN--; return send(429, {}, {"Retry-After": starling.rateAfter || "1"}); }
   if (u.pathname === "/api/v2/identity/token") return send(200, {accessTokenUid: "atok-1", applicationUserUid: "app-user-1", accountHolderUid: "holder-1", scopes: scopes, authenticated: true, expiresInSeconds: 0});
   if (u.pathname === "/api/v2/accounts") return send(200, {accounts: starling.accounts});
   if (u.pathname === "/api/v2/accounts/sacc-0001/balance") return send(200, {clearedBalance: {currency: "GBP", minorUnits: 18000}, effectiveBalance: {currency: "GBP", minorUnits: 17500}, pendingTransactions: {currency: "GBP", minorUnits: 500}, acceptedOverdraft: {currency: "GBP", minorUnits: 0}, amount: {currency: "GBP", minorUnits: 17500}});
@@ -1755,6 +1756,31 @@ ok("Q8: every tab Budgie opens for a bank sign-in drops its opener", (APPJS.matc
   const G4 = env();
   G4.c.bankApply_("ethan", {provider: "monzo", accounts: [], txns: [{id: "tx_v4", acc: "acc_main", date: "2026-11-17", amount: -20, pot: "pot_food", name: "", category: "savings"}]}, "", []);
   ok("V1: a move that isn't one To do asked for keeps the bank's key", rows(G4, "moves").filter(m => /^bk-/.test(m.id)).map(m => m.key).join() === "bank:tx_v4");
+}
+
+// ================= Starling: "slow down" while connecting =================
+{
+  const G = bankEnv();
+  starling.rateN = 2; starling.rateAfter = "1";
+  const r = G.call({key: G.kS, action: "bank.starling.setToken", token: SECRET.starling});
+  const st = G.call({key: G.kS, action: "bank.status"}).bank;
+  ok("W1: a short slow-down while connecting is waited out, and the first read still finishes", r.ok && !r.note && st.connected && st.lastSync > 0 && !st.lastError && starling.rateN === 0, {r, st, left: starling.rateN});
+  starling.rateN = 0;
+  // an old account: the first read goes back about 400 days, not all the way (far fewer requests)
+  const before = reqs.length, made = starling.accounts[0].createdAt;
+  starling.accounts[0].createdAt = "2019-01-01T09:00:00.000Z";
+  const G2 = bankEnv();
+  G2.call({key: G2.kS, action: "bank.starling.setToken", token: SECRET.starling});
+  starling.accounts[0].createdAt = made;
+  const mins = reqs.slice(before).filter(q => /transactions-between/.test(q.url)).map(q => new URL(q.url).searchParams.get("minTransactionTimestamp")).sort();
+  ok("W2: the first read of an old account goes back about 400 days", mins.length > 0 && mins.length <= 5 && new RealDate(mins[0]).getTime() >= NOW - 401 * 86400000, mins);
+  // a longer slow-down: tried again after 5 minutes (Starling's limit is short), not 30
+  const G3 = bankEnv();
+  starling.rate = true;
+  G3.call({key: G3.kS, action: "bank.starling.setToken", token: SECRET.starling});
+  starling.rate = false;
+  const st3 = JSON.parse(G3.env.props.BANK_STATUS_sophie);
+  ok("W3: a longer slow-down from Starling is tried again after 5 minutes", /slow down/.test(st3.lastError) && st3.backoffUntil - NOW >= 4 * 60000 && st3.backoffUntil - NOW <= 5 * 60000 + 5000, st3.backoffUntil - NOW);
 }
 
 // ================= no secrets anywhere they shouldn't be =================
