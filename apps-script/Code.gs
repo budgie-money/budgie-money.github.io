@@ -296,8 +296,11 @@ var ITEM_TABS_ = ["income", "bills", "budgets", "transfers", "loans"];
 // and a price or one-date change finds its item by id alone. So a new row can't take an id another tab already uses
 // (a split called after your partner's main account would make the bank feed skip their payments, and an income
 // called after their bill would make that bill's changes yours to see and edit).
+// The same holds for every other tab (payments, moves, balances...): nothing looks those up across tabs today, but
+// one id is one thing, so nothing added later can be fooled by a row that shares it.
 var ID_TABS_ = ["people", "accounts", "income", "bills", "budgets", "splits", "transfers", "loans", "goals"];
-function idUsedElsewhere_(t, id) { for (var i = 0; i < ID_TABS_.length; i++) if (ID_TABS_[i] !== t && byId_(ID_TABS_[i], id)) return ID_TABS_[i]; return ""; }
+var ID_ANY_TABS_ = ID_TABS_.concat(["transactions", "moves", "settlements", "valuations", "amounts", "exceptions", "settings", "gifts"]);
+function idUsedElsewhere_(t, id) { for (var i = 0; i < ID_ANY_TABS_.length; i++) if (ID_ANY_TABS_[i] !== t && byId_(ID_ANY_TABS_[i], id)) return ID_ANY_TABS_[i]; return ""; }
 // an id in more than one item tab (only possible by typing into the sheet) belongs to nobody: its changes can't be
 // seen or made by either of you
 function findItem_(id) {
@@ -349,6 +352,7 @@ function applyOps_(me, ops, app) {
 var CELL_MON_ = "(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\\.?";
 var CELL_CONVERTS_ = [
   /^\s*[-+]?\s*[\u00a3$\u20ac]?\s*[-+]?(\d[\d,]*\.?\d*|\.\d+)\s*%?\s*$/,                       // 1,234  \u00a312  50%
+  /^\s*[-+]?(\d+\.?\d*|\.\d+)e[-+]?\d+\s*$/i,                                                       // 1e5
   /^\s*\d{1,4}\s*[\/.\-]\s*\d{1,2}(\s*[\/.\-]\s*\d{1,4})?(\s+\d{1,2}:\d{2}.*)?\s*$/,   // 1/2  12-10-26
   /^\s*\d{1,2}(:\d{2}){1,2}(\.\d+)?\s*([ap]\.?m\.?)?\s*$/i, /^\s*\d{1,2}\s*[ap]\.?m\.?\s*$/i,   // 2:30  9pm
   new RegExp("^\\s*([a-z]+,?\\s+)?\\d{1,2}(st|nd|rd|th)?\\s+" + CELL_MON_ + "(,?\\s+\\d{2,4})?\\s*$", "i"),   // 5 Nov, Thu 29 Oct
@@ -358,7 +362,8 @@ function cell_(v) {
   if (v === undefined || v === null) return "";
   if (v instanceof Date || typeof v === "number" || typeof v === "boolean") return v;
   if (typeof v !== "string") { try { v = JSON.stringify(v); } catch (e) { v = String(v); } if (typeof v !== "string") v = ""; }
-  if (/^[-+]?(\d+\.?\d*|\.\d+)(e[-+]?\d+)?$/i.test(v) || /^\d{4}-\d{2}-\d{2}$/.test(v)) return v;
+  // (a plain number only: "007", "1e5", "+5" or ".5" would be changed by the sheet, so they're kept as typed below)
+  if (/^-?(0|[1-9]\d*)(\.\d+)?$/.test(v) || /^\d{4}-\d{2}-\d{2}$/.test(v)) return v;
   var t = v.replace(/^[\s\u0000-\u001f\u007f-\u009f\u00a0\u1680\u180e\u2000-\u200f\u2028-\u202f\u205f-\u206f\u3000\ufeff]+/, "");
   if (/^[=+\-@']/.test(t)) return "'" + v;
   return CELL_CONVERTS_.some(function (re) { return re.test(v); }) ? "'" + v : v;
@@ -397,13 +402,15 @@ function applyOne_(me, op, now, by, opts) {
   }
   // a new row can't take an id that belongs to someone else's kind of row
   if (!existing && !sys) {
+    // (an id too long for a cell would fail like a hiccup, and hold up every change after it for good)
+    if (id.length > 500) throw refuse_("That id is too long");
     if (/^bk-/.test(id)) throw refuse_("That id is kept for the bank feed");
     if (/^t-pk-/.test(id) && app !== "peckish") throw refuse_("That id is kept for Peckish");
     if (t === "settings" && (String(src.person) !== String(me) || id !== me + ":" + src.key)) throw refuse_("A setting's id is your name and its key");
     if (t === "exceptions" && !exceptionIdOk_(id, src.item)) throw cant();
     // an id another tab already uses (someone else's account, a bill) is turned away, with the same wording as
     // any other refusal, so it never shows whether a row exists
-    if (ID_TABS_.indexOf(t) >= 0 && idUsedElsewhere_(t, id)) throw cant();
+    if (idUsedElsewhere_(t, id)) throw cant();
   }
   if (existing && t === "settings" && !sys && src.key !== undefined && String(src.key) !== String(existing.key)) throw refuse_("A setting's key can't change");
   var bankRow = !sys && isBankRow_(t, existing);
@@ -411,9 +418,16 @@ function applyOne_(me, op, now, by, opts) {
   else {
     for (var k in src) {
       if (k === "updated" || k === "by" || k === "_row") continue;
+      // a "__proto__" field (JSON.parse keeps it) would hand the row fields the rules below never look at
+      if (!Object.prototype.hasOwnProperty.call(src, k) || k === "__proto__" || k === "constructor" || k === "prototype") continue;
       if (!sys && k === "bankId") continue;   // only the bank feed links a payment to the bank
       // a phone may only change these on a bank row: what it's for, the split, the note, and that it's checked
-      if (bankRow && BANK_OWNED_.indexOf(k) >= 0) { if (k === "deleted" && toBoolCell_(src[k]) && !toBoolCell_(existing.deleted)) row.deleted = true; continue; }
+      // (taking one off is always fine; bringing one back only when you took it off yourself, so Undo works, but a
+      // payment the bank feed removed stays removed: the feed brings it back itself if the bank shows it again)
+      if (bankRow && BANK_OWNED_.indexOf(k) >= 0) {
+        if (k === "deleted") { var off = toBoolCell_(src[k]), gone = toBoolCell_(existing.deleted); if (off && !gone) row.deleted = true; else if (!off && gone && String(existing.by) === String(me)) row.deleted = false; }
+        continue;
+      }
       row[k] = src[k];
     }
     row.id = id;
@@ -473,6 +487,9 @@ function applyOne_(me, op, now, by, opts) {
     if (existing) { var ow = writers_(t, existing); if (ow !== null && ow.indexOf(me) < 0) throw refuse_("You can't change that (" + t + ")"); }
   }
   row.updated = now; row.by = by || me;
+  // a bank row the bank feed (or the sheet) took off keeps saying so whatever a phone changes on it, so a phone can
+  // never make it look like one it took off itself (and bring it back)
+  if (bankRow && toBoolCell_(existing.deleted) && toBoolCell_(row.deleted) && String(existing.by) !== String(me)) row.by = existing.by;
   var head = tab.head.length ? tab.head : SCHEMA[t].concat(COMMON);
   Object.keys(row).forEach(function (k) { if (head.indexOf(k) < 0 && (SCHEMA[t].indexOf(k) >= 0 || COMMON.indexOf(k) >= 0)) { sh.getRange(1, head.length + 1).setValue(k); head.push(k); } });
   tab.head = head;
@@ -517,7 +534,7 @@ var APP_RULES_ = {
 // (so the partner's private bills and pay never come into it), and only the person's own items
 var CAL_FUN_RE_ = /fun|entertain|going out|leisure|social|date|treat/i;
 function calMoney_(n) {
-  var v = Math.round((+n || 0) * 100) / 100, neg = v < 0, a = Math.abs(v), whole = Math.floor(a), frac = Math.round((a - whole) * 100);
+  var v = Budgie.round(n), neg = v < 0, a = Math.abs(v), whole = Math.floor(a), frac = Math.round((a - whole) * 100);
   var w = String(whole).replace(/\B(?=(\d{3})+(?!\d))/g, ","), f = frac ? "." + (frac < 10 ? "0" + frac : String(frac)).replace(/0$/, "") : "";
   return (neg ? "-£" : "£") + w + f;
 }
@@ -562,8 +579,12 @@ function appRowOk_(app, me, t, row, existing) {
   if (row.account !== undefined && row.account !== "") { var acc = byId_("accounts", row.account); if (!acc || acc.owner !== me) throw refuse_(NOT_ALLOWED_ + " (only your own account)"); }
   if (row.split !== undefined && row.split !== "" && String(row.split).toLowerCase() !== "half") throw refuse_(NOT_ALLOWED_ + " (split half each or not at all)");
   var amt = +row.amount;
-  var day = String(row.date || "").slice(0, 10), today = Utilities.formatDate(new Date(), tz_(), "yyyy-MM-dd");
-  if (!(amt > 0 && amt <= 2000) || !/^\d{4}-\d{2}-\d{2}$/.test(day) || day < Budgie.addDays(today, -400) || day > Budgie.addDays(today, 31)) throw refuse_(NOT_ALLOWED_ + " (amount or date)");
+  // a real day (a time after it is fine, and dropped), saved as just the day: anything else would be kept as text that
+  // no phone reads as a date, so the shop would quietly never count
+  var dm = String(row.date === undefined || row.date === null ? "" : row.date).match(/^(\d{4}-\d{2}-\d{2})(?:[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)?$/);
+  var day = dm && Budgie.parseDate(dm[1]) === dm[1] ? dm[1] : "", today = Utilities.formatDate(new Date(), tz_(), "yyyy-MM-dd");
+  if (!(amt > 0 && amt <= 2000) || !day || day < Budgie.addDays(today, -400) || day > Budgie.addDays(today, 31)) throw refuse_(NOT_ALLOWED_ + " (amount or date)");
+  row.date = day;
 }
 function appSync_(me, app, since, full, snap) {
   // always the whole (small) picture, never changes since last time: a row that stops being a food shop, or stops
@@ -728,7 +749,9 @@ function onEdit(e) {
 function maybeRefreshViews_() {
   var props = PropertiesService.getScriptProperties(), last = +props.getProperty("VIEWS_AT") || 0;
   if (Date.now() - last < 60000) return;
-  refreshBudgetTabs(); props.setProperty("VIEWS_AT", String(Date.now()));
+  // noted first, so a refresh that keeps failing is tried at most once a minute, not after every change
+  props.setProperty("VIEWS_AT", String(Date.now()));
+  refreshBudgetTabs();
 }
 function refreshBudgetTabs() {
   CACHE_ = {};

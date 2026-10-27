@@ -288,6 +288,13 @@ const phone = (F, k) => { const P = {T: {}, since: 0}; P.sync = (ops) => { const
   ok("S1b: and nothing else", w.rejected.map(x => x.i).join() === "1,2,3,4,5,6,7,8,9,10,11,12,13" && w.rejected.every(x => x.error.indexOf("That's not allowed with this link") === 0), w.rejected);
   ok("S1b: not a fun budget, her account, a lopsided split, review flags, a huge amount or her budget", ["only your food budget", "only your own account", "split half each", "(review)", "amount or date", "only your food budget"].every((bit, j) => w.rejected[7 + j].error.indexOf(bit) > 0), w.rejected.slice(7));
   const far = call({key: kP, ops: [{op: "put", table: "transactions", row: {id: "t-pk-far", date: "2031-01-01", person: "ethan", amount: 5, budget: "e-food-b", source: "peckish"}}]});
+  // a Peckish date is a real day: a time after it is dropped, anything else is turned down (it would never count)
+  const pkd = (id, date) => call({key: kP, ops: [{op: "put", table: "transactions", row: {id, date, person: "ethan", amount: 5, budget: "e-food-b", source: "peckish"}}]});
+  const dOk = pkd("t-pk-time", new Date().toISOString().slice(0, 10) + "T09:15:00Z"), dRow = (c.CACHE_ = {}, c.readTable_("transactions").rows.find(x => x.id === "t-pk-time"));
+  ok("S1b: a Peckish shop with a time on its date is saved as that day", dOk.applied.length === 1 && dRow && dRow.date === new Date().toISOString().slice(0, 10), dRow);
+  ok("S1b: a Peckish date with anything else after the day is turned down", ["2026-10-28junk", "2026-10-28 <b>", "2026-10-28" + "x".repeat(500)].every((d, i) => pkd("t-pk-junk" + i, d).rejected.length === 1));
+  ok("S1b: a Peckish date that isn't in its month is turned down", pkd("t-pk-feb2", new Date().toISOString().slice(0, 7) + "-32").rejected.length === 1);
+  call({key: kP, ops: [{op: "delete", table: "transactions", id: "t-pk-time"}]});
   ok("S1b: not dated years ahead", far.rejected.length === 1 && /amount or date/.test(far.rejected[0].error), far.rejected);
   // a shop the bank has matched to a real payment: Peckish can't clear its review flag, and taking it off keeps the payment
   c.CACHE_ = {}; c.applyOne_("ethan", {op: "put", table: "transactions", row: {id: "t-pk-10", bankId: "monzo:tx_1", review: true}}, Date.now(), "bank", {sys: true}); c.CACHE_ = {};
@@ -510,6 +517,9 @@ const phone = (F, k) => { const P = {T: {}, since: 0}; P.sync = (ops) => { const
     "2026-10-28": "2026-10-28", "12.50": "12.50", "Tesco": "Tesco", "24/7 Store": "24/7 Store", "ethan:2, sophie:1": "ethan:2, sophie:1", "x-e-pay-2026-10-29-amount": "x-e-pay-2026-10-29-amount"};
   const bad = Object.keys(cases).filter(k => c.cell_(k) !== cases[k]).map(k => [k, c.cell_(k)]);
   ok("R12: text stays text", !bad.length, bad);
+  const numLike = {"007": "'007", "1e5": "'1e5", "+5": "'+5", ".5": "'.5", "00": "'00", "-0012": "'-0012", "0.5": "0.5", "0": "0", "-3.25": "-3.25", "120": "120"};
+  const badN = Object.keys(numLike).filter(k => c.cell_(k) !== numLike[k]).map(k => [k, c.cell_(k)]);
+  ok("R12: text the sheet would read as a different number (007, 1e5) is kept as typed; plain numbers stay numbers", !badN.length, badN);
   ok("R12: a list or object is written as text, never as a formula", c.cell_(["=IMPORTDATA(1)"]) === '["=IMPORTDATA(1)"]' && typeof c.cell_({a: 1}) === "string" && c.cell_(new Date(0)) instanceof Date);
   F.call({key: F.kE, ops: [{op: "put", table: "transactions", row: {id: "t-note", date: "2026-10-28", person: "ethan", amount: 2, budget: "e-fun", note: "1/2"}}]});
   F.c.CACHE_ = {};
@@ -661,6 +671,26 @@ const phone = (F, k) => { const P = {T: {}, since: 0}; P.sync = (ops) => { const
   // your own changes are unaffected
   const mine = F.call({key: F.kS, ops: [{op: "put", table: "settings", row: {id: "sophie:theme.mode", person: "sophie", key: "theme.mode", value: "dark"}}, {op: "put", table: "exceptions", row: {id: "x-s-gym-2026-12-16-skip", item: "s-gym", date: "2026-12-16", action: "skip"}}]});
   ok("A3: your own settings and changes still save", mine.applied.length === 2 && !mine.rejected.length, mine.rejected);
+}
+
+// R1: Caledonite's amounts are rounded the same way as Budgie's
+{ const F = fresh(); ok("R1: calendar money rounds halves as Budgie does", [F.c.calMoney_(10.075), F.c.calMoney_(1.005), F.c.calMoney_(1200), F.c.calMoney_(-2.5)].join() === "£10.08,£1.01,£1,200,-£2.5", [F.c.calMoney_(10.075), F.c.calMoney_(1.005), F.c.calMoney_(1200), F.c.calMoney_(-2.5)]); }
+
+// R2: a budget tab refresh that keeps failing is tried at most once a minute, not after every change
+{
+  const F = fresh(), real = F.c.refreshBudgetTabs; let n = 0;
+  F.env.props.VIEWS_AT = "0"; F.c.refreshBudgetTabs = () => { n++; throw new Error("tab name too long"); };
+  const w = i => F.call({key: F.kE, ops: [{op: "put", table: "transactions", row: {id: "t-r2-" + i, date: "2026-10-27", person: "ethan", amount: 1, budget: "e-fun", account: "e-main"}}]});
+  const a = w(1), b2 = w(2), c3 = w(3);
+  ok("R2: a failing refresh is tried once in a minute, and the changes still save", n === 1 && a.applied.length === 1 && b2.applied.length === 1 && c3.applied.length === 1 && /tab name too long/.test(a.viewError || ""), {n, a: a.viewError});
+  F.c.refreshBudgetTabs = real;
+}
+
+// R3: a new row with an id too long for a cell is turned down, so it can't hold up the changes after it
+{
+  const F = fresh(), long = "t-" + "x".repeat(60000);
+  const r = F.call({key: F.kE, ops: [{op: "put", table: "transactions", id: long, row: {date: "2026-10-27", person: "ethan", amount: 1, budget: "e-fun", account: "e-main"}}, {op: "put", table: "transactions", row: {id: "t-after-long", date: "2026-10-27", person: "ethan", amount: 2, budget: "e-fun", account: "e-main"}}]});
+  ok("R3: an id too long is refused for good (not retried), and the next change still saves", r.rejected.length === 1 && r.rejected[0].retry === false && r.applied.length === 1 && r.applied[0].id === "t-after-long", r.rejected.map(x => [x.error, x.retry]));
 }
 
 // #5 the one-file backend (apps-script/Budgie.gs, made by migrate/build.js) must be built from the current files

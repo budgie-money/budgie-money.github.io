@@ -440,7 +440,14 @@ const grow = (G, t) => { G.c.CACHE_ = {}; return G.c.readTable_(t).rows; };
   ok("C5: but not the amount, date, account or bank link", fr.amount === 20 && fr.date === "2026-11-06" && fr.account === "e-main" && fr.bankId === "tx_friend", fr);
   G.call({key: G.kE, ops: [{op: "delete", table: "transactions", id: "bk-monzo-tx_friend"}]});
   G.call({key: G.kE, ops: [{op: "put", table: "transactions", row: {id: "bk-monzo-tx_friend", deleted: false, note: "back"}}]});
-  ok("C5: a phone can dismiss a bank row but not bring it back", grow(G, "transactions").find(r => r.id === "bk-monzo-tx_friend").deleted === true);
+  // (Undo after deleting it: the one who took it off can bring it back; one the bank feed took off stays off)
+  ok("C5: a phone can dismiss a bank row, and bring back one it dismissed itself (Undo)", grow(G, "transactions").find(r => r.id === "bk-monzo-tx_friend").deleted === false);
+  G.call({key: G.kE, ops: [{op: "delete", table: "transactions", id: "bk-monzo-tx_friend"}]});
+  ok("C5: and dismiss it again", grow(G, "transactions").find(r => r.id === "bk-monzo-tx_friend").deleted === true);
+  G.call({key: G.kE, ops: [{op: "put", table: "transactions", row: {id: "bk-monzo-tx_hold", note: "edited first", deleted: false}}]});
+  G.call({key: G.kE, ops: [{op: "put", table: "transactions", row: {id: "bk-monzo-tx_hold", deleted: false}}]});
+  const held = grow(G, "transactions").find(r => r.id === "bk-monzo-tx_hold");
+  ok("C5: a phone can't bring back one the bank feed took off, even after changing it", held.deleted === true && held.by === "bank", held);
   G.call({key: G.kE, ops: [{op: "put", table: "transactions", row: {id: "t-own-1", date: "2026-11-10", person: "ethan", amount: 4, budget: "e-fun", bankId: "tx_tesco"}}]});
   ok("C5: a phone can't link its own row to the bank", !grow(G, "transactions").find(r => r.id === "t-own-1").bankId);
   NOW += 15 * 60000; G.c.bankPoll();
@@ -1185,6 +1192,152 @@ const grow = (G, t) => { G.c.CACHE_ = {}; return G.c.readTable_(t).rows; };
   monzo.txns.push(mtx("tx_odd", "2026-11-17", -321, {merchant: merchant("Corner Shop", "groceries"), category: "groceries"}));
   NOW += 60000; const st = G.call({key: G.kE, action: "bank.status"}), sn = G.call({key: G.kE, action: "bank.syncNow"});
   ok("T10: an odd mapping name doesn't break the status or the next read", st.ok && sn.ok && grow(G, "transactions").some(r => r.id === "bk-monzo-tx_odd"), {st: st.error, sn});
+}
+
+// ================= round 6 review =================
+{
+  // U1: a spending Space has its own feed, and Starling lists a move to or from it there too. Only the main account's
+  // side is the move: the Space's side is neither a payment (that would count it twice) nor money in (where a top-up
+  // the size of the pay could be taken for the pay). A Space Budgie can't see (no savings-goal:read box) is the same.
+  NOW = RealDate.parse("2026-11-30T12:00:00Z");
+  const feed0 = starling.feed.slice();
+  starling.identity[SECRET.starlingSpaces] = ["account-list:read", "balance:read", "transaction:read", "savings-goal:read", "space:read"];
+  starling.feed.push(
+    sfi("sfi-u1-tofun", "2026-11-26", 190000, "OUT", {source: "INTERNAL_TRANSFER", counterPartyType: "CATEGORY", counterPartyUid: "scat-fun", counterPartyName: "Fun money"}),
+    sfi("sfi-u1-funin", "2026-11-26", 190000, "IN", {categoryUid: "scat-fun", source: "INTERNAL_TRANSFER", counterPartyType: "CATEGORY", counterPartyUid: "scat-0001", counterPartyName: "Personal"}),
+    sfi("sfi-u1-pay", "2026-11-27", 210000, "IN", {source: "FASTER_PAYMENTS_IN", counterPartyType: "PAYEE", counterPartyName: "EMPLOYER LTD"}),
+    sfi("sfi-u1-funout", "2026-11-28", 1000, "OUT", {categoryUid: "scat-fun", source: "INTERNAL_TRANSFER", counterPartyType: "CATEGORY", counterPartyUid: "scat-0001", counterPartyName: "Personal"}),
+    sfi("sfi-u1-back", "2026-11-28", 1000, "IN", {source: "INTERNAL_TRANSFER", counterPartyType: "CATEGORY", counterPartyUid: "space-fun", counterPartyName: "Fun money"}),
+    sfi("sfi-u1-hidden", "2026-11-29", 4000, "OUT", {source: "INTERNAL_TRANSFER", counterPartyType: "CATEGORY", counterPartyUid: "goal-unseen", counterPartyName: "Holiday"}),
+    sfi("sfi-u1-hiddenback", "2026-11-29", 200000, "IN", {source: "INTERNAL_TRANSFER", counterPartyType: "CATEGORY", counterPartyUid: "goal-unseen", counterPartyName: "Holiday"})
+  );
+  const G = bankEnv();
+  ok("U1: connected", G.call({key: G.kS, action: "bank.starling.setToken", token: SECRET.starlingSpaces}).ok);
+  G.call({key: G.kS, action: "bank.map", extId: "space-fun", account: "s-rent"}); NOW += 60000; G.call({key: G.kS, action: "bank.syncNow"});
+  const tx = grow(G, "transactions").filter(r => /sfi-u1-/.test(r.id)), mv = grow(G, "moves").filter(r => /sfi-u1-/.test(r.id));
+  const pay = grow(G, "exceptions").filter(r => /^x-s-pay-/.test(r.id));
+  ok("U1: the Space's side of a move is never a payment, nor a Space Budgie can't see", tx.length === 0, tx.map(r => [r.id, r.amount, r.note]));
+  ok("U1: each move comes in once, from the main account's side (named by its Space or its category)", mv.length === 2 && mv.some(m => m.id === "bk-starling-sfi-u1-tofun" && m.from === "s-main" && m.to === "s-rent" && m.amount === 1900) && mv.some(m => m.id === "bk-starling-sfi-u1-back" && m.from === "s-rent" && m.to === "s-main" && m.amount === 10), mv.map(m => [m.id, m.from, m.to, m.amount]));
+  ok("U1: a top-up of a Space isn't taken for the pay", pay.every(x => +x.amount === 2100), pay.map(x => [x.id, x.amount]));
+  starling.feed = feed0;
+}
+{
+  // U2: the pay is the money in that's most like it: not a Monzo top-up (is_load), not a pay-sized transfer from
+  // savings two days before. And a later read that no longer covers the pay itself leaves the pay's amount alone,
+  // rather than taking money in a couple of days after it for the pay
+  freshMonzo(); NOW = RealDate.parse("2026-11-17T12:00:00Z");
+  monzo.txns = monzoData(planned).concat([
+    mtx("tx_u2_topup", "2026-10-28", 235000, {is_load: true, description: "Top up", category: "general", time: "07:00:00"}),
+    mtx("tx_u2_isa", "2026-10-27", 240000, {counterparty: {name: "CASH ISA PROVIDER"}, category: "transfers", time: "07:00:00"})
+  ]);
+  const G = bankEnv(); connectMonzo(G, {acc_00009main: "e-main"});
+  const payX = () => grow(G, "exceptions").filter(r => /^x-e-pay-2026-10-29/.test(r.id)).map(r => +r.amount);
+  ok("U2: a top-up or a transfer from savings isn't taken for the pay", JSON.stringify(payX()) === "[2390]", payX());
+  monzo.txns.push(mtx("tx_u2_later", "2026-10-31", 230000, {counterparty: {name: "A FRIEND"}, category: "general", time: "12:00:00"}));
+  NOW = RealDate.parse("2026-12-03T12:00:00Z"); G.c.bankPoll();
+  ok("U2: a read that doesn't reach back to the pay leaves its amount as it was", JSON.stringify(payX()) === "[2390]" && !G.call({key: G.kE, action: "bank.status"}).bank.lastError, payX());
+}
+{
+  // U3: one bank login is one person's. A Monzo account or Starling account holder already connected for one of you
+  // is turned away for the other (their payments would come in as the other's, for them to see)
+  freshMonzo(); NOW = RealDate.parse("2026-11-17T12:00:00Z"); monzo.txns = monzoData(planned);
+  const G = bankEnv(); connectMonzo(G, {acc_00009main: "e-main"});
+  G.call({key: G.kS, action: "bank.monzo.setClient", clientId: CLIENT_ID, clientSecret: SECRET.clientSecret});
+  const st = new URL(G.call({key: G.kS, action: "bank.monzo.authUrl"}).url).searchParams.get("state");
+  const n0 = reqs.length, html = G.c.doGet({parameter: {code: SECRET.code, state: st}}).getContent();
+  ok("U3: Ethan's Monzo can't be connected for Sophie too", !G.env.userProps.BANK_TOKEN_sophie && /already connected/.test(html) && reqs.slice(n0).some(r => r.method === "post" && /\/oauth2\/logout$/.test(r.url)) && !grow(G, "transactions").some(r => r.person === "sophie" && /^bk-monzo-/.test(r.id)), html);
+  ok("U3: and Ethan's connection is untouched", G.call({key: G.kE, action: "bank.status"}).bank.connected === true);
+  const H = bankEnv();
+  starling.identity[SECRET.starlingSpaces] = ["account-list:read", "balance:read", "transaction:read", "savings-goal:read", "space:read"];
+  ok("U3: Sophie connects Starling", H.call({key: H.kS, action: "bank.starling.setToken", token: SECRET.starling}).ok);
+  const e1 = H.call({key: H.kE, action: "bank.starling.setToken", token: SECRET.starling}), e2 = H.call({key: H.kE, action: "bank.starling.setToken", token: SECRET.starlingSpaces});
+  ok("U3: her Starling (the same token, or another for the same account) can't be connected for Ethan", !e1.ok && !e2.ok && /already connected/.test(e2.error) && !H.env.userProps.BANK_TOKEN_ethan && !grow(H, "transactions").some(r => r.person === "ethan" && /^bk-starling-/.test(r.id)), {e1, e2});
+}
+{
+  // U4: a change carrying a "__proto__" field (as JSON.parse gives it) can't slip in fields the rules skip, such as
+  // the bank link, which only the bank feed sets
+  const G = bankEnv();
+  const body = JSON.parse('{"key":"' + G.kS + '","ops":[{"op":"put","table":"transactions","row":{"id":"t-u4","date":"2026-11-10","person":"sophie","amount":4,"budget":"s-food","__proto__":{"bankId":"tx_tesco","review":true,"splitHint":"half"}}},' +
+    '{"op":"put","table":"transactions","row":{"id":"t-u4b","date":"2026-11-10","person":"sophie","amount":4,"__proto__":{"person":"ethan"}}}]}');
+  const r = G.call(body), row = grow(G, "transactions").find(x => x.id === "t-u4"), rowB = grow(G, "transactions").find(x => x.id === "t-u4b");
+  ok("U4: a __proto__ field is ignored", r.ok && row && !row.bankId && row.review !== true && !row.splitHint && rowB && rowB.person === "sophie", {r, row, rowB});
+}
+{
+  // U5: one bank payment is a payment or a move, never both. A Moneybox payment read before there was a LISA or ISA
+  // to put it in came in as a payment; once there is one, it becomes the move (the payment, not yet checked, goes),
+  // and if the account goes again the move stays rather than the payment coming back beside it
+  freshMonzo(); NOW = RealDate.parse("2026-11-17T12:00:00Z"); monzo.txns = monzoData(planned);
+  const G = bankEnv(t => {
+    t.accounts = t.accounts.filter(a => a.id !== "e-lisa" && a.id !== "e-isa"); t.budgets = t.budgets.filter(b => b.id !== "e-lisa-b" && b.id !== "e-isa-b");
+    t.goals = []; t.valuations = t.valuations.filter(v => v.account !== "e-lisa");
+  });
+  connectMonzo(G, {acc_00009main: "e-main"});
+  const live = (t) => grow(G, t).filter(r => r.id === "bk-monzo-tx_moneybox" && r.deleted !== true);
+  ok("U5: with nowhere to put it, the Moneybox payment is a payment", live("transactions").length === 1 && live("moves").length === 0);
+  G.call({key: G.kE, ops: [{op: "put", table: "accounts", row: {id: "e-lisa9", owner: "ethan", name: "Lifetime ISA", kind: "lisa", order: 8}}]});
+  NOW += 15 * 60000; G.c.bankPoll();
+  ok("U5: once there's a LISA it's the move, and only the move", live("moves").length === 1 && live("moves")[0].to === "e-lisa9" && live("transactions").length === 0, {mv: live("moves").length, tx: live("transactions").length});
+  G.call({key: G.kE, ops: [{op: "delete", table: "accounts", id: "e-lisa9"}]});
+  NOW += 15 * 60000; G.c.bankPoll();
+  ok("U5: and taking the LISA off again doesn't bring the payment back beside it", live("moves").length === 1 && live("transactions").length === 0, {mv: live("moves").length, tx: live("transactions").length});
+}
+{
+  // U6: Apps Script gives a gmail account 90 minutes of trigger time a day, and the bank is read 96 times a day for
+  // each of you. A read that brings back exactly what the last one did (same payments, same balances, same day, no
+  // new settings) doesn't read every tab and save it all again; it still does once an hour, in case something in
+  // the sheet changed what it should make of them
+  freshMonzo(); NOW = RealDate.parse("2026-11-17T12:00:00Z"); monzo.txns = monzoData(planned);
+  const G = bankEnv(); connectMonzo(G, {acc_00009main: "e-main"});
+  const real = G.c.bankApply_; let applies = 0; G.c.bankApply_ = function () { applies++; return real.apply(this, arguments); };
+  NOW += 15 * 60000; G.c.bankPoll(); const a1 = applies;
+  NOW += 15 * 60000; G.c.bankPoll();
+  const st = G.call({key: G.kE, action: "bank.status"}).bank;
+  ok("U6: nothing new from the bank: the save step is skipped, and it still says when it last checked", applies === a1 && st.lastSync === NOW && st.connected && !st.lastError, {applies, a1, st: {lastSync: st.lastSync, NOW, err: st.lastError}});
+  monzo.txns.push(mtx("tx_u6", "2026-11-17", -450, {merchant: merchant("Corner Shop", "groceries"), category: "groceries", time: "12:20:00"}));
+  NOW += 15 * 60000; G.c.bankPoll();
+  ok("U6: a new payment is saved straight away", applies === a1 + 1 && grow(G, "transactions").some(r => r.id === "bk-monzo-tx_u6"), applies);
+  G.call({key: G.kE, ops: [{op: "put", table: "settings", row: {id: "ethan:bank.rule.corner shop", person: "ethan", key: "bank.rule.corner shop", value: "e-food-b"}}]});
+  NOW += 15 * 60000; G.c.bankPoll();
+  ok("U6: so is a read after a setting changed", applies === a1 + 2, applies);
+  NOW += 15 * 60000; G.c.bankPoll(); NOW += 15 * 60000; G.c.bankPoll(); const a3 = applies;
+  NOW += 61 * 60000; G.c.bankPoll();
+  ok("U6: and it saves again at least once an hour anyway", a3 === a1 + 2 && applies === a3 + 1, {a3, applies});
+  G.c.bankApply_ = real;
+}
+{
+  // U7: Apps Script stops a run at 6 minutes, and nothing after that point happens: not the status, not counting the
+  // failure. A first import whose saving is cut off like that every time (too much read in one go) would run every
+  // minute for ever, using up the day's trigger time. The next run sees the last one never finished and reads less.
+  freshMonzo(); NOW = RealDate.parse("2026-11-17T12:00:00Z");
+  const big = []; for (let i = 0; i < 1000; i++) big.push(mtx("tx_u7_" + String(i).padStart(4, "0"), B.addDays("2024-01-01", i), -(100 + i), {merchant: merchant("Corner Shop", "general"), category: "general"}));
+  monzo.txns = big.concat(monzoData(planned));
+  const G = bankEnv(); let killed = false, kills = 0;
+  const kill = () => { killed = true; kills++; NOW += 6 * 60000; const e = new Error("Exceeded maximum execution time"); e.killed = true; throw e; };
+  const ps0 = G.c.PropertiesService, frozen = (s) => new Proxy(s, {get: (t, k) => (k === "setProperty" || k === "deleteProperty") && killed ? () => {} : t[k]});
+  G.c.PropertiesService = {getScriptProperties: () => frozen(ps0.getScriptProperties()), getUserProperties: () => frozen(ps0.getUserProperties())};
+  const del0 = G.c.ScriptApp.deleteTrigger; G.c.ScriptApp.deleteTrigger = (t) => killed ? null : del0(t);
+  const real = G.c.bankApply_; G.c.bankApply_ = function (p, data) { if (data.txns.length > 400) kill(); return real.apply(this, arguments); };
+  const run = (f) => { try { f(); } catch (e) { if (!e.killed) throw e; } finally { killed = false; } };
+  run(() => connectMonzo(G));
+  let runs = 0, st = {};
+  while (runs < 12 && G.env.triggers.some(t => t.getHandlerFunction() === "bankPendingImports")) { NOW += 60000; runs++; run(() => G.c.bankPendingImports()); }
+  st = JSON.parse(G.env.props.BANK_STATUS_ethan);
+  const got = grow(G, "transactions").filter(r => /^bk-monzo-tx_u7_/.test(r.id));
+  ok("U7: a first import cut off part-way reads less next time and gets there", st.fullDone && got.length === 1000 && new Set(got.map(r => r.id)).size === 1000 && kills <= 3 && !st.runStart, {fullDone: st.fullDone, n: got.length, kills, runs, err: st.lastError});
+  G.c.bankApply_ = real; G.c.PropertiesService = ps0; G.c.ScriptApp.deleteTrigger = del0;
+}
+{
+  // U8: an id names one thing, whatever the tab, in every tab: a new payment, move or balance can't take an id another
+  // tab uses either (and a new bill can't take a payment's), with the same answer as any other refusal
+  const G = bankEnv(t => { t.transactions.push({id: "t-u8-pay", date: "2026-11-01", person: "ethan", amount: 3, budget: "e-fun", account: "e-main"}); });
+  const r = G.call({key: G.kS, ops: [
+    {op: "put", table: "transactions", row: {id: "e-rent", date: "2026-11-10", person: "sophie", amount: 1, budget: "s-food"}},
+    {op: "put", table: "valuations", row: {id: "e-main", account: "s-main", date: "2026-11-10", amount: 1}},
+    {op: "put", table: "bills", row: {id: "t-u8-pay", person: "sophie", name: "Odd", amount: 1, account: "s-main", unit: "month", on: "1", start: "2026-12-01"}},
+    {op: "put", table: "moves", row: {id: "t-u8-pay", date: "2026-11-10", person: "sophie", from: "s-main", to: "s-rent", amount: 1}},
+    {op: "put", table: "transactions", row: {id: "t-u8-mine", date: "2026-11-10", person: "sophie", amount: 1, budget: "s-food"}}
+  ]});
+  ok("U8: a new row in any tab can't take an id another tab uses (her own new payment still saves)", r.rejected.map(x => x.i).join() === "0,1,2,3" && r.applied.map(x => x.id).join() === "t-u8-mine" && r.rejected.every(x => /can't change that/.test(x.error)), r.rejected);
 }
 
 // ================= read only, always =================

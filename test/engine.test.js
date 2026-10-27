@@ -481,7 +481,7 @@ const savedUp = (pl, id) => lineAmt(pl, l => l.setAside && l.bill === id && l.ki
   const bs = B.budgetState(c, me, per);
   eq("compat: budgetState(db, me, per)", ["amount", "spent", "left", "avail", "carryIn", "carryOut", "over"].every(k => k in bs["e-fun"]) && bs["e-fun"].period.start === per.start, true);
   eq("compat: still exported", ["load", "coming", "periodAt", "planFor", "budgetState", "today", "checks", "lisa", "yearly", "yearReview"].every(k => typeof B[k] === "function"), true);
-  eq("compat: version", B.VERSION, "1.4.5");
+  eq("compat: version", B.VERSION, "1.4.6");
 })();
 
 // C3: a payday move ticked in the app and by the bank feed counts once (the latest)
@@ -562,6 +562,23 @@ const savedUp = (pl, id) => lineAmt(pl, l => l.setAside && l.bill === id && l.ki
   for (let d = "2026-10-26"; d < "2027-11-01"; d = B.addDays(d, 17)) { B.today(e, p, d); B.pots(e, p, d); B.year(e, p, d); B.summary(e, p, d); }
 });
 passes++;
+
+// R1: money on screen is rounded the same way as the sums (halves away from zero)
+eq("R1: money shows halves rounded as the sums are", [B.money(10.075), B.money(1.005), B.money(2.675), B.money(-0.005), B.money(-0.004), B.money(1234567.891), B.money("x")], ["£10.08", "£1.01", "£2.68", "-£0.01", "£0.00", "£1,234,567.89", "£0.00"]);
+eq("R1: half of £20.15 shows as what's owed", B.money(B.shareOf(db(), "half", "sophie", 20.15, "ethan")), "£10.08");
+
+// L1: a loan paid back early (in one go, or partly) isn't planned to be paid (or to come in) again
+{
+  const loanLines = (t, who, date, n) => { const L = B.load(t, date); let per = B.periodAt(L, who, date); const out = []; for (let i = 0; i < n; i++) { out.push(B.planFor(L, who, per).lines.filter(l => l.loan).map(l => l.amount + " " + l.date).join()); per = B.nextPeriod(L, who, per); } return out; };
+  const all = fixture(); all.settlements.push({id: "lump", date: "2026-12-01", from: "sophie", to: "ethan", amount: 600, loan: "sofa", key: "loan:sofa:lump"});
+  eq("L1: paid back in full early: no repayments planned for Sophie", loanLines(all, "sophie", "2026-12-05", 4), ["", "", "", ""]);
+  eq("L1: and none planned to come in for Ethan", loanLines(all, "ethan", "2026-12-05", 4), ["", "", "", ""]);
+  near("L1: nor counted as money in for his year", B.yearReview(B.load(all, "2027-04-05"), "ethan", "2026-04-06").in - B.yearReview(B.load(fixture(), "2027-04-05"), "ethan", "2026-04-06").in, 0);
+  const part = fixture(); part.settlements.push({id: "lump", date: "2026-12-01", from: "sophie", to: "ethan", amount: 300, loan: "sofa", key: "loan:sofa:lump"});
+  eq("L1: £300 paid early covers December's £200 and half of January's", loanLines(part, "sophie", "2026-12-05", 4), ["", "", "100 2027-01-28", "200 2027-02-28"]);
+  const onTime = fixture(); onTime.settlements.push({id: "r1", date: "2026-12-28", from: "sophie", to: "ethan", amount: 200, loan: "sofa", key: "loan:sofa:2026-12-28"});
+  eq("L1: a repayment paid on its day still counts in its own month", loanLines(onTime, "sophie", "2026-12-29", 3), ["200 2026-12-28", "200 2027-01-28", "200 2027-02-28"]);
+}
 
 console.log(fails ? fails + " failed, " + passes + " passed" : "All " + passes + " passed");
 process.exit(fails ? 1 : 0);

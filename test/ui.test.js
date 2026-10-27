@@ -305,6 +305,26 @@ const fails = [], check = (name, cond, extra) => { if (cond) console.log("ok", n
   await page.unroute("**/exec");
   await page.context().close();
 
+  // 7. review fixes (1.4.6)
+  page = await newPage("2026-11-02");
+  await page.goto(links.ethan); await page.waitForFunction(() => /Hi Ethan/.test(document.querySelector("#top").textContent), null, {timeout: 8000});
+  await page.route("**/exec", r => r.abort());
+  // a payment from the bank: its amount, date and account are the bank's, so only what it was for and the note can change
+  await page.evaluate(() => { const t = window.BudgieApp.S.data.tables; t.transactions = (t.transactions || []).concat([{id: "bk-monzo-tx_ui", date: "2026-11-01", person: "ethan", amount: 9.99, budget: "e-fun", account: "e-main", note: "CINEMA", source: "monzo", bankId: "tx_ui", review: false}]); window.BudgieApp.setDemo(false); window.BudgieApp.go("payments", {start: "2026-10-29", budget: ""}); });
+  await page.click('[data-a="payedit1"][data-v="bk-monzo-tx_ui"]'); await page.waitForTimeout(100);
+  const locked = await page.evaluate(() => ["#peAmt", "#peAcc", "#peDate"].map(q => document.querySelector(q).disabled).concat([document.querySelector("#peBud").disabled, document.querySelector("#peNote").disabled]));
+  check("a bank payment's amount, account and date can't be changed on the phone; what for and the note can", JSON.stringify(locked) === "[true,true,true,false,false]", locked);
+  await page.fill("#peNote", "Cinema with Sophie"); await page.selectOption("#peBud", "e-food-b"); await page.click('[data-a="pesave"]'); await page.waitForTimeout(200);
+  const sent = await page.evaluate(() => (window.BudgieApp.S.data.queue.filter(o => o.row && o.row.id === "bk-monzo-tx_ui").pop() || {}).row);
+  check("and saving it sends what it was for and the note, with the bank's figures untouched", sent && sent.note === "Cinema with Sophie" && sent.budget === "e-food-b" && sent.amount === 9.99 && sent.date === "2026-11-01" && sent.account === "e-main", sent);
+  // Hide amounts covers the things Budgie asks you to check
+  await page.evaluate(() => { const S = window.BudgieApp.S; S.data.tables.settings.push({id: "ethan:check:ui", person: "ethan", key: "check:ui", value: JSON.stringify({t: "Is £50.00 right for Fun?", a: "go", v: "money"})}); S.prefs.hide = true; S.ui.reveal = false; window.BudgieApp.setDemo(false); window.BudgieApp.go("checks"); });
+  const chk = T(await page.textContent("main"));
+  check("Hide amounts: the things to check are covered too", /Is £•••• right for Fun/.test(chk) && !/£\d/.test(chk), chk.slice(0, 160));
+  await page.evaluate(() => { window.BudgieApp.S.prefs.hide = false; });
+  await page.unroute("**/exec");
+  await page.context().close();
+
   console.log(errs.length ? "ERRORS:\n" + errs.join("\n") : "No errors");
   console.log(fails.length ? "FAIL\n  " + fails.join("\n  ") : "All checks passed");
   process.exitCode = fails.length ? 1 : 0;

@@ -6,7 +6,7 @@
   else root.Budgie = factory();
 })(this, function () {
   "use strict";
-  var VERSION = "1.4.5";
+  var VERSION = "1.4.6";
 
   // ---------- dates ----------
   function D(s) { var p = String(s).split("-"); return new Date(Date.UTC(+p[0], +p[1] - 1, +p[2])); }
@@ -405,8 +405,8 @@
     });
     db.bills.filter(function (b) { return b.person === p; }).forEach(function (b) { occurrences(db, b, from, to).forEach(function (o) { if (live(o.date)) lines.push({kind: "bill", name: b.name, amount: o.amount, account: b.account || main, date: o.date, id: b.id, occ: o.key, category: b.category, split: b.split}); }); });
     db.loans.forEach(function (l) {
-      loanPlan(db, l).forEach(function (r) {
-        if (r.date < from || r.date >= to || !live(r.date)) return;
+      loanDue(db, l, from, to).forEach(function (r) {
+        if (!live(r.date)) return;
         if (l.borrower === p) lines.push({kind: "bill", name: "Pay " + person(db, l.lender).name + " back: " + l.name, amount: r.amount, account: main, date: r.date, id: l.id, loan: true});
         // a repayment lands in the lender's main account, as the payment logged for it does (whichever account the loan
         // was paid from), so payday still moves what the other pots need
@@ -547,6 +547,18 @@
       var a = Math.min(rp, left), covered = Math.min(a, credit); credit -= covered; left -= a;
       out.push({date: dates[i], amount: round(a), paid: covered >= a - 0.004, key: "loan:" + l.id + ":" + dates[i]});
     }
+    return out;
+  }
+
+  // the repayments due in [from, to) that still need paying when that time starts: what was paid back before then
+  // (on time, or early in one go) counts against the earliest repayments first, so money paid back early isn't
+  // planned to come out (or come in) again
+  function loanDue(db, l, from, to) {
+    var credit = loanPaid(db, l, addDays(from, -1)), out = [];
+    loanPlan(db, l).forEach(function (r) {
+      var c = Math.min(r.amount, Math.max(0, credit)), a = round(r.amount - c); credit -= c;
+      if (r.date >= from && r.date < to && a > 0.004) out.push({date: r.date, amount: a, key: r.key});
+    });
     return out;
   }
 
@@ -1019,7 +1031,7 @@
       db.bills.forEach(function (b) { if (b.person === p) occurrences(db, b, lo, end).forEach(function (o) { addBill(b.id, b.name, o.amount); }); });
       db.loans.forEach(function (l) {
         if (l.lender !== p && l.borrower !== p) return;
-        loanPlan(db, l).forEach(function (r) { if (r.date < lo || r.date > until) return; if (l.lender === p) tin += r.amount; else addBill(l.id, "Pay " + person(db, l.lender).name + " back: " + l.name, r.amount); });
+        loanDue(db, l, lo, end).forEach(function (r) { if (l.lender === p) tin += r.amount; else addBill(l.id, "Pay " + person(db, l.lender).name + " back: " + l.name, r.amount); });
       });
     }
     // saved: from each pay period that started in the year, less money taken back out of savings
@@ -1119,7 +1131,8 @@
   }
 
   // ---------- helpers for display ----------
-  function money(n) { var v = Math.abs(+n || 0), s = v.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ","); return (n < -0.004 ? "-£" : "£") + s; }
+  // rounded as everything else is (so half of £20.15 shows as the £10.08 that's owed, not £10.07)
+  function money(n) { var r = round(n), s = Math.abs(r).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ","); return (r < 0 ? "-£" : "£") + s; }
   var DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
   function nice(s) { if (!isIso(s)) return ""; return DAYS[dow(s)] + " " + (+s.slice(8, 10)) + " " + MONTHS[+s.slice(5, 7) - 1]; }
   function describe(it) {

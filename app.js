@@ -1,10 +1,12 @@
 /* Budgie app: screens, syncing and offline queue. The maths lives in engine.js. */
 (function () {
   "use strict";
-  var B = window.Budgie, TH = window.BudgieThemes, APP_VERSION = "1.4.5";
+  var B = window.Budgie, TH = window.BudgieThemes, APP_VERSION = "1.4.6";
   var $ = function (s) { return document.querySelector(s); };
   var esc = function (s) { return String(s === undefined || s === null ? "" : s).replace(/[&<>"']/g, function (c) { return {"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]; }); };
-  var LS = {get: function (k, d) { try { var v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch (e) { return d; } }, set: function (k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }};
+  // wiped: Budgie's copy at the old address has been wiped (it's moving across), so nothing is saved here again
+  var wiped = false;
+  var LS = {get: function (k, d) { try { var v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch (e) { return d; } }, set: function (k, v) { if (wiped) return; try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }};
   var todayIso = function () { var d = new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); };
   var newId = function (p) { return (p || "r") + "-" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6); };
   var ICON = {
@@ -25,7 +27,7 @@
     db: null,
     open: function () { return new Promise(function (res) { try { var r = indexedDB.open("budgie", 1); r.onupgradeneeded = function () { r.result.createObjectStore("kv"); }; r.onsuccess = function () { store.db = r.result; res(); }; r.onerror = function () { res(); }; } catch (e) { res(); } }); },
     get: function (k) { return new Promise(function (res) { if (!store.db) return res(LS.get("budgie.kv." + k, null)); try { var q = store.db.transaction("kv").objectStore("kv").get(k); q.onsuccess = function () { res(q.result || null); }; q.onerror = function () { res(null); }; } catch (e) { res(null); } }); },
-    set: function (k, v) { if (!store.db) { LS.set("budgie.kv." + k, v); return; } try { store.db.transaction("kv", "readwrite").objectStore("kv").put(v, k); } catch (e) { LS.set("budgie.kv." + k, v); } }
+    set: function (k, v) { if (wiped) return; if (!store.db) { LS.set("budgie.kv." + k, v); return; } try { store.db.transaction("kv", "readwrite").objectStore("kv").put(v, k); } catch (e) { LS.set("budgie.kv." + k, v); } }
   };
 
   // ---------- state ----------
@@ -587,14 +589,17 @@
     S.ui.payEdit = id;
     var buds = d.budgets.filter(function (b) { return b.person === p && b.mode !== "saving"; });
     var accs = B.accountsOf(d, p).filter(function (a) { return /main|pot|saving|credit/.test(a.kind || "pot"); });
-    openSheet("<h2>Change this payment</h2>" +
-      '<label class="f">Amount<input type="text" inputmode="decimal" id="peAmt" value="' + esc(x.amount) + '"></label>' +
+    // one from the bank: the amount, the date and the account are the bank's, so only what it was for and the note change
+    var bk = isBankTx(x), lock = bk ? " disabled" : "";
+    openSheet("<h2>Change this payment</h2>" + (bk ? '<p class="small muted" style="margin:4px 0 0">From ' + esc(bankName()) + ": the amount, date and account come from your bank.</p>" : "") +
+      '<label class="f">Amount<input type="text" inputmode="decimal" id="peAmt" value="' + esc(x.amount) + '"' + lock + "></label>" +
       '<label class="f">What for<select id="peBud">' + buds.map(function (b) { return '<option value="' + esc(b.id) + '"' + (b.id === x.budget ? " selected" : "") + ">" + esc(b.name.replace(/ \(what's left\)/, "")) + "</option>"; }).join("") + "</select></label>" +
-      '<label class="f">Paid from<select id="peAcc">' + accs.map(function (a) { return '<option value="' + esc(a.id) + '"' + (a.id === x.account ? " selected" : "") + ">" + esc(a.name) + "</option>"; }).join("") + "</select></label>" +
-      '<div class="two"><label class="f">Date<input type="date" id="peDate" value="' + esc(x.date) + '"></label><label class="f">Note<input type="text" id="peNote" value="' + esc(x.note || "") + '"></label></div>' +
+      '<label class="f">Paid from<select id="peAcc"' + lock + ">" + accs.map(function (a) { return '<option value="' + esc(a.id) + '"' + (a.id === x.account ? " selected" : "") + ">" + esc(a.name) + "</option>"; }).join("") + "</select></label>" +
+      '<div class="two"><label class="f">Date<input type="date" id="peDate" value="' + esc(x.date) + '"' + lock + '></label><label class="f">Note<input type="text" id="peNote" value="' + esc(x.note || "") + '"></label></div>' +
       (x.split ? '<p class="small muted" style="margin:8px 0 0">Split with ' + esc(person(partner()).name) + ": " + esc((d.byId[x.split] || {}).name || "half each") + "</p>" : "") +
       '<button type="button" class="btn wide" style="margin-top:14px" data-a="pesave">Save</button><button type="button" class="btn danger wide" style="margin-top:10px" data-a="pedel">Delete this payment</button>');
   }
+  function isBankTx(x) { return !!x && (!!x.bankId || /^bk-/.test(String(x.id || ""))); }
 
   // ----- Pots
   SCREENS.pots = function () {
@@ -881,7 +886,7 @@
   function checkList() { return demoOn() || !me() ? [] : B.checks(db(), me(), todayIso()); }
   function checkRows(list) {
     return list.map(function (c) {
-      return '<div class="li" style="flex-wrap:wrap;gap:8px"><span class="grow" style="min-width:200px"><span class="what">' + esc(c.text) + "</span></span>" +
+      return '<div class="li" style="flex-wrap:wrap;gap:8px"><span class="grow" style="min-width:200px"><span class="what">' + esc(MT(c.text)) + "</span></span>" +
         '<span style="display:flex;gap:8px;margin-left:auto">' + (c.action ? '<button type="button" class="btn sm" data-a="chk" data-v="' + esc(c.id) + '">' + (c.action === "go" ? "Check" : "Change") + "</button>" : "") +
         '<button type="button" class="btn ghost sm" data-a="chkok" data-v="' + esc(c.id) + '">' + (c.action ? "It's right" : "Done") + "</button></span></div>";
     }).join("");
@@ -1124,7 +1129,7 @@
         if (EDIT.table === "loans" && r.direction === "out") return "";
         var own = f.owner || me(); return '<label class="f">' + esc(f.l) + '<select data-f="' + f.k + '">' + (f.optional ? '<option value="">None</option>' : "") + accOptions(v || (f.optional ? "" : B.mainOf(db(), own)), own, f.all ? null : /main|pot|saving|credit|isa|lisa|pension/) + "</select></label>";
       case "accounts": var sel = String(v).split(/[,\s]+/); return '<div class="f" style="font-size:13px;font-weight:600;color:var(--muted);margin-top:12px">' + esc(f.l) + "</div>" + db().accounts.map(function (a) { return '<label class="check" style="padding:6px 0"><input type="checkbox" data-fm="' + f.k + '" value="' + esc(a.id) + '"' + (sel.indexOf(a.id) >= 0 ? " checked" : "") + ">" + esc((a.owner === me() ? "" : person(a.owner).name + "'s ") + a.name) + "</label>"; }).join("");
-      case "owners": var both = String(v || me()).split(/[,\s]+/).filter(Boolean).length > 1; return '<label class="f">' + esc(f.l) + '<select data-f="owners"><option value="' + me() + '">Just mine</option><option value="' + me() + ", " + partner() + '"' + (both ? " selected" : "") + ">Ours together</option></select></label>";
+      case "owners": var both = String(v || me()).split(/[,\s]+/).filter(Boolean).length > 1; return '<label class="f">' + esc(f.l) + '<select data-f="owners"><option value="' + esc(me()) + '">Just mine</option><option value="' + esc(me() + ", " + partner()) + '"' + (both ? " selected" : "") + ">Ours together</option></select></label>";
       case "split": return '<label class="f">' + esc(f.l) + '<select data-f="split"><option value="">No, it\'s just mine</option>' + db().splits.map(function (s) { return '<option value="' + esc(s.id) + '"' + (v === s.id ? " selected" : "") + ">" + esc(s.name + ": " + describeShares(s.shares)) + "</option>"; }).join("") + "</select></label>";
       case "shares":
         var ppl = db().people, fixed = /=/.test(v), vals = {}; String(v).replace(/([a-z]+)\s*[:=]\s*([\d.]+)/gi, function (_, a, b) { vals[a.toLowerCase()] = b; });
@@ -1303,6 +1308,7 @@
     payedit1: function (v) { paymentSheet(v); },
     pesave: function () {
       var x = (tables().transactions || []).filter(function (r) { return r.id === S.ui.payEdit; })[0]; if (!x) return;
+      if (isBankTx(x)) { put("transactions", Object.assign({}, x, {budget: $("#peBud").value, note: $("#peNote").value}), true); closeSheet(); toast("Payment changed"); render(); return; }
       var a = +String(($("#peAmt") || {}).value || "").replace(/[£,\s]/g, ""); if (!(a > 0)) { toast("Type the amount first"); return; }
       put("transactions", Object.assign({}, x, {amount: B.round(a), budget: $("#peBud").value, account: $("#peAcc").value, date: $("#peDate").value || x.date, note: $("#peNote").value}), true);
       closeSheet(); toast("Payment changed"); render();
@@ -1654,7 +1660,9 @@
     for (var i = 0; i < 5 && S.data.queue.length; i++) { await sync(false); if (S.data.queue.length) await new Promise(function (r) { setTimeout(r, 1500); }); }
     if (S.data.queue.length) { toast("Couldn't reach your sheet yet. Try again when you have signal."); return; }
     var link = HOME + "#connect=" + btoa(unescape(encodeURIComponent(JSON.stringify({u: S.cfg.u, k: S.cfg.k})))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-    // wipe the old copy so nothing at this address can read it
+    // wipe the old copy so nothing at this address can read it. From here nothing is saved at this address again, and
+    // a sync still on its way (one fetching everything again after a refused change, say) is dropped when it answers
+    wiped = true; clearTimeout(syncTimer); S.cfg = null;
     try { Object.keys(localStorage).forEach(function (k) { if (/^budgie\./.test(k)) localStorage.removeItem(k); }); } catch (e) {}
     try { if (store.db) store.db.close(); indexedDB.deleteDatabase("budgie"); } catch (e) {}
     try { (await caches.keys()).forEach(function (k) { if (/^budgie-/.test(k)) caches.delete(k); }); } catch (e) {}
