@@ -300,7 +300,9 @@ function exReviewBase_(db, p, tys, today) {
   var saved = 0;
   if (from <= last) Budgie.periods(db, p, from, Budgie.addDays(last, 1)).forEach(function (per) {
     if (per.start < from || per.start > last) return;
-    Budgie.planFor(db, p, per).lines.forEach(function (l) { if (l.kind === "save") saved += +l.amount || 0; });
+    // saved as the Money tab and Budgie.yearReview count it: money put by for a yearly bill is bills money, and a top-up
+    // of the pot that covers going over is saving
+    Budgie.planFor(db, p, per).lines.forEach(function (l) { if ((l.kind === "save" && !l.setAside) || l.kind === "topup") saved += +l.amount || 0; });
   });
   out.saved = Budgie.round(saved);
   // spending by budget, by month and by day (their share)

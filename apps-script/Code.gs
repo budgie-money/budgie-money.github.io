@@ -818,19 +818,22 @@ function refreshBudgetTabs() {
     var head = ["", ].concat(list.map(function (pk) { return pk.name; }));
     var out = [[p.name + "'s budget (worked out by Budgie, don't type here)"].concat(list.map(function () { return ""; })), head,
       ["Starts"].concat(list.map(function (pk) { return Budgie.nice(pk.start); })), ["Next payday"].concat(list.map(function (pk) { return Budgie.nice(pk.next); }))];
-    var sections = [["in", "Money in"], ["bill", "Bills"], ["spend", "Spending"], ["save", "Savings"], ["topup", "Top-ups"]];
+    // the same four kinds of money as the Money tab, in its words and colours: money put by for a yearly bill is under
+    // bills, a top-up of the pot that covers going over is saved, and what's left over is carried into next month.
+    // Each kind's heading has its total for each month, as the app shows it.
+    var sections = [["in", "Coming in", "#1F7A4D"], ["bill", "Bills to pay", "#6B4FBB"], ["spend", "What you can spend", "#2369A8"], ["save", "What's saved", "#B07A12"]];
+    var kt = views.map(function (v) { return Budgie.kinds(v.lines); }), blank = function () { return [""].concat(list.map(function () { return ""; })); }, heads = {};
     sections.forEach(function (sec) {
       var names = [];
-      views.forEach(function (v) { v.lines.forEach(function (l) { if (l.kind === sec[0] && names.indexOf(l.name) < 0) names.push(l.name); }); });
+      views.forEach(function (v) { v.lines.forEach(function (l) { if (Budgie.kindOf(l) === sec[0] && names.indexOf(l.name) < 0) names.push(l.name); }); });
       if (!names.length) return;
-      out.push([""].concat(list.map(function () { return ""; })), [sec[1]].concat(list.map(function () { return ""; })));
+      out.push(blank()); heads[out.length] = sec[2]; out.push([sec[1]].concat(kt.map(function (t) { return t[sec[0]]; })));
       names.forEach(function (n) {
-        out.push([n].concat(views.map(function (v) { var t = 0; v.lines.forEach(function (l) { if (l.kind === sec[0] && l.name === n) t += l.amount; }); return Budgie.round(t); })));
+        out.push([n].concat(views.map(function (v) { var t = 0; v.lines.forEach(function (l) { if (Budgie.kindOf(l) === sec[0] && l.name === n) t += l.amount; }); return Budgie.round(t); })));
         if (sec[0] === "spend") out.push(["   spent so far"].concat(views.map(function (v) { var l = v.lines.filter(function (x) { return x.kind === "spend" && x.name === n; })[0]; return l && l.spent !== undefined ? l.spent : ""; })));
       });
-      out.push(["Total " + sec[1].toLowerCase()].concat(views.map(function (v) { var t = 0; v.lines.forEach(function (l) { if (l.kind === sec[0]) t += l.amount; }); return Budgie.round(t); })));
     });
-    out.push([""].concat(list.map(function () { return ""; })), ["Short of money"].concat(views.map(function (v) { return v.plan.shortfall || ""; })));
+    out.push(blank(), ["Left over"].concat(kt.map(function (t) { return Math.max(0, t.left); })), ["Short of money"].concat(views.map(function (v) { return v.plan.shortfall || ""; })));
     out.push(["", "Updated " + Utilities.formatDate(new Date(), tz_(), "d MMM yyyy HH:mm")].concat(list.slice(1).map(function () { return ""; })));
     // names come from both phones: one that looks like a formula (=IMPORTXML…) is written as text, as in the data tabs
     out = out.map(function (r) { return r.map(cell_); });
@@ -838,7 +841,11 @@ function refreshBudgetTabs() {
     sh.getRange(1, 1).setFontWeight("bold").setFontSize(13); sh.getRange(2, 1, 1, out[0].length).setFontWeight("bold");
     sh.getRange(3, 2, out.length - 2, out[0].length - 1).setNumberFormat("£#,##0.00;-£#,##0.00;-");
     sh.getRange(3, 2, 2, out[0].length - 1).setNumberFormat("@");
-    out.forEach(function (r, i) { if (/^(Money in|Bills|Spending|Savings|Top-ups)$/.test(r[0]) || /^Total /.test(r[0])) sh.getRange(i + 1, 1, 1, r.length).setFontWeight("bold"); if (/^   spent/.test(r[0])) sh.getRange(i + 1, 1, 1, r.length).setFontColor("#566273"); });
+    out.forEach(function (r, i) {
+      if (heads[i] || /^(Left over|Short of money)$/.test(r[0])) sh.getRange(i + 1, 1, 1, r.length).setFontWeight("bold");
+      if (heads[i]) sh.getRange(i + 1, 1).setFontColor(heads[i]);
+      if (/^   spent/.test(r[0])) sh.getRange(i + 1, 1, 1, r.length).setFontColor("#566273");
+    });
     sh.setColumnWidth(1, 260); sh.setFrozenColumns(1); sh.setFrozenRows(2);
     // one warning over the tab, not a new one every refresh (they'd pile up by the thousand)
     try { sh.getProtections(SpreadsheetApp.ProtectionType.RANGE).forEach(function (pr) { if (pr.getDescription() === "Budgie") pr.remove(); }); } catch (x) {}

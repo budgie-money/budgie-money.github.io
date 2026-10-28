@@ -1,7 +1,7 @@
 /* Budgie app: screens, syncing and offline queue. The maths lives in engine.js. */
 (function () {
   "use strict";
-  var B = window.Budgie, TH = window.BudgieThemes, APP_VERSION = "1.4.17";
+  var B = window.Budgie, TH = window.BudgieThemes, APP_VERSION = "1.4.18";
   var $ = function (s) { return document.querySelector(s); };
   var esc = function (s) { return String(s === undefined || s === null ? "" : s).replace(/[&<>"']/g, function (c) { return {"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]; }); };
   // wiped: Budgie's copy at the old address has been wiped (it's moving across), so nothing is saved here again
@@ -218,6 +218,7 @@
     sheet: ["Where your pay goes", "This is your budget for one pay period, payday to payday: what comes in, the bills it pays, what you can spend and what you save. It's the same as your budget tab in the Google Sheet, worked out from the same rules."],
     bankmap: ["Which is which", "Tell Budgie which of its accounts each one is. Moves between them tick off your payday list by themselves."],
     modes: ["How budgets work", "Day to day builds up each day. Weekly is paced week by week, good for food shops. One-offs have no daily pace. Saving is moved on payday. Whatever is left gets what's left after everything else."],
+    rate: ["Saving rate", "How much of what comes in each month is saved. Coming in is your pay and money paid to you, not money carried over from last month. Money put by for yearly bills isn't counted as saved. The month still going is the lighter bar."],
     pots: ["Where this comes from", "Budgie works out what should be in each one from your rules and what you've logged. Tap one if your bank app shows something different, and tell Budgie what it says."]
   };
   function infoBtn(k) { return '<button type="button" class="info" data-a="info" data-v="' + k + '" aria-label="' + esc(INFO[k][0]) + '">' + icon("info", 18) + "</button>"; }
@@ -454,15 +455,11 @@
   // over is saving. What comes in always equals what goes out plus what's left over (or short).
   var KINDS = {in: "pay", bill: "cal", spend: "basket", save: "pot"};
   var kchip = function (k) { return '<span class="kchip k-' + k + '" aria-hidden="true">' + icon(KINDS[k], 18) + "</span>"; };
-  var kindOf = function (l) { return l.kind === "topup" ? "save" : l.kind === "save" && l.setAside ? "bill" : l.kind; };
-  // new money: pay, other income and what your partner or a loan pays you (not money carried over from last month)
-  var newMoney = function (l) { return l.kind === "in" && !l.already && !l.leftover && !l.setAside && l.id !== "opening"; };
+  // (the kinds, and what's new money in, are the engine's: the budget tab in the sheet sorts them the same way)
   function sortPlan(lines) {
-    var g = {in: [], bill: [], spend: [], save: []}, t = {in: 0, bill: 0, spend: 0, save: 0, fresh: 0};
-    lines.forEach(function (l) { var k = kindOf(l); if (!g[k]) return; g[k].push(l); t[k] += l.amount; if (newMoney(l)) t.fresh += l.amount; });
-    Object.keys(t).forEach(function (k) { t[k] = B.round(t[k]); });
-    t.left = B.round(t.in - t.bill - t.spend - t.save);
-    return {lines: g, tot: t};
+    var g = {in: [], bill: [], spend: [], save: []};
+    lines.forEach(function (l) { var k = B.kindOf(l); if (g[k]) g[k].push(l); });
+    return {lines: g, tot: B.kinds(lines)};
   }
   // a bar of what goes where: bills, spending and saving, out of what comes in (or out of what goes out, when it's more)
   function kindBar(t, cls) {
@@ -530,10 +527,10 @@
     return card('<div class="row" style="align-items:center"><span class="khead">' + kchip("save") + "<h2>What's saved</h2></span>" + num(M(tot)) + '</div><div class="list" style="margin-top:6px">' + rows + "</div>");
   }
   function yearView(d, p, now) {
-    var ys = B.year(d, p, now).map(function (y) { return Object.assign({k: sortPlan(B.planFor(d, p, y.period).lines).tot}, y); }), cur = 0;
+    var ys = B.year(d, p, now).map(function (y) { return Object.assign({k: B.kinds(B.planFor(d, p, y.period).lines)}, y); }), cur = 0;
     ys.forEach(function (y, i) { if (y.current) cur = i; });
     var max = Math.max.apply(null, ys.map(function (y) { return y.k.save; }).concat([1])), totSave = 0, totIn = 0, totSpent = 0;
-    ys.forEach(function (y) { totSave += y.k.save; totIn += y.k.fresh; totSpent += y.past || y.current ? y.spent : 0; });
+    ys.forEach(function (y) { totSave += y.saved; totIn += y.fresh; totSpent += y.past || y.current ? y.spent : 0; });
     var bars = ys.map(function (y) { return '<div title="' + esc(y.period.name + ": " + M(y.k.save)) + '"><i class="' + (y.past ? "" : "plan") + '" style="height:' + Math.max(2, Math.round(y.k.save / max * 110)) + 'px"></i><span>' + esc(y.period.name.slice(0, 1)) + "</span></div>"; }).join("");
     var key = function (k, label) { return '<span class="k-' + k + '" style="display:inline-flex;align-items:center;gap:5px"><span class="kdot"></span>' + label + "</span>"; };
     return card('<div class="row" style="align-items:center"><span class="khead">' + kchip("save") + "<h2>Saved each month</h2></span>" + num(M0(totSave)) + '</div><div class="bars k-save">' + bars + '</div><p class="tiny muted" style="margin:8px 0 0">Lighter bars are still to come.</p>') +
@@ -974,40 +971,67 @@
   };
 
   // ----- Insights
+  // How the money's going, from when you started Budgie: this week against the same days last month, where each
+  // budget is heading by payday, the days you spent nothing, the food shop month by month and how much of what comes
+  // in is saved. The engine works each one out (spendWeek, forecast, noSpend, savingRates); anything set against a
+  // "usual" uses full months only, as the first month is short.
   SCREENS.insights = function () {
     var d = db(), p = me(), now = todayIso(), st = B.startOf(d, p), per = B.periodAt(d, p, now), pers = [per], html = "";
+    html += weekCard(d, p, now) + forecastCard(d, p, now) + noSpendCard(d, p, now);
     for (var i = 0; i < 5; i++) { var pv = B.prevPeriod(d, p, pers[0]); if (!pv || pv.start >= pers[0].start || pv.next <= st) break; pers.unshift(pv); }
     var buds = d.budgets.filter(function (b) { return b.person === p && b.mode !== "saving"; });
     var focus = buds.filter(function (b) { return /food/i.test(b.name); })[0] || buds[0];
     if (focus) {
       // (the month still going is the lighter bar)
       var vals = pers.map(function (pk) { var s = B.budgetState(d, p, pk)[focus.id]; return s ? s.spent : 0; }), max = Math.max.apply(null, vals.concat([1]));
-      html += card('<div class="row" style="align-items:center"><span class="khead">' + kchip("spend") + "<h2>" + esc(budName(focus)) + ' each month</h2></span></div><div class="bars k-spend" style="height:150px">' + vals.map(function (v, i) { return '<div><span class="num" style="font-size:11px">' + M0(v) + '</span><i class="' + (i === vals.length - 1 ? "plan" : "") + '" style="height:' + Math.max(2, Math.round(v / max * 100)) + 'px"></i><span>' + esc(pers[i].name.slice(0, 3)) + "</span></div>"; }).join("") + "</div>");
+      html += card(khead("spend", esc(budName(focus)) + " each month") + '<div class="bars k-spend" style="height:150px">' + vals.map(function (v, i) { return '<div><span class="num" style="font-size:11px">' + M0(v) + '</span><i class="' + (i === vals.length - 1 ? "plan" : "") + '" style="height:' + Math.max(2, Math.round(v / max * 100)) + 'px"></i><span>' + esc(pers[i].name.slice(0, 3)) + "</span></div>"; }).join("") + "</div>");
     }
-    var tips = [];
-    // days are counted from when you started Budgie, so the first month isn't counted from before then
-    var from = st > per.start ? st : per.start, stt = B.budgetState(d, p, per), dayNo = B.diff(from, now) + 1, days = B.diff(from, per.next);
-    buds.forEach(function (b) {
-      var s = stt[b.id]; if (!s || !s.avail) return;
-      // "usual" is a full month: the short first one would make any normal month look high
-      var prev = pers.slice(0, -1).filter(function (pk) { return !pk.opening; }).map(function (pk) { var x = B.budgetState(d, p, pk)[b.id]; return x ? x.spent : 0; }).filter(function (v) { return v > 0; });
-      var avg = prev.length ? prev.reduce(function (a, c) { return a + c; }, 0) / prev.length : 0, proj = s.spent / Math.max(1, dayNo) * days;
-      if (per.opening) return;
-      if (avg && proj > avg * 1.15 && s.spent > 20) tips.push({t: esc(budName(b)) + " is running high", d: "On course for about " + M0(proj) + " this month; your usual is " + M0(avg) + "."});
-      else if (avg && proj < avg * 0.85 && dayNo > 7) tips.push({t: esc(budName(b)) + " is lower than usual", d: "On course for about " + M0(proj) + " against your usual " + M0(avg) + ". Nice."});
-    });
-    // a day you logged a payment counts as a spending day (a refund doesn't)
-    var spentDays = {}; d.transactions.forEach(function (x) { if (x.person === p && +x.amount > 0 && x.date >= from && x.date <= now) spentDays[x.date] = 1; });
-    var noSpend = Math.max(0, dayNo - Object.keys(spentDays).length);
-    tips.push({t: noSpend + " no-spend day" + (noSpend === 1 ? "" : "s") + " this month", d: "Days you didn't log any spending."});
+    html += rateCard(d, p, now);
     var subs = 0, subNames = []; d.bills.forEach(function (b) { if (b.person === p && /sub/i.test(b.category || "")) { var y = 0; B.occurrences(d, b, now, B.addDays(now, 365)).forEach(function (o) { y += o.amount; }); subs += y; subNames.push([b.name, y]); } });
-    if (subs) { subNames.sort(function (a, b) { return b[1] - a[1]; }); tips.push({t: "Subscriptions cost " + M0(subs) + " a year", d: esc(subNames[0][0]) + " is the biggest at " + M0(subNames[0][1]) + "."}); }
-    // saving out of new money in (pay and money paid to you), not counting money put by for yearly bills
-    var kt = sortPlan(B.planFor(d, p, per).lines).tot; if (kt.fresh > 0 && !per.opening) tips.push({t: "You're saving " + Math.round(kt.save / kt.fresh * 100) + "% of what comes in", d: M0(kt.save) + " this month."});
-    html += tips.map(function (x) { return card('<div style="font-weight:700">' + x.t + '</div><div class="small muted">' + x.d + "</div>"); }).join("");
+    if (subs) { subNames.sort(function (a, b) { return b[1] - a[1]; }); html += card('<div style="font-weight:700">Subscriptions cost ' + M0(subs) + ' a year</div><div class="small muted">' + esc(subNames[0][0]) + " is the biggest at " + M0(subNames[0][1]) + ".</div>"); }
     html += yearCard(taxYearStart(now), true);
     return html;
   };
+  // a card's heading with its kind of money's chip, and something on the right (a total, say)
+  var khead = function (k, title, right) { return '<div class="row" style="align-items:center"><span class="khead">' + kchip(k) + "<h2>" + title + "</h2></span>" + (right || "") + "</div>"; };
+  var dayRange = function (a, b) { return a === b ? B.nice(a) : a.slice(0, 7) === b.slice(0, 7) ? (+a.slice(8)) + " to " + B.nice(b).replace(/^\w+ /, "") : B.nice(a).replace(/^\w+ /, "") + " to " + B.nice(b).replace(/^\w+ /, ""); };
+  // this week (counted from payday, as weekly budgets are) against the same days last month, and the budgets that
+  // changed most
+  function weekCard(d, p, now) {
+    var w = B.spendWeek(d, p, now), pv = w.prev;
+    var line = (w.from === now ? "Today" : "Since " + B.nice(w.from)) + (pv ? " · " + M0(pv.total) + " by now last month" : "");
+    var rows = w.budgets.slice(0, 3).map(function (r) {
+      var why = r.change === null ? "" : Math.abs(r.change) < 0.5 ? "Same as last month" : M0(Math.abs(r.change)) + (r.change > 0 ? " more" : " less") + " than last month";
+      return li(esc(budName(r)), why, num(M0(r.now)));
+    }).join("");
+    return card(khead("spend", "Spending this week", num(M0(w.total))) + '<p class="small muted" style="margin:6px 0 0">' + esc(line) + "</p>" + (rows ? '<div class="list" style="margin-top:4px">' + rows + "</div>" : ""));
+  }
+  // where each budget is heading by payday: spent so far (solid), where it's heading (lighter) and the budget (the mark)
+  function forecastCard(d, p, now) {
+    var f = B.forecast(d, p, now); if (!f.budgets.length) return "";
+    var rows = f.budgets.map(function (b) {
+      var end = b.end === null ? b.spent : b.end, top = Math.max(b.avail, end, b.spent, 0.01), right = "";
+      var track = '<div class="bar wrap" aria-hidden="true" style="margin-top:6px"><i style="width:' + Math.min(100, end / top * 100).toFixed(1) + '%;background:color-mix(in srgb, var(--k-spend) 30%, var(--card))"></i><i style="width:' + Math.min(100, b.spent / top * 100).toFixed(1) + '%;background:var(--k-spend)"></i>' + (top > b.avail + 0.004 ? '<b style="left:calc(' + (b.avail / top * 100).toFixed(1) + '% - 1px)"></b>' : "") + "</div>";
+      if (b.under !== null) right = b.under <= -0.5 ? num(M0(-b.under) + " over", "bad") : b.mode === "oneoff" ? num(M0(b.under) + " left") : b.under >= 0.5 ? num(M0(b.under) + " under", "good") : num("On budget");
+      var why = M0(b.spent) + " of " + M0(b.avail) + (b.usual !== null ? " · usually " + M0(b.usual) : "") + track;
+      return li(esc(budName(b)), why, right, "payments", f.period.start + "|" + b.id);
+    }).join("");
+    return card(khead("spend", "By payday", '<span class="small muted">' + esc(B.nice(f.period.next)) + "</span>") + (f.early ? '<p class="small muted" style="margin:6px 0 0">Too early to tell until ' + esc(B.nice(f.sure)) + ".</p>" : "") + '<div class="list" style="margin-top:4px">' + rows + "</div>");
+  }
+  // the days you spent nothing this month, one mark a day (the rest of the month still to come), and the longest run
+  function noSpendCard(d, p, now) {
+    var n = B.noSpend(d, p, now); if (!n.days) return "";
+    var togo = Math.max(0, B.diff(n.from, B.periodAt(d, p, now).next) - n.days), L = n.longest, marks = n.list.map(function (x) { return x.spent ? "<i></i>" : '<i class="on"></i>'; }).join("");
+    for (var i = 0; i < togo; i++) marks += '<i class="to"></i>';
+    var line = "This month" + (L.days ? " · longest run " + L.days + " day" + (L.days === 1 ? "" : "s") + ", " + dayRange(L.from, L.to) : "");
+    return card(khead("spend", "No-spend days", num(String(n.count))) + '<div class="days k-spend" aria-hidden="true">' + marks + '</div><p class="small muted" style="margin:8px 0 0">' + esc(line) + "</p>");
+  }
+  // what's saved out of new money in, month by month (the month still going is the lighter bar)
+  function rateCard(d, p, now) {
+    var rs = B.savingRates(d, p, now, 6); if (!rs.length) return "";
+    var cur = rs[rs.length - 1], pc = function (r) { return r.pct === null ? "–" : r.pct + "%"; }, max = Math.max.apply(null, rs.map(function (r) { return r.pct || 0; }).concat([1]));
+    return card(khead("save", "Saving rate" + infoBtn("rate"), num(pc(cur))) + '<div class="bars k-save" style="height:150px">' + rs.map(function (r) { return '<div><span class="num" style="font-size:11px">' + pc(r) + '</span><i class="' + (r.current ? "plan" : "") + '" style="height:' + Math.max(2, Math.round((r.pct || 0) / max * 100)) + 'px"></i><span>' + esc(r.period.name.slice(0, 3)) + "</span></div>"; }).join("") + "</div>");
+  }
   function taxYearStart(iso) { var y = +iso.slice(0, 4); return (iso.slice(5) >= "04-06" ? y : y - 1) + "-04-06"; }
   // the tax year in money: in Insights all year ("so far"), and on Today for the first weeks after 6 April
   function yearCard(start, soFar) {

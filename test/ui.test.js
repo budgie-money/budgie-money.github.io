@@ -650,6 +650,60 @@ const fails = [], check = (name, cond, extra) => { if (cond) console.log("ok", n
     check("and the new value shows in what's saved", /Cash ISA(?:(?!Update).)*£4,321\.99 ?Update/.test(T(await page.textContent("main"))), T(await page.textContent("main")).slice(-400));
     await page.context().close();
   }
+  // ===== 1.4.18: Insights: this week against the same days last month, where each budget is heading by payday, the
+  // no-spend days and the saving rate, in the Money tab's colours, worked out by the engine for each of you
+  {
+    const rgb = hex => { const n = parseInt(hex.slice(1), 16); return "rgb(" + (n >> 16) + ", " + (n >> 8 & 255) + ", " + (n & 255) + ")"; };
+    for (const [who, scheme] of [["ethan", "light"], ["ethan", "dark"], ["sophie", "light"]]) {
+      const ctx = await browser.newContext({...devices["Pixel 7"], locale: "en-GB", timezoneId: "Europe/London", serviceWorkers: "block", colorScheme: scheme});
+      await ctx.addInitScript(() => { try { localStorage.setItem("budgie.checkSeen", JSON.stringify("2026-12-10")); } catch (e) {} });
+      page = await ctx.newPage(); await page.clock.install({time: new Date("2026-12-10T19:30:00")});
+      await page.goto(links[who]); await page.waitForFunction(() => /Hi /.test(document.querySelector("#top").textContent), null, {timeout: 8000});
+      await page.waitForFunction(() => !window.BudgieApp.S.syncing && window.BudgieApp.S.lastSync, null, {timeout: 8000}); await page.waitForTimeout(300);
+      await page.evaluate(() => { document.querySelector("#sheets").innerHTML = ""; window.BudgieApp.go("insights"); }); await page.waitForTimeout(150);
+      // (read in one go, so a sync can't re-draw the screen half way)
+      const r = await page.evaluate(([p]) => {
+        const B = window.Budgie, d = window.BudgieApp.db(), now = "2026-12-10", T = s => (s || "").replace(/\s+/g, " ").trim();
+        const cards = [...document.querySelectorAll("main .card")], byHead = h => cards.find(c => { const x = c.querySelector("h2"); return x && T(x.textContent) === h; });
+        const w = B.spendWeek(d, p, now), f = B.forecast(d, p, now), n = B.noSpend(d, p, now), rs = B.savingRates(d, p, now);
+        const wc = byHead("Spending this week"), fc = byHead("By payday"), nc = byHead("No-spend days"), rc = byHead("Saving rate");
+        const M0 = v => "£" + Math.round(v).toLocaleString("en-GB");
+        return {
+          heads: cards.map(c => c.querySelector("h2") ? T(c.querySelector("h2").textContent) : ""), text: T(document.querySelector("main").textContent),
+          week: wc && T(wc.querySelector(".row .num").textContent) === M0(w.total) && (!w.prev || T(wc.textContent).includes(M0(w.prev.total) + " by now last month")),
+          weekRows: wc ? wc.querySelectorAll(".li").length === Math.min(3, w.budgets.length) : false,
+          fc: fc ? [fc.querySelectorAll(".li").length === f.budgets.length, !f.early, f.budgets.every(b => b.under === null || T(fc.textContent).includes(b.under <= -0.5 ? M0(-b.under) + " over" : b.mode === "oneoff" ? M0(b.under) + " left" : b.under >= 0.5 ? M0(b.under) + " under" : "On budget"))] : null,
+          ns: nc ? [T(nc.querySelector(".row .num").textContent) === String(n.count), nc.querySelectorAll(".days > i.on").length === n.count, nc.querySelectorAll(".days > i").length === B.diff(n.from, B.periodAt(d, p, now).next)] : null,
+          rate: rc ? T(rc.querySelector(".row .num").textContent) === (rs[rs.length - 1].pct === null ? "–" : rs[rs.length - 1].pct + "%") && rc.querySelectorAll(".bars > div").length === rs.length : null,
+          chips: [wc, fc, nc, rc].map(c => c && c.querySelector(".kchip") ? [c.querySelector(".kchip").className.replace("kchip ", ""), getComputedStyle(c.querySelector(".kchip")).color] : null),
+          strip: nc ? getComputedStyle(nc.querySelector(".days > i.on") || nc.querySelector(".days > i")).backgroundColor : "",
+          rateBar: rc ? getComputedStyle(rc.querySelector(".bars > div > i:not(.plan)") || rc.querySelector(".bars > div > i")).backgroundColor : ""
+        };
+      }, [who]);
+      const want = scheme === "light" ? ["#1F7A4D", "#6B4FBB", "#2369A8", "#B07A12"] : ["#6FD39C", "#B8A3F2", "#7DB8EE", "#EBC064"], tag = " (" + who + ", " + scheme + ")";
+      check("Insights has the four new cards" + tag, ["Spending this week", "By payday", "No-spend days", "Saving rate"].every(h => r.heads.includes(h)), r.heads);
+      check("this week, and the same days last month, as the engine says" + tag, r.week && r.weekRows, r.text.slice(0, 300));
+      check("each budget's payday forecast, as the engine says" + tag, r.fc && r.fc.every(Boolean), [r.fc, r.text.slice(0, 600)]);
+      check("no-spend days: this month's count, one mark a day" + tag, r.ns && r.ns.every(Boolean), r.ns);
+      check("the saving rate, month by month" + tag, r.rate === true, r.rate);
+      check("spending cards in spending's colour, saving in saving's" + tag, JSON.stringify(r.chips) === JSON.stringify([["k-spend", rgb(want[2])], ["k-spend", rgb(want[2])], ["k-spend", rgb(want[2])], ["k-save", rgb(want[3])]]) && (r.strip === rgb(want[2]) || !r.ns[1]) && r.rateBar.length > 0, [r.chips, r.strip]);
+      check("the old one-line tips have gone into the cards" + tag, !/You're saving \d+% of what comes in|is running high|is lower than usual|no-spend days? this month/.test(r.text), r.text.slice(0, 400));
+      if (who === "ethan" && scheme === "light") {
+        await page.click('[data-a="info"][data-v="rate"]'); await page.waitForTimeout(100);
+        check("the saving rate's (i) says what counts", /carried over from last month/.test(T(await page.textContent("#sheets"))) && /yearly bills/.test(T(await page.textContent("#sheets"))), T(await page.textContent("#sheets")));
+        await page.click('#sheets [data-a="sheetclose"]'); await page.waitForTimeout(80);
+        await page.click('main [data-a="payments"]'); await page.waitForTimeout(120);
+        check("a budget's forecast opens its payments", (await page.evaluate(() => window.BudgieApp.S.view.s)) === "payments");
+      }
+      await ctx.close();
+    }
+    // early in the pay period: it's too early to say where a budget is heading, and says from when
+    page = await newPage("2026-11-30");
+    await page.goto(links.ethan); await hiE(page);
+    await page.evaluate(() => { document.querySelector("#sheets").innerHTML = ""; window.BudgieApp.go("insights"); }); await page.waitForTimeout(150);
+    check("early in the month the forecast waits a week, and says so", /Too early to tell until Wed 2 Dec\./.test(T(await page.textContent("main"))), T(await page.textContent("main")).slice(0, 500));
+    await page.context().close();
+  }
   // going over a budget, once the move that covers it is ticked, isn't "Over budget" any more: it says what it was
   {
     page = await newPage("2026-10-27");

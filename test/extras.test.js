@@ -317,5 +317,17 @@ const yearHousehold = (fx) => {
   ok("E1: Ethan's fun this week is his £10.07 share", e && /- Fun: [^\n]*\(£10\.07 spent this week/.test(e.body), e && e.body);
 }
 
+// X1 (1.4.18): the round-up's own count of what was saved (used when the engine's isn't there) leaves out money put by
+// for a yearly bill (Sophie's membership), as Budgie.yearReview and the Money tab do
+{
+  const {c} = setupEnv(yearHousehold), B = c.Budgie, db = c.exViewOf_("sophie", "2027-04-06");
+  const base = c.exReviewBase_(db, "sophie", "2026-04-06", "2027-04-05");
+  let setAside = 0, saving = 0;
+  B.periods(db, "sophie", base.from, "2027-04-06").forEach(per => { if (per.start < base.from) return; B.planFor(db, "sophie", per).lines.forEach(l => { if (l.setAside && l.kind === "save") setAside += l.amount; if ((l.kind === "save" && !l.setAside) || l.kind === "topup") saving += l.amount; }); });
+  ok("X1: Sophie put money by for her membership", setAside > 1, setAside);
+  ok("X1: and it isn't counted as saved", Math.abs(base.saved - B.round(saving)) < 0.005, {saved: base.saved, saving, setAside});
+  ok("X1: the same as the engine's round-up", Math.abs(base.saved - B.yearReview(db, "sophie", "2026-04-06").saved) < 0.005, {base: base.saved, yr: B.yearReview(db, "sophie", "2026-04-06").saved});
+}
+
 console.log(fails ? fails + " failed, " + passes + " passed" : "All " + passes + " passed");
 process.exit(fails ? 1 : 0);

