@@ -738,6 +738,93 @@ const fails = [], check = (name, cond, extra) => { if (cond) console.log("ok", n
     }
   }
 
+  // ===== 1.4.19: the flat bills as an estimate the real bills count against (a pooled bill), settled up each bills month
+  {
+    const ex = (key, ops) => page.request.post("http://localhost:" + PORT + "/exec", {data: JSON.stringify({key, ops})});
+    page = await newPage("2026-11-13");
+    await page.goto(links.ethan); await hiE(page);
+    // (an earlier test logged the bill's real amount for 1 Nov, £431.20: a change you make to one month's estimate, so
+    // once pooled it's November's estimate)
+    // Ethan turns it on in the bill's editor: the bills months start on the 16th
+    await page.evaluate(() => { document.querySelector("#sheets").innerHTML = ""; window.BudgieApp.go("bills"); }); await page.waitForTimeout(120);
+    await page.click('[data-a="edit"][data-v="bills:e-flat"]'); await page.waitForTimeout(100);
+    check("the bill's editor asks if it's an estimate, with nothing more until it is", !!(await page.$('[data-f="poolOn"]')) && !(await page.$('[data-f="poolDay"]')));
+    await page.check('[data-f="poolOn"]'); await page.waitForTimeout(100);
+    check("ticked, it asks which day the bills months start (the bill's own day to begin with)", (await page.$eval('select[data-f="poolDay"]', s => s.value)) === "1");
+    await page.selectOption('select[data-f="poolDay"]', "16"); await page.click('[data-a="editsave"]'); await page.waitForTimeout(250);
+    check("the 16th: pooled from the bills month going now (16 Oct), not back over months paid the old way", await page.evaluate(() => window.BudgieApp.db().byId["e-flat"].pool) === "2026-10-16");
+    const row = () => page.evaluate(() => { const b = document.querySelector('#main [data-a="pool"]'); return b ? b.innerText.replace(/\s+/g, " ") : ""; });
+    await page.evaluate(() => { document.querySelector("#sheets").innerHTML = ""; window.BudgieApp.go("bills"); }); await page.waitForTimeout(150);
+    check("Bills shows how far the bills month has got", /£0\.00 of £431\.20 So far, 16 Oct to 15 Nov/.test(await row()), await row());
+    // a new payee from the Bills pot: asked once
+    await ex(kE12, [{op: "put", table: "transactions", row: {id: "t-sky19", date: "2026-11-12", person: "ethan", amount: 38, budget: "", account: "e-bills", note: "SKY DIGITAL", review: true}}, {op: "put", table: "transactions", row: {id: "t-tesco19", date: "2026-11-12", person: "ethan", amount: 12, budget: "", account: "e-main", note: "TESCO STORES 19", review: true}}]);
+    await page.evaluate(() => window.BudgieApp.sync(false)); await page.waitForTimeout(500);
+    await page.evaluate(() => { document.querySelector("#sheets").innerHTML = ""; window.BudgieApp.go("review"); }); await page.waitForTimeout(150);
+    const asks = await page.$$eval('[data-a="revpool"]', bs => bs.map(b => b.dataset.v));
+    check("a new payee from the Bills pot is asked about, once, and a shop from the main account isn't", asks.join() === "t-sky19|e-flat,t-sky19|", asks);
+    check("the question is the bill's", /Part of household bills\?/.test(T(await page.textContent("main"))), T(await page.textContent("main")).slice(0, 300));
+    await page.click('[data-a="revpool"][data-v="t-sky19|e-flat"]'); await page.waitForTimeout(250);
+    check("yes: it's counted, and Budgie remembers the payee", await page.evaluate(() => { const d = window.BudgieApp.db(); const x = d.transactions.find(r => r.id === "t-sky19"); return x.budget === "e-flat" && x.review === false && window.Budgie.setting(d, "ethan", "bank.rule.sky digital", "") === "e-flat"; }));
+    // a real bill logged on Add counts against it (not as the bill's amount)
+    await page.evaluate(() => { document.querySelector("#sheets").innerHTML = ""; window.BudgieApp.go("add"); }); await page.waitForTimeout(100);
+    await page.click('[data-a="addmode"][data-v="bill"]'); await page.waitForTimeout(80);
+    await page.click('[data-a="addpick"][data-v="bill:e-flat"]').catch(async () => { await page.click('[data-a="addallbills"]'); await page.click('[data-a="addpick"][data-v="bill:e-flat"]'); });
+    await page.fill("#addAmt", "150"); await page.click('[data-a="addsave"]'); await page.waitForTimeout(200);
+    await page.evaluate(() => { document.querySelector("#sheets").innerHTML = ""; window.BudgieApp.go("bills"); }); await page.waitForTimeout(150);
+    check("logged on Add, it's counted against the estimate", /£188\.00 of £431\.20/.test(await row()), await row());
+    check("and the estimate's amount isn't changed by it", await page.evaluate(() => window.BudgieApp.db().exceptions.filter(x => x.item === "e-flat").length === 1));
+    await page.click('#main [data-a="pool"]'); await page.waitForTimeout(150);
+    check("tapping it shows the bills month and its payments", /16 Oct to 15 Nov\s*Household bills\s*3 days left\s*£188\.00\s*of £431\.20\s*Payments\s*2/.test(T(await page.textContent("main"))), T(await page.textContent("main")).slice(0, 300));
+    await page.context().close();
+    // Sophie sees the same, from her side
+    page = await newPage("2026-11-13");
+    await page.goto(links.sophie); await page.waitForFunction(() => /Hi /.test(document.querySelector("#top").textContent), null, {timeout: 8000}); await page.waitForTimeout(400);
+    await page.evaluate(() => { document.querySelector("#sheets").innerHTML = ""; window.BudgieApp.go("partner"); }); await page.waitForTimeout(150);
+    check("Sophie's partner screen shows the same running total", /£188\.00 of £431\.20 So far, 16 Oct to 15 Nov/.test(await row()), await row());
+    await page.context().close();
+    // after the 15th: settled up. £431.20 estimate, £188 paid: £243.20 left, Sophie's share (£143.73 of the estimate less
+    // £62.67 of what was paid: £81.06) back to her
+    page = await newPage("2026-11-16");
+    await page.goto(links.sophie); await page.waitForFunction(() => /Hi /.test(document.querySelector("#top").textContent), null, {timeout: 8000}); await page.waitForTimeout(400);
+    await page.evaluate(() => { document.querySelector("#sheets").innerHTML = ""; window.BudgieApp.go("today"); }); await page.waitForTimeout(150);
+    check("Sophie's To do: what comes back to her, and why", /Ethan owes you £81\.06\s*Your share of what's left of household bills, 16 Oct to 15 Nov\./.test(T(await page.textContent("main"))), T(await page.textContent("main")).slice(0, 600));
+    await page.evaluate(() => { document.querySelector("#sheets").innerHTML = ""; window.BudgieApp.go("partner"); }); await page.waitForTimeout(150);
+    check("and her partner screen says how last month settled", /Last month £188\.00 · £81\.06 back to you/.test(await row()), await row());
+    await page.context().close();
+    page = await newPage("2026-11-16");
+    await page.goto(links.ethan); await hiE(page);
+    await page.evaluate(() => { document.querySelector("#sheets").innerHTML = ""; window.BudgieApp.go("today"); }); await page.waitForTimeout(150);
+    const td = T(await page.textContent("main"));
+    check("Ethan's To do: Sophie's share back to her, and nothing to move to savings (it goes through payday)", /Pay Sophie £81\.06\s*Sophie's share of what's left of household bills/.test(td) && !/Cash ISA\s*Your share/.test(td), td.slice(0, 900));
+    // a split with a dated change: renaming it changes only the name; changing its shares asks from when
+    await ex(kE12, [{op: "put", table: "amounts", row: {id: "amt-sp19", item: "bills", start: "2026-11-01", shares: "ethan:1, sophie:1"}}]);
+    await page.evaluate(() => window.BudgieApp.sync(false)); await page.waitForTimeout(500);
+    await page.evaluate(() => { document.querySelector("#sheets").innerHTML = ""; window.BudgieApp.go("list", {table: "splits"}); }); await page.waitForTimeout(150);
+    await page.click('[data-a="edit"][data-v="splits:bills"]'); await page.waitForTimeout(100);
+    check("a split's editor shows how it's shared today", await page.$eval('[data-sh="ethan"]', e => e.value) === "1");
+    await page.fill('[data-f="name"]', "Flat bills split"); await page.click('[data-a="editsave"]'); await page.waitForTimeout(250);
+    const sp = await page.evaluate(() => { const t = window.BudgieApp.S.data.tables; return {base: t.splits.find(x => x.id === "bills"), sheet: !!document.querySelector("#sheets h2")}; });
+    check("renamed: only the name changes (its own shares stay, no From when?)", sp.base.name === "Flat bills split" && sp.base.shares === "ethan:2, sophie:1" && !sp.sheet, sp);
+    await page.click('[data-a="edit"][data-v="splits:bills"]'); await page.waitForTimeout(100);
+    await page.fill('[data-sh="ethan"]', "3"); await page.click('[data-a="editsave"]'); await page.waitForTimeout(150);
+    check("shared differently: it asks from when", /From when\?/.test(await page.textContent("#sheets")));
+    await page.click('[data-a="amtwhen"][data-v="always"]'); await page.waitForTimeout(250);
+    const sp2 = await page.evaluate(() => { const t = window.BudgieApp.S.data.tables; return {base: t.splits.find(x => x.id === "bills").shares, dated: t.amounts.find(x => x.id === "amt-sp19").shares}; });
+    check("a mistake is corrected where today's shares come from (the dated change), never in the split's own row", sp2.base === "ethan:2, sophie:1" && sp2.dated === "ethan:3, sophie:1", sp2);
+    // turning pooling off counts from the next bills month that hasn't started (the month going now stays pooled), and
+    // the editor says when; turning it back on before then takes the change away
+    await page.evaluate(() => { document.querySelector("#sheets").innerHTML = ""; window.BudgieApp.go("bills"); }); await page.waitForTimeout(150);
+    await page.click('[data-a="edit"][data-v="bills:e-flat"]'); await page.waitForTimeout(100);
+    await page.uncheck('[data-f="poolOn"]'); await page.waitForTimeout(100); await page.click('[data-a="editsave"]'); await page.waitForTimeout(250);
+    const poolStr = () => page.evaluate(() => window.BudgieApp.S.data.tables.bills.find(b => b.id === "e-flat").pool);
+    check("off: from the next bills month that hasn't started", await poolStr() === "2026-10-16, off 2026-12-16", await poolStr());
+    await page.click('[data-a="edit"][data-v="bills:e-flat"]'); await page.waitForTimeout(100);
+    check("the editor says when it stops", /Stops from Wed 16 Dec\./.test(await page.textContent("main")) && await page.$eval('[data-f="poolOn"]', e => e.checked) === false);
+    await page.check('[data-f="poolOn"]'); await page.waitForTimeout(100); await page.click('[data-a="editsave"]'); await page.waitForTimeout(250);
+    check("on again before then: back as it was", await poolStr() === "2026-10-16", await poolStr());
+    await page.context().close();
+  }
+
   // ===== polish 2026-10-27 (1.4.15): on every screen and sheet, at 320, 384 and 412px, with Larger text and with the
   // phone's text at 130%, no button's text runs past its edge, no one-line button wraps, no row of buttons is ragged
   // (all on one line, even lines, or one under another) and nothing is wider than the screen. Long names, big amounts.

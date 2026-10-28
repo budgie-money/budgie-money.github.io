@@ -38,7 +38,7 @@ People are `ethan` and `sophie`. Money is in pounds. Dates are real dates.
 | `people` | a person | id, name, bank, potWord, partner |
 | `accounts` | a bank account, pot, Space, ISA, LISA, card | id, owner, name, kind (main, pot, saving, isa, lisa, pension, credit), purpose, fallback, order |
 | `income` | money that comes in on a schedule | id, person, name, amount, account, isPay, *schedule* |
-| `bills` | money that goes out on a schedule | id, person (who pays), name, category, amount, account, split, variable, *schedule* |
+| `bills` | money that goes out on a schedule | id, person (who pays), name, category, amount, account, split, variable, pool, *schedule* |
 | `budgets` | a spending or saving line per pay period | id, person, name, amount, mode (daily, weekly, oneoff, saving, remainder), account, to, carry |
 | `splits` | how two people share something | id, name, shares ("ethan:2, sophie:1" or "sophie=400") |
 | `transfers` | one person paying the other on a schedule | id, from, to, amount, fromAccount, toAccount, purpose, *schedule* |
@@ -48,7 +48,7 @@ People are `ethan` and `sophie`. Money is in pounds. Dates are real dates.
 | `loans` | money one of you owes the other | id, lender, borrower, name, amount, date, account, repay, repayDay |
 | `goals` | something you're saving for | id, owners, name, target, due, accounts, kind, extra |
 | `valuations` | a balance you checked | id, account, date, amount |
-| `amounts` | a price or pay change from a date | id, item, start, amount |
+| `amounts` | a price or pay change from a date, or a split's new shares | id, item, start, amount, shares |
 | `exceptions` | a change to one occurrence | id, item, date, action (skip, move, amount), newDate, amount |
 | `settings` | a setting | id, person, key, value |
 | `meta` | schema version and other housekeeping | key, value |
@@ -70,7 +70,29 @@ People are `ethan` and `sophie`. Money is in pounds. Dates are real dates.
   from the fallback pot, topping up a pot (or the main account itself) before a bill. A move is only suggested if the
   money is really there.
 - **Between you two**: shared bills and split payments by their split rule (for example 2 parts to 1), minus what
-  has been paid, so you always know who owes whom and by how much. Loans between you are kept separate.
+  has been paid, so you always know who owes whom and by how much. Loans between you are kept separate. A split that
+  changes from a date is a dated row in `amounts` (item: the split, shares), so earlier months keep theirs.
+- **Pooled bills** (a bill with a `pool` date, like the flat bills): the amount is an estimate, and the real bills
+  (council tax, energy, water) are payments logged against it (their budget is the bill's id). Each bills month runs
+  from the pool date's day (16th to 15th) and holds exactly one estimate: the one scheduled in it, whatever day a weekend
+  moves it to, at its planned amount (a change you make to one month's estimate counts; the bank feed's own amount
+  for a date doesn't, as the payments are the real money). The plan and payday count the estimate on its date, as for
+  any bill; balances count the real payments, plus whatever of the estimate isn't paid yet until the month is over, so
+  the two are never both counted. The day after a bills month ends it's settled up: your partner's share of what it
+  really came to, less their share of the estimate, goes into Between you two (money back, or theirs of going over).
+  What's left stays in the pot, and the next payday counts it as already there, so less goes in and more to whatever
+  is left (your savings); going over is caught up the same way. A month with real bills and no estimate settles
+  against nothing.
+  - The sheet records how each month settled (settings `pool:<bill>:<start>`, with its payments), once, every hour with
+    the budget tabs: two days after the month, or later while a payment from the pot in it is still to be checked or
+    the bank hasn't been read since the day after it (up to 10 days). Phones can't write these; your partner sees them
+    only for a bill they can see. From then on the record is used, so a change never settles that month again.
+  - A real bill counted in (or taken off, or changed) for a recorded month goes into the first month not recorded yet,
+    shown there as late from its own month, and is shared at that month's settling up.
+  - The `pool` column lists when pooling started and any change since ("2026-10-16, 2027-01-01" for a new day from
+    January, "2026-10-16, off 2027-01-16" to stop then). The app turns it on from the bills month going now, and adds a
+    change only from the next bills month that hasn't started, so no month that's going, or waiting to be recorded,
+    changes.
 - **Goals, LISA, house, net worth, insights, calendar.**
 
 ## Privacy between partners

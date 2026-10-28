@@ -1839,6 +1839,196 @@ ok("Q8: every tab Budgie opens for a bank sign-in drops its opener", (APPJS.matc
   ok("W3: a longer slow-down from Starling is tried again after 5 minutes", /slow down/.test(st3.lastError) && st3.backoffUntil - NOW >= 4 * 60000 && st3.backoffUntil - NOW <= 5 * 60000 + 5000, st3.backoffUntil - NOW);
 }
 
+// Monzo's bills pot, as Ethan's real feed shows it: a bill paid from the pot is two payments in the account's feed at
+// the same moment, for the same amount. The pot's withdrawal (money into the account), then the bill: a direct debit
+// names the pot (bills_pot_id); one Monzo pays itself (Monzo Max) doesn't, and only the withdrawal ties it to the pot.
+const billsWd = (id, date, minor, by, time) => mtx(id, date, minor, {scheme: "uk_retail_pot", category: "transfers", description: "pot_0000AbCdEfGhIjKlMn0001", time: time || "06:00:00",
+  metadata: {pot_id: "pot_bills", pot_account_id: "acc_00009potbills", pot_withdrawal_id: "potwd_" + id, trigger: "committed_sp", triggered_by: by}});
+const billsDD = (id, date, minor, name, time) => mtx(id, date, -minor, {scheme: "bacs", category: "bills", merchant: merchant(name, "bills"), counterparty: {name: name}, time: time || "06:00:00",
+  metadata: {bacs_direct_debit_instruction_id: "ddi_" + id, subscription_id: "sub_" + id, bills_pot_id: "pot_bills"}});
+const monzoPaid = (id, date, minor, desc, time) => mtx(id, date, -minor, {scheme: "monzo_paid", category: "bills", description: desc, time: time || "06:00:00", metadata: {matches_billsback_bill_definition: "true"}});
+{
+  // BP: the bills pot's payments, flat bills or not. A planned bill paid by direct debit from the pot (car insurance,
+  // £15.94 on the 26th from the Bills pot): the plan takes it from the pot, so the withdrawal is no move as well. Monzo
+  // Max, paid by Monzo from the pot and not planned: a payment from the pot (asked about), and no move. A pot
+  // withdrawal for something else (no bill trigger) next to a card payment of the same amount stays a move.
+  freshMonzo(); NOW = RealDate.parse("2026-11-17T12:00:00Z");
+  monzo.txns = monzoData(planned).concat(
+    billsWd("tx_bp_inswd", "2026-10-26", 1594, "direct-debit", "07:12:03"), billsDD("tx_bp_ins", "2026-10-26", 1594, "Cma Bode Insurance", "07:12:03"),
+    billsWd("tx_bp_maxwd", "2026-10-27", 1900, "monzo-paid", "08:00:10"), monzoPaid("tx_bp_max", "2026-10-27", 1900, "Max", "08:00:10"),
+    mtx("tx_bp_plainwd", "2026-11-09", 2400, {scheme: "uk_retail_pot", category: "transfers", description: "pot_bills", metadata: {pot_id: "pot_bills", pot_withdrawal_id: "potwd_plain"}, time: "12:00:00"}),
+    mtx("tx_bp_card", "2026-11-09", -2400, {merchant: merchant("Garden Centre", "shopping"), category: "shopping", time: "12:00:30"}));
+  // (pairing from before these payments: see BP3 for what happens to rows an older version saved)
+  const G = bankEnv(t => { t.meta.push({key: "pot.pairFromAt", value: "1"}); t.bills.push({id: "e-carins", person: "ethan", name: "Car insurance", amount: 15.94, account: "e-bills", unit: "month", on: "26", start: "2026-10-26"}); });
+  connectMonzo(G, {acc_00009main: "e-main", pot_bills: "e-bills", pot_food: "e-food"});
+  const tx = grow(G, "transactions"), live = (r) => r && r.deleted !== true, mv = id => grow(G, "moves").find(m => m.id === "bk-monzo-" + id);
+  ok("BP: a planned direct debit from the Bills pot is the bill, not a payment", !live(tx.find(r => r.id === "bk-monzo-tx_bp_ins")), tx.find(r => r.id === "bk-monzo-tx_bp_ins"));
+  ok("BP: and its withdrawal isn't a move too (the pot isn't paid out of twice)", !live(mv("tx_bp_inswd")), mv("tx_bp_inswd"));
+  const db = B.load(Object.fromEntries(["people", "accounts", "income", "bills", "budgets", "splits", "transfers", "transactions", "moves", "settlements", "loans", "goals", "valuations", "amounts", "exceptions", "settings"].map(t => [t, grow(G, t)])), "2026-11-17");
+  near("BP: the Bills pot goes down by it once", B.flows(db, "2026-10-25", "2026-10-26").filter(f => f.account === "e-bills").reduce((a, f) => a + f.amount, 0), -15.94);
+  near("BP: and the main account not at all", B.flows(db, "2026-10-25", "2026-10-26").filter(f => f.account === "e-main").reduce((a, f) => a + f.amount, 0), 0);
+  const max = tx.find(r => r.id === "bk-monzo-tx_bp_max") || {};
+  ok("BP: Monzo-paid Max (no bills_pot_id) is a payment from the Bills pot, tied by its withdrawal", live(max) && max.account === "e-bills" && max.amount === 19 && max.note === "Max", max);
+  ok("BP: and its withdrawal isn't a move", !live(mv("tx_bp_maxwd")), mv("tx_bp_maxwd"));
+  const plain = mv("tx_bp_plainwd"), card = tx.find(r => r.id === "bk-monzo-tx_bp_card") || {};
+  ok("BP: a withdrawal not made for a bill stays a move, and a card payment of the same amount stays the account's", live(plain) && plain.from === "e-bills" && plain.to === "e-main" && card.account === "e-main", [plain, card]);
+  // read again: still one of each
+  NOW += 15 * 60000; G.c.bankPoll();
+  const again = grow(G, "moves").filter(m => /tx_bp_(ins|max)wd/.test(m.id) && m.deleted !== true).length + grow(G, "transactions").filter(r => /tx_bp_ins$/.test(r.id) && r.deleted !== true).length;
+  ok("BP: and the next read keeps it that way", again === 0 && (grow(G, "transactions").find(r => r.id === "bk-monzo-tx_bp_max") || {}).account === "e-bills", again);
+}
+{
+  // BP2: a bill the plan has coming from the main account, paid from the Bills pot after all: the withdrawal is kept as
+  // a move (the money did leave the pot, and the plan takes the bill from the account)
+  freshMonzo(); NOW = RealDate.parse("2026-11-17T12:00:00Z");
+  monzo.txns = monzoData(planned).concat(billsWd("tx_bp2wd", "2026-11-03", 999, "direct-debit"), billsDD("tx_bp2", "2026-11-03", 999, "Gym Plus"));
+  const G = bankEnv(t => { t.meta.push({key: "pot.pairFromAt", value: "1"}); t.bills.push({id: "e-gym", person: "ethan", name: "Gym", amount: 9.99, account: "e-main", unit: "month", on: "3", start: "2026-11-01"}); });
+  connectMonzo(G, {acc_00009main: "e-main", pot_bills: "e-bills", pot_food: "e-food"});
+  const m = grow(G, "moves").find(x => x.id === "bk-monzo-tx_bp2wd"), t = grow(G, "transactions").find(x => x.id === "bk-monzo-tx_bp2");
+  ok("BP2: planned from the main account: the bill matched, the pot's withdrawal kept as a move", m && m.deleted !== true && m.from === "e-bills" && !(t && t.deleted !== true), [m, t]);
+}
+
+{
+  // BP3: rows an older version saved stay exactly as they were. Before this code first runs, a bills pot's direct debit
+  // came in as a payment from the account (checked) and the pot's withdrawal as a move. The first read after, they're
+  // left alone; the next one, after that day, is paired. And a direct debit that names the pot with no withdrawal to go
+  // with it is the account's, as before.
+  freshMonzo(); NOW = RealDate.parse("2026-11-17T12:00:00Z");
+  monzo.txns = monzoData(planned).concat(billsWd("tx_bp3wd", "2026-11-03", 2750, "direct-debit"), billsDD("tx_bp3", "2026-11-03", 2750, "Old Energy Co"),
+    billsDD("tx_bp3lone", "2026-11-04", 1200, "Lonely Water"));
+  const G = bankEnv(t => {
+    t.transactions.push({id: "bk-monzo-tx_bp3", date: "2026-11-03", person: "ethan", amount: 27.5, budget: "e-fun", account: "e-main", note: "Old Energy Co", source: "monzo", bankId: "tx_bp3", review: false});
+    t.moves.push({id: "bk-monzo-tx_bp3wd", date: "2026-11-03", person: "ethan", from: "e-bills", to: "e-main", amount: 27.5, key: "bank:tx_bp3wd"});
+  });
+  connectMonzo(G, {acc_00009main: "e-main", pot_bills: "e-bills", pot_food: "e-food"});
+  const cut = +(grow(G, "meta").find(r => r.key === "pot.pairFromAt") || {}).value;
+  ok("BP3: the moment it first ran is kept", cut >= RealDate.parse("2026-11-17T00:00:00Z") && cut <= RealDate.parse("2026-11-18T00:00:00Z"), cut);
+  const t3 = grow(G, "transactions").find(r => r.id === "bk-monzo-tx_bp3"), m3 = grow(G, "moves").find(r => r.id === "bk-monzo-tx_bp3wd");
+  ok("BP3: an older payment and its withdrawal are left exactly as they were", t3.account === "e-main" && t3.budget === "e-fun" && m3.deleted !== true, [t3, m3]);
+  const lone = grow(G, "transactions").find(r => r.id === "bk-monzo-tx_bp3lone") || {};
+  ok("BP7: a direct debit naming the pot with no withdrawal is the account's", lone.account === "e-main", lone);
+  NOW = RealDate.parse("2026-11-20T12:00:00Z"); monzo.txns = monzo.txns.concat(billsWd("tx_bp3nwd", "2026-11-20", 2750, "direct-debit", "05:00:00"), billsDD("tx_bp3n", "2026-11-20", 2750, "Old Energy Co", "05:00:00"));
+  G.c.bankPoll();
+  const tn = grow(G, "transactions").find(r => r.id === "bk-monzo-tx_bp3n") || {}, mn = grow(G, "moves").find(r => r.id === "bk-monzo-tx_bp3nwd");
+  ok("BP3: one after it is paired: a payment from the pot, no move", tn.account === "e-bills" && !(mn && mn.deleted !== true), [tn, mn]);
+  ok("BP3: and the older ones still as they were", grow(G, "transactions").find(r => r.id === "bk-monzo-tx_bp3").account === "e-main" && grow(G, "moves").find(r => r.id === "bk-monzo-tx_bp3wd").deleted !== true);
+}
+
+{
+  // BP4 (the re-review's case): pots mapped before the first read by this version, payments dated before the day it
+  // first ran: paired the first time, and every read after decides the same (it used to flip on the next read)
+  freshMonzo(); NOW = RealDate.parse("2026-11-17T12:00:00Z");
+  monzo.txns = monzoData(planned).concat(billsWd("tx_xw_pot", "2026-11-10", 4500, "direct-debit"), billsDD("tx_xw", "2026-11-10", 4500, "Southern Water"), billsWd("tx_xmwd", "2026-11-11", 1900, "monzo-paid", "08:00:10"), monzoPaid("tx_xm", "2026-11-11", 1900, "Max", "08:00:10"));
+  const G = bankEnv(t => {
+    t.meta.push({key: "pot.pairFrom", value: "2026-11-17"});
+    Object.assign(t.bills.find(b => b.id === "e-flat"), {name: "Flat bills", amount: 450, pool: "2026-10-16", variable: ""});
+    t.settings.push({id: "ethan:bank.rule.southern water", person: "ethan", key: "bank.rule.southern water", value: "e-flat"});
+    ["acc_00009main:e-main", "pot_bills:e-bills", "pot_food:e-food"].forEach(x => { const [e, a] = x.split(":"); t.settings.push({id: "ethan:bank.map." + e, person: "ethan", key: "bank.map." + e, value: a}); });
+  });
+  connectMonzo(G, null);
+  const snap = () => JSON.stringify([grow(G, "transactions").filter(r => /tx_x[wm]$/.test(r.id)).map(r => [r.id, r.account, r.budget, r.deleted === true]).sort(), grow(G, "moves").filter(r => /tx_x/.test(r.id) && r.deleted !== true).map(r => r.id)]);
+  const first = snap();
+  NOW += 15 * 60000; G.c.bankPoll(); const second = snap();
+  NOW += 15 * 60000; G.c.bankPoll(); const third = snap();
+  ok("BP4: paired on the first read (from the pot, no moves)", first === JSON.stringify([[["bk-monzo-tx_xm", "e-bills", "", false], ["bk-monzo-tx_xw", "e-bills", "e-flat", false]], []]), first);
+  ok("BP4: and the same on every read after", second === first && third === first, [second, third]);
+}
+{
+  // BP5: a pair an older version saved stays as it was even after Ethan counts its payment in the flat bills
+  freshMonzo(); NOW = RealDate.parse("2026-11-17T12:00:00Z");
+  monzo.txns = monzoData(planned).concat(billsWd("tx_bp5wd", "2026-11-03", 2750, "direct-debit"), billsDD("tx_bp5", "2026-11-03", 2750, "Old Energy Co"));
+  const G = bankEnv(t => {
+    Object.assign(t.bills.find(b => b.id === "e-flat"), {name: "Flat bills", amount: 450, pool: "2026-10-16", variable: ""});
+    t.transactions.push({id: "bk-monzo-tx_bp5", date: "2026-11-03", person: "ethan", amount: 27.5, budget: "e-fun", account: "e-main", note: "Old Energy Co", source: "monzo", bankId: "tx_bp5", review: false});
+    t.moves.push({id: "bk-monzo-tx_bp5wd", date: "2026-11-03", person: "ethan", from: "e-bills", to: "e-main", amount: 27.5, key: "bank:tx_bp5wd"});
+  });
+  connectMonzo(G, {acc_00009main: "e-main", pot_bills: "e-bills", pot_food: "e-food"});
+  const row = grow(G, "transactions").find(r => r.id === "bk-monzo-tx_bp5");
+  G.call({key: G.kE, ops: [{op: "put", table: "transactions", row: Object.assign({}, row, {budget: "e-flat"})}]});
+  NOW += 15 * 60000; G.c.bankPoll();
+  const t5 = grow(G, "transactions").find(r => r.id === "bk-monzo-tx_bp5"), m5 = grow(G, "moves").find(r => r.id === "bk-monzo-tx_bp5wd");
+  ok("BP5: counted in the flat bills later, the older pair still isn't changed", t5.account === "e-main" && t5.budget === "e-flat" && m5.deleted !== true, [t5, m5]);
+  const db = B.load(Object.fromEntries(["people", "accounts", "income", "bills", "budgets", "splits", "transfers", "transactions", "moves", "settlements", "loans", "goals", "valuations", "amounts", "exceptions", "settings"].map(t => [t, grow(G, t)])), "2026-11-17");
+  ok("BP5: and To do doesn't ask to move it back from the pot (it was paid from there)", !B.todo(db, "ethan", "2026-11-17").some(x => x.from === "e-bills" && x.to === "e-main"), B.todo(db, "ethan", "2026-11-17").map(x => x.what));
+}
+
+// ================= a pooled bill: the flat bills' real bills, paid from the Bills pot =================
+{
+  // "Flat bills and council tax" is a £450 estimate the real bills count against. Monzo's bills pot pays a bill by
+  // moving the money into the account and paying it from there, so each real bill is a pot withdrawal and a payment.
+  freshMonzo(); NOW = RealDate.parse("2026-11-17T12:00:00Z");
+  // (the shapes Ethan's real feed has: a direct debit names its bills pot; both come with the pot's withdrawal)
+  const pair = (id, date, minor, name) => [billsWd(id + "_pot", date, minor, "direct-debit"), billsDD(id, date, minor, name)];
+  monzo.txns = monzoData(planned).concat(pair("tx_psky", "2026-11-12", 3800, "SKY DIGITAL"), pair("tx_pwat", "2026-11-10", 4500, "Southern Water"));
+  const G = bankEnv(t => {
+    t.meta.push({key: "pot.pairFromAt", value: "1"});
+    Object.assign(t.bills.find(b => b.id === "e-flat"), {name: "Flat bills and council tax", amount: 450, pool: "2026-10-16", variable: ""});
+    t.transfers.find(x => x.id === "s-to-e-bills").amount = 150;
+    t.settings.push({id: "ethan:bank.rule.southern water", person: "ethan", key: "bank.rule.southern water", value: "e-flat"});
+  });
+  connectMonzo(G, {acc_00009main: "e-main", pot_bills: "e-bills", pot_food: "e-food"});
+  const tx = () => grow(G, "transactions"), mv = () => grow(G, "moves"), one = id => tx().find(r => r.id === "bk-monzo-" + id) || {};
+  const sky = one("tx_psky");
+  ok("POOL: a new payee taking money from the Bills pot is a payment from the pot, waiting to be asked about", sky.account === "e-bills" && sky.review === true && !sky.budget && sky.amount === 38, sky);
+  ok("POOL: and its pot withdrawal isn't a move as well (one bank payment, one row)", !mv().some(m => /tx_psky_pot|tx_pwat_pot/.test(m.id) && m.deleted !== true), mv().filter(m => /_pot/.test(m.id)));
+  const wat = one("tx_pwat");
+  ok("POOL: a payee already known as part of it is counted straight away, nothing to ask", wat.budget === "e-flat" && wat.review === false && wat.account === "e-bills", wat);
+  const hb = one("tx_flatbills");
+  ok("POOL: a payment the size of the estimate isn't taken for it (the estimate is never paid as itself)", hb.amount === 472.1 && !grow(G, "exceptions").some(x => /^x-e-flat-/.test(x.id)), [hb, grow(G, "exceptions").map(x => x.id)]);
+  // Ethan says yes, once: the app saves the payment and remembers the payee (as it does for any payment it learns)
+  G.call({key: G.kE, ops: [{op: "put", table: "transactions", row: Object.assign({}, sky, {budget: "e-flat", review: false})}, {op: "put", table: "settings", row: {id: "ethan:bank.rule.sky digital", person: "ethan", key: "bank.rule.sky digital", value: "e-flat"}}]});
+  NOW = RealDate.parse("2026-12-13T12:00:00Z"); monzo.txns = monzo.txns.concat(pair("tx_psky2", "2026-12-12", 3800, "SKY DIGITAL"));
+  G.c.bankPoll();
+  const sky2 = one("tx_psky2");
+  ok("POOL: next month the same payee is counted against it straight away, without asking again", sky2.budget === "e-flat" && sky2.review === false && sky2.account === "e-bills", sky2);
+  ok("POOL: and the first one stays as Ethan said", one("tx_psky").budget === "e-flat" && one("tx_psky").review === false, one("tx_psky"));
+  const db = B.load(Object.fromEntries(["people", "accounts", "income", "bills", "budgets", "splits", "transfers", "transactions", "moves", "settlements", "loans", "goals", "valuations", "amounts", "exceptions", "settings"].map(t => [t, grow(G, t)])), "2026-12-13");
+  const m = B.poolMonth(db, db.byId["e-flat"], "2026-10-16");
+  ok("POOL: the engine counts the real bills against the estimate", m.actual === 83 && m.estimate === 450, [m.actual, m.estimate]);
+  // Sophie's phone gets the flat bills' real payments, so she sees the same running total, and none of Ethan's others
+  const S = phone(G, G.kS); S.sync();
+  const seen = (S.T.transactions || []).filter(r => r.person === "ethan").map(r => r.id).sort();
+  ok("POOL: Sophie's phone gets the pooled bill's real payments only", seen.join() === ["bk-monzo-tx_psky", "bk-monzo-tx_psky2", "bk-monzo-tx_pwat"].join(), seen);
+  // Ethan takes one off it (not a flat bill after all): it stops being Sophie's to see
+  G.call({key: G.kE, ops: [{op: "put", table: "transactions", row: Object.assign({}, one("tx_psky2"), {budget: "e-fun"})}]});
+  S.sync();
+  ok("POOL: one taken off the flat bills goes from Sophie's phone", !(S.T.transactions || []).some(r => r.id === "bk-monzo-tx_psky2" && r.deleted !== true), (S.T.transactions || []).filter(r => r.person === "ethan"));
+}
+
+{
+  // POOL8: a known payee's payment from before the pool date isn't counted against it (it was paid the old way)
+  freshMonzo(); NOW = RealDate.parse("2026-11-17T12:00:00Z");
+  monzo.txns = monzoData(planned).concat(billsWd("tx_p8a_pot", "2026-11-05", 4500, "direct-debit"), billsDD("tx_p8a", "2026-11-05", 4500, "Southern Water"),
+    billsWd("tx_p8b_pot", "2026-11-12", 4600, "direct-debit"), billsDD("tx_p8b", "2026-11-12", 4600, "Southern Water"));
+  const G = bankEnv(t => {
+    t.meta.push({key: "pot.pairFromAt", value: "1"});
+    Object.assign(t.bills.find(b => b.id === "e-flat"), {name: "Flat bills", amount: 450, pool: "2026-11-10", variable: ""});
+    t.settings.push({id: "ethan:bank.rule.southern water", person: "ethan", key: "bank.rule.southern water", value: "e-flat"});
+  });
+  connectMonzo(G, {acc_00009main: "e-main", pot_bills: "e-bills", pot_food: "e-food"});
+  const a = grow(G, "transactions").find(r => r.id === "bk-monzo-tx_p8a") || {}, b = grow(G, "transactions").find(r => r.id === "bk-monzo-tx_p8b") || {};
+  ok("POOL8: before the pool date: not counted against it, asked about as any payment", a.budget !== "e-flat" && a.review === true, a);
+  ok("POOL8: from the pool date: counted straight away", b.budget === "e-flat" && b.review === false, b);
+}
+
+{
+  // FIT: a status too big to keep lets the remembered older bills-pot pairs go first, oldest first, before the holds
+  const st = {pending: {}, potOld: {}};
+  for (let i = 0; i < 60; i++) st.pending["tx_hold" + String(i).padStart(3, "0") + "_aaaaaaaaaaaaaaaaaaaa"] = {date: "2026-11-" + String(1 + (i % 28)).padStart(2, "0")};
+  for (let i = 0; i < 200; i++) st.potOld["tx_old" + String(i).padStart(3, "0") + "_bbbbbbbbbbbbbbbbbbbb"] = "2026-" + String(7 + Math.floor(i / 50)).padStart(2, "0") + "-" + String(1 + (i % 28)).padStart(2, "0");
+  const fit = c.bankFitStatus_(JSON.parse(JSON.stringify(st)));
+  const left = Object.values(fit.potOld).sort();
+  ok("FIT: the remembered pairs go first, oldest first, and the holds are all kept", Object.keys(fit.pending).length === 60 && left.length < 200 && left.length > 0 && left[0] >= Object.values(st.potOld).sort()[200 - left.length], [Object.keys(fit.pending).length, left.length, left[0]]);
+}
+{
+  // POOL9: pooling stopped for good, and the month recorded: a known payee's payment in that month isn't counted in
+  // (there's no month to take it), but asked about as any payment
+  const G = bankEnv(t => { Object.assign(t.bills.find(b => b.id === "e-flat"), {name: "Flat bills", amount: 450, pool: "2026-10-16, off 2026-11-16", variable: ""}); t.settings.push({id: "ethan:pool:e-flat:2026-10-16", person: "ethan", key: "pool:e-flat:2026-10-16", value: JSON.stringify({next: "2026-11-16", estimate: 450, actual: 150, back: 100, owes: 0, keep: 200, mineOver: 0, paid: {}})}); });
+  const db = B.load(Object.fromEntries(["people", "accounts", "income", "bills", "budgets", "splits", "transfers", "transactions", "moves", "settlements", "loans", "goals", "valuations", "amounts", "exceptions", "settings", "meta"].map(t => [t, grow(G, t)])), "2026-12-01");
+  db.set.ethan["bank.rule.southern water"] = "e-flat";
+  ok("POOL9: the payee rule doesn't count it in once pooling has stopped for good", G.c.bankGuess_(db, "ethan", "Southern Water", "bills", "2026-11-10").budget === "", G.c.bankGuess_(db, "ethan", "Southern Water", "bills", "2026-11-10"));
+}
+
 // ================= no secrets anywhere they shouldn't be =================
 const secrets = Object.values(SECRET).concat(["acc-ETHAN-3-eeeeeeee", "ref-ETHAN-3-ffffffff", "acc-ETHAN-4-gggggggg"]);
 const sheetText = JSON.stringify(Object.values(F.env.sheets).map(s => s._s.cells));
