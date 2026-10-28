@@ -74,6 +74,15 @@ const m = db(t => {
 const td = B.todo(m, "ethan", "2026-11-02");
 const fuel = td.find(x => /^back:e-fuel:/.test(x.key));
 eq("move fuel money back", [fuel.from, fuel.to, fuel.amount], ["e-car", "e-main", 35]);
+eq("the fuel move says why in plain words", fuel.why, "You paid for fuel from Main account, not Car pot. This puts the money back.");
+// paid on a credit account (like Flex): the money goes there to pay it off, and the reason says so
+const mf = db(t => {
+  t.accounts.push({id: "e-flex", owner: "ethan", name: "Flex pot", kind: "credit", order: 6});
+  t.transactions.push({id: "t2f", date: "2026-10-30", person: "ethan", amount: 31.98, budget: "e-fun", account: "e-flex"});
+});
+const flexItem = B.todo(mf, "ethan", "2026-11-02").find(x => /^back:e-fun:/.test(x.key));
+eq("paid on a credit account: the money goes there", flexItem && [flexItem.from, flexItem.to, flexItem.amount], ["e-main", "e-flex", 31.98]);
+eq("and the reason says it's credit", flexItem && flexItem.why, "You paid for fun on Flex pot, which is credit. This pays it off.");
 const cover = td.find(x => x.over);
 eq("Emergency pot covers going over fun", [cover.from, cover.to, cover.amount], ["e-emergency", "e-main", 230 - 150]);
 const dec = B.planFor(m, "ethan", B.periodAt(m, "ethan", "2026-12-01"));
@@ -1227,7 +1236,7 @@ const tickPay11 = (t, p, d) => { const L0 = B.load(t, d), per = B.periodAt(L0, p
 
   // P8: a real bill paid by card from the main account: the money for it goes back from the Bills pot
   const d8 = dbt(t => { under(t); t.transactions.find(x => x.id === "water").account = "e-main"; }, "2026-11-13");
-  eq("P8: paid from the main account: To do moves it back from the pot", B.todo(d8, "ethan", "2026-11-13").filter(x => x.from === "e-bills" && x.to === "e-main").map(x => [x.amount, x.why]), [[92, "You paid for flat bills and council tax from Main account."]]);
+  eq("P8: paid from the main account: To do moves it back from the pot", B.todo(d8, "ethan", "2026-11-13").filter(x => x.from === "e-bills" && x.to === "e-main").map(x => [x.amount, x.why]), [[92, "You paid for flat bills and council tax from Main account, not Bills & Rent pot. This puts the money back."]]);
   near("P8: and it still counts against the estimate", B.poolMonth(d8, d8.byId["e-flat"], "2026-10-16").actual, 370);
 }
 
