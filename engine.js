@@ -6,7 +6,7 @@
   else root.Budgie = factory();
 })(this, function () {
   "use strict";
-  var VERSION = "1.4.17";
+  var VERSION = "1.4.18";
 
   // ---------- dates ----------
   function D(s) { var p = String(s).split("-"); return new Date(Date.UTC(+p[0], +p[1] - 1, +p[2])); }
@@ -1096,10 +1096,135 @@
     for (var k = 0; k < 12; k++) {
       var pl = planFor(db, p, per), st = budgetState(db, p, per), spent = 0;
       Object.keys(st).forEach(function (id) { if (st[id].period.start === per.start) spent += st[id].spent; });
-      list.push({period: per, in: pl.totals.in, bills: pl.totals.bills, spendPlan: pl.totals.spend, spent: round(spent), save: pl.totals.save, past: per.next <= date, current: per.start === cur.start});
+      // in: everything the plan has coming in (money carried over too, so the month adds up); fresh: new money in,
+      // pay and money paid to you; saved: real saving (not money put by for a yearly bill), as the Money tab counts it
+      var kt = kinds(pl.lines);
+      list.push({period: per, in: pl.totals.in, fresh: kt.fresh, bills: pl.totals.bills, spendPlan: pl.totals.spend, spent: round(spent), save: pl.totals.save, saved: kt.save, past: per.next <= date, current: per.start === cur.start});
       per = nextPeriod(db, p, per);
     }
     return list;
+  }
+
+  // ---------- kinds of money ----------
+  // The four kinds the Money tab (and the budget tab in the sheet) sorts a plan into, one colour each in the app:
+  // in (coming in), bill (bills to pay), spend (what you can spend) and save (what's saved). Money put by for a yearly
+  // bill is bills money; a top-up of the pot that covers going over is saving.
+  function kindOf(l) { return l.kind === "topup" ? "save" : l.kind === "save" && l.setAside ? "bill" : l.kind; }
+  // new money: pay, other income and what your partner or a loan pays you; not money carried over from last month,
+  // already sitting in a pot, saved up for a yearly bill, or what you had when you started
+  function newMoney(l) { return l.kind === "in" && !l.already && !l.leftover && !l.setAside && l.id !== "opening"; }
+  // totals by kind, and what's left over (carried into next month) or short (below 0). It always adds up.
+  function kinds(lines) {
+    var t = {in: 0, bill: 0, spend: 0, save: 0, fresh: 0};
+    (lines || []).forEach(function (l) { var k = kindOf(l); if (k === "fresh" || t[k] === undefined) return; t[k] += +l.amount || 0; if (newMoney(l)) t.fresh += +l.amount || 0; });
+    Object.keys(t).forEach(function (k) { t[k] = round(t[k]); });
+    t.left = round(t.in - t.bill - t.spend - t.save);
+    return t;
+  }
+
+  // ---------- insights ----------
+  // Each counts from when you started Budgie (the first pay period is short: it starts that day). Anything compared
+  // with a "usual" uses full pay periods only.
+  var EARLY_DAYS = 7;   // a forecast waits for a week of spending; until then it would only be a guess
+  function fromOf(db, p, per) { return maxS(per.start, startOf(db, p)); }
+  function spendBudgetsOf(db, p) { return db.budgets.filter(function (b) { return b.person === p && isSpend(db, b); }); }
+  // the full pay periods before this one (up to n), newest first
+  function fullBefore(db, p, per, n) {
+    var st = startOf(db, p), out = [], pk = per;
+    for (var i = 0; i < 24 && out.length < n; i++) {
+      var pv = prevPeriod(db, p, pk); if (!pv || pv.start >= pk.start || pv.next <= st) break;
+      if (!pv.opening && pv.start >= st) out.push(pv);
+      pk = pv;
+    }
+    return out;
+  }
+
+  // Spending this week against the same point last month. Weeks are counted from payday, as weekly budgets are
+  // paced: this week is days 8 to 14 of the pay period, say, and it's compared with the same days of the last pay
+  // period, up to the same day of the week (so day 10 against day 10). There's nothing to compare with when those
+  // days were before you started Budgie, or the last pay period was too short to have them.
+  // {period, week, day, from, to, total, prev: {from, to, total} | null, budgets: [{id, name, now, before, change}]}
+  // budgets: each one spent from this week or the same days last month, the biggest change first
+  function spendWeek(db, p, date) {
+    var st = startOf(db, p), per = periodAt(db, p, date);
+    var n = Math.max(0, Math.floor(diff(per.start, date) / 7)), ws = addDays(per.start, 7 * n), day = diff(ws, date) + 1, from = maxS(ws, st);
+    var pv = prevPeriod(db, p, per), prev = null;
+    if (ws >= st && pv && pv.start < per.start) {
+      var ps = addDays(pv.start, 7 * n), pe = addDays(ps, day);
+      if (ps >= st && pe <= pv.next) prev = {from: ps, to: addDays(pe, -1)};
+    }
+    var rows = [], tot = 0, ptot = 0, live = date >= st;
+    spendBudgetsOf(db, p).forEach(function (b) {
+      var now = live ? spentOn(db, p, b, from, addDays(date, 1)) : 0, was = prev ? spentOn(db, p, b, prev.from, addDays(prev.to, 1)) : 0;
+      tot += now; ptot += was;
+      if (Math.abs(now) > 0.004 || Math.abs(was) > 0.004) rows.push({id: b.id, name: b.name, now: now, before: prev ? was : null, change: prev ? round(now - was) : null});
+    });
+    rows.sort(prev ? function (a, c) { return Math.abs(c.change) - Math.abs(a.change) || c.now - a.now; } : function (a, c) { return c.now - a.now; });
+    return {period: per, week: n + 1, day: day, from: live ? from : date, to: date, total: round(tot), prev: prev ? {from: prev.from, to: prev.to, total: round(ptot)} : null, budgets: rows};
+  }
+
+  // No-spend days: days you logged no spending (a refund isn't spending), from when you started Budgie up to and
+  // including the day asked about. {from, days, count, total, longest: {days, from, to}, current, list: [{date, spent}]}
+  // count and list: this pay period (from when you started, in the first one); total, longest and current: since
+  // you started
+  function noSpend(db, p, date) {
+    var st = startOf(db, p), per = periodAt(db, p, date), from = fromOf(db, p, per), spent = dict();
+    db.transactions.forEach(function (x) { if (x.person === p && +x.amount > 0 && x.date >= st && x.date <= date) spent[x.date] = true; });
+    var res = {from: from, days: 0, count: 0, total: 0, longest: {days: 0, from: "", to: ""}, current: 0, list: []}, run = 0;
+    for (var d = st; d <= date; d = addDays(d, 1)) {
+      if (spent[d]) run = 0;
+      else { run++; res.total++; if (run > res.longest.days) res.longest = {days: run, from: addDays(d, 1 - run), to: d}; }
+      if (d >= from) { res.days++; if (!spent[d]) res.count++; res.list.push({date: d, spent: !!spent[d]}); }
+    }
+    res.current = run;
+    return res;
+  }
+
+  // Saving month by month: what's saved out of new money in (pay and money paid to you) in each full pay period up to
+  // this one (the most recent n, oldest first). Money carried over from last month isn't new money in, and money put
+  // by for a yearly bill isn't saving, as on the Money tab. The short first month is left out: it runs on what you
+  // had when you started, so it has no saving of its own. [{period, fresh, saved, pct (null with nothing in), current}]
+  function savingRates(db, p, date, n) {
+    var per = periodAt(db, p, date), list = fullBefore(db, p, per, Math.max(0, (n || 6) - 1)).reverse(), st = startOf(db, p);
+    if (!per.opening && per.start >= st) list.push(per);
+    return list.map(function (pk) {
+      var k = kinds(planFor(db, p, pk).lines);
+      return {period: pk, fresh: k.fresh, saved: k.save, pct: k.fresh > 0.004 ? Math.round(k.save / k.fresh * 100) : null, current: pk.start === per.start};
+    });
+  }
+
+  // Where each budget is heading by payday ("Fun on course to finish £12 under"): from what's there to spend (with
+  // what carried over), what's spent so far and the days left in the pay period.
+  // - Day to day (and "whatever is left"): the pace so far, steadied by the budget's own pace for a week's worth, so
+  //   one big day doesn't run away with it.
+  // - Weekly: by the week. Each week still to come costs what a week has cost so far (steadied the same way), and
+  //   this week costs at least that, or what's already spent in it (a big shop on its first day isn't "over").
+  // - One-offs: no pace to follow, so what's spent is what's spent.
+  // In the first week of a pay period (or the short first one) it's too early to say, unless a budget is already over.
+  // {period, from, day, days, daysLeft, early, sure (the first day it will say), budgets: [{id, name, mode, avail,
+  //  spent, left, end (spent by payday, or null when it's too early), under (what's left then; below 0 is over),
+  //  usual (spent in a full month, on average, or null)}]}
+  function forecast(db, p, date) {
+    var st = startOf(db, p), per = periodAt(db, p, date), from = fromOf(db, p, per), days = Math.max(1, diff(from, per.next));
+    var dayNo = Math.min(days, Math.max(0, diff(from, date) + 1)), rest = days - dayNo, early = dayNo < EARLY_DAYS || date < st;
+    var sure = addDays(from, EARLY_DAYS - 1); if (sure >= per.next) sure = addDays(per.next, EARLY_DAYS - 1);
+    var stt = budgetState(db, p, per), past = fullBefore(db, p, per, 5), out = [];
+    budgetsOf(db, p, per).forEach(function (b) {
+      var s = stt[b.id]; if (!s || !isSpend(db, b) || (!(s.avail > 0.004) && !(s.spent > 0.004))) return;
+      var mode = b.mode || "daily", end = null;
+      if (mode === "oneoff") end = s.spent;
+      else if (!early && mode === "weekly") {
+        var c = Math.floor(dayNo / 7), done = spentOn(db, p, b, from, addDays(from, 7 * c)), now = s.spent - done;
+        var week = (done + s.avail * 7 / days) / (c + 1), thisWeek = Math.min(7, days - 7 * c), after = Math.max(0, days - 7 * (c + 1));
+        end = done + Math.max(now, week * thisWeek / 7) + week * after / 7;
+      }
+      else if (!early) end = s.spent + (s.spent + s.avail / days * EARLY_DAYS) / (dayNo + EARLY_DAYS) * rest;
+      if (end === null && s.spent > s.avail + 0.004) end = s.spent;   // already over: that's not a guess
+      var used = past.map(function (pk) { var x = budgetState(db, p, pk)[b.id]; return x ? x.spent : 0; }).filter(function (v) { return v > 0.004; });
+      out.push({id: b.id, name: b.name, mode: mode, avail: s.avail, spent: s.spent, left: s.left, end: end === null ? null : round(end), under: end === null ? null : round(s.avail - end),
+        usual: used.length ? round(used.reduce(function (a, v) { return a + v; }, 0) / used.length) : null});
+    });
+    return {period: per, from: from, day: dayNo, days: days, daysLeft: rest, early: early, sure: sure, budgets: out};
   }
 
   // ---------- goals, LISA, net worth ----------
@@ -1317,6 +1442,15 @@
       if (db.valuations.some(function (v) { return v.account === a.id && v.date >= since && v.date <= date; })) return;
       out.push({id: id, key: "check:" + id, text: "Check your Lifetime ISA in Moneybox and update its value", action: "potcheck", value: a.id, order: 40});
     });
+    // and a Cash ISA the same way (it earns interest Budgie can't see). One that's never been checked is first asked
+    // about a month after you started, not on your first day.
+    if (isIso(date)) accountsOf(db, p).forEach(function (a) {
+      if (a.kind !== "isa") return;
+      var id = "isa-month-" + date.slice(0, 7) + "-" + a.id, since = addDays(date, -30);
+      if (s["check:" + id] !== undefined && s["check:" + id] !== "") return;
+      if (startOf(db, p) > since || db.valuations.some(function (v) { return v.account === a.id && v.date >= since && v.date <= date; })) return;
+      out.push({id: id, key: "check:" + id, text: "Check your " + a.name + " and update its value", action: "potcheck", value: a.id, order: 41});
+    });
     return out.sort(function (a, b) { return a.order - b.order; });
   }
   function netWorth(db, p, date) {
@@ -1342,7 +1476,8 @@
     var out = {person: p, name: person(db, p).name, nextPay: t.nextPay, period: t.period};
     // "on track" or "over budget" says how the money's going, so it's only there when some of it is shared
     if (share("totals", true) || share("cats", true)) out.status = t.status;
-    if (share("totals", true)) { out.safe = t.safe; out.saved = t.plan.totals.save; }
+    // saving as the Money tab counts it: money put by for a yearly bill is bills money, not saved
+    if (share("totals", true)) { out.safe = t.safe; out.saved = kinds(t.plan.lines).save; }
     if (share("cats", true)) out.tiles = t.tiles.map(function (x) { return {name: x.name, spent: x.spent, amount: x.amount, pct: x.pct, paceMark: x.paceMark, mode: x.mode}; });
     // only how far each goal has got: not the balance of each account in it, or its notes
     if (share("goals", true)) out.goals = goals(db, p, date).filter(function (g) { return String((db.byId[g.id] || {}).owners || "").split(/[,\s]+/).length < 2; })
@@ -1371,7 +1506,8 @@
     load: load, occurrences: occurrences, scheduleDates: scheduleDates, isWorkingDay: isWorkingDay, bankHolidays: bankHolidays,
     periods: periods, periodAt: periodAt, prevPeriod: prevPeriod, nextPeriod: nextPeriod, planFor: planFor, payday: payday,
     budgetState: budgetState, balances: balances, flows: flows, todo: todo, between: between, today: today, coming: coming,
-    calendar: calendar, pots: pots, monthView: monthView, year: year, goals: goals, lisa: lisa, checks: checks, netWorth: netWorth, loans: loans,
+    calendar: calendar, pots: pots, monthView: monthView, year: year, kindOf: kindOf, newMoney: newMoney, kinds: kinds,
+    spendWeek: spendWeek, noSpend: noSpend, savingRates: savingRates, forecast: forecast, goals: goals, lisa: lisa, checks: checks, netWorth: netWorth, loans: loans,
     yearly: yearly, yearReview: yearReview, taxYearStart: taxYearStart,
     summary: summary, shareOf: shareOf, myShare: myShare, owedAt: owedAt, amountAt: amountAt, setting: setting, partnerOf: partnerOf, mainOf: mainOf, fallbackOf: fallbackOf,
     accountsOf: accountsOf, accName: accName, ticked: ticked, person: person, startOf: startOf, moveDate: moveDate, budgetsOf: budgetsOf, budgetsIn: budgetsOf, reimbursements: reimbursements, startBalances: startBalances,

@@ -415,14 +415,14 @@ const savedUp = (pl, id) => lineAmt(pl, l => l.setAside && l.bill === id && l.ki
 
 // a monthly reminder to check the LISA
 (() => {
-  const id = "lisa-month-2026-11-e-lisa";
-  eq("1.4 check: valued 25 days ago, nothing to do", B.checks(dbt(null, "2026-11-20"), "ethan").length, 0);
-  eq("1.4 check: 31 days, check it", B.checks(dbt(null, "2026-11-26"), "ethan"), [{id, key: "check:" + id, text: "Check your Lifetime ISA in Moneybox and update its value", action: "potcheck", value: "e-lisa", order: 40}]);
-  eq("1.4 check: a new value clears it", B.checks(dbt(t => t.valuations.push({id: "vl", account: "e-lisa", date: "2026-11-26", amount: 11500}), "2026-11-26"), "ethan").length, 0);
-  eq("1.4 check: \"It's right\" hides it for the month", B.checks(dbt(t => t.settings.push({person: "ethan", key: "check:" + id, value: "done"}), "2026-11-26"), "ethan").length, 0);
-  eq("1.4 check: and it's back next month", B.checks(dbt(t => t.settings.push({person: "ethan", key: "check:" + id, value: "done"}), "2026-12-27"), "ethan").map(c => c.id), ["lisa-month-2026-12-e-lisa"]);
-  eq("1.4 check: a date can be given", B.checks(e, "ethan", "2026-11-26").map(c => c.id), [id]);
-  eq("1.4 check: only your own LISA", B.checks(dbt(null, "2026-12-27"), "sophie").length, 0);
+  const id = "lisa-month-2026-11-e-lisa", L = (d, p, x) => B.checks(d, p, x).filter(c => /^lisa-/.test(c.id));
+  eq("1.4 check: valued 25 days ago, nothing to do", L(dbt(null, "2026-11-20"), "ethan").length, 0);
+  eq("1.4 check: 31 days, check it", L(dbt(null, "2026-11-26"), "ethan"), [{id, key: "check:" + id, text: "Check your Lifetime ISA in Moneybox and update its value", action: "potcheck", value: "e-lisa", order: 40}]);
+  eq("1.4 check: a new value clears it", L(dbt(t => t.valuations.push({id: "vl", account: "e-lisa", date: "2026-11-26", amount: 11500}), "2026-11-26"), "ethan").length, 0);
+  eq("1.4 check: \"It's right\" hides it for the month", L(dbt(t => t.settings.push({person: "ethan", key: "check:" + id, value: "done"}), "2026-11-26"), "ethan").length, 0);
+  eq("1.4 check: and it's back next month", L(dbt(t => t.settings.push({person: "ethan", key: "check:" + id, value: "done"}), "2026-12-27"), "ethan").map(c => c.id), ["lisa-month-2026-12-e-lisa"]);
+  eq("1.4 check: a date can be given", L(e, "ethan", "2026-11-26").map(c => c.id), [id]);
+  eq("1.4 check: only your own LISA", L(dbt(null, "2026-12-27"), "sophie").length, 0);
 })();
 
 // the tax year round-up
@@ -481,7 +481,7 @@ const savedUp = (pl, id) => lineAmt(pl, l => l.setAside && l.bill === id && l.ki
   const bs = B.budgetState(c, me, per);
   eq("compat: budgetState(db, me, per)", ["amount", "spent", "left", "avail", "carryIn", "carryOut", "over"].every(k => k in bs["e-fun"]) && bs["e-fun"].period.start === per.start, true);
   eq("compat: still exported", ["load", "coming", "periodAt", "planFor", "budgetState", "today", "checks", "lisa", "yearly", "yearReview"].every(k => typeof B[k] === "function"), true);
-  eq("compat: version", B.VERSION, "1.4.17");
+  eq("compat: version", B.VERSION, "1.4.18");
 })();
 
 // C3: a payday move ticked in the app and by the bank feed counts once (the latest)
@@ -1006,6 +1006,118 @@ const tickPay11 = (t, p, d) => { const L0 = B.load(t, d), per = B.periodAt(L0, p
 {
   const r = B.today(B.load(fixture(), "2026-10-28"), "ethan", "2026-10-28");
   eq("Q14: £233.93 spare in Main goes to the Cash ISA on payday", r.spare, {amount: 233.93, to: "e-isa", toName: "Cash ISA", date: "2026-10-29"});
+}
+
+
+// ================= 1.4.18: insights =================
+// I1: spending this week (counted from payday) against the same days of the last pay period
+{
+  const mut = t => t.transactions.push(
+    {id: "w1", date: "2026-12-04", person: "ethan", amount: 30, budget: "e-food-b", account: "e-food"},
+    {id: "w2", date: "2026-12-05", person: "ethan", amount: 15, budget: "e-fun", account: "e-main"},
+    {id: "w3", date: "2026-12-05", person: "ethan", amount: -5, budget: "e-fun", account: "e-main", note: "refund"},
+    {id: "w4", date: "2026-12-04", person: "sophie", amount: 40, budget: "s-food", account: "s-main", split: "half"},
+    {id: "w5", date: "2026-12-02", person: "ethan", amount: 50, budget: "e-food-b", account: "e-food"},
+    {id: "w6", date: "2026-11-06", person: "ethan", amount: 20, budget: "e-food-b", account: "e-food"},
+    {id: "w7", date: "2026-11-07", person: "ethan", amount: 25, budget: "e-fun", account: "e-main"},
+    {id: "w8", date: "2026-11-08", person: "ethan", amount: 99, budget: "e-food-b", account: "e-food"},
+    {id: "w9", date: "2026-11-29", person: "sophie", amount: 12, budget: "s-fun", account: "s-main"},
+    {id: "w10", date: "2026-10-27", person: "sophie", amount: 9, budget: "s-fun", account: "s-main"});
+  const w = B.spendWeek(dbt(mut, "2026-12-05"), "ethan", "2026-12-05");
+  eq("I1: day 3 of week 2 (pay period from 26 Nov), against 5 to 7 Nov", [w.week, w.day, w.from, w.total, w.prev], [2, 3, "2026-12-03", 60, {from: "2026-11-05", to: "2026-11-07", total: 45}]);
+  eq("I1: the budgets that changed most first (his half of Sophie's split shop counts; a refund nets off)", w.budgets.map(b => [b.id, b.now, b.before, b.change]), [["e-food-b", 50, 20, 30], ["e-fun", 10, 25, -15]]);
+  const w0 = B.spendWeek(dbt(mut, "2026-11-02"), "ethan", "2026-11-02");
+  eq("I1: the first full month has nothing to compare with (those days were before he started)", [w0.week, w0.from, w0.prev], [1, "2026-10-29", null]);
+  const wo = B.spendWeek(dbt(mut, "2026-10-27"), "ethan", "2026-10-27");
+  eq("I1: in the short first month the week counts from when he started", [wo.from, wo.prev], ["2026-10-26", null]);
+  const ws = B.spendWeek(dbt(mut, "2026-11-29"), "sophie", "2026-11-29");
+  eq("I1: Sophie's first month began the day she started, so its days compare", [ws.from, ws.prev, ws.total], ["2026-11-27", {from: "2026-10-26", to: "2026-10-28", total: 9}, 12]);
+  const w5 = B.spendWeek(dbt(mut, "2027-01-25"), "ethan", "2027-01-25");
+  eq("I1: week 5 of a long month, when last month didn't have one", [w5.week, w5.day, w5.prev], [5, 5, null]);
+}
+// I3: no-spend days since tracking started (a refund isn't spending; days before you started don't count)
+{
+  const n = B.noSpend(dbt(t => t.transactions.push(
+    {id: "n0", date: "2026-10-20", person: "ethan", amount: 7, budget: "e-fun", account: "e-main"},
+    {id: "n1", date: "2026-10-26", person: "ethan", amount: 10, budget: "e-fun", account: "e-main"},
+    {id: "n2", date: "2026-10-30", person: "ethan", amount: 5, budget: "e-food-b", account: "e-food"},
+    {id: "n3", date: "2026-11-02", person: "ethan", amount: -3, budget: "e-fun", account: "e-main"},
+    {id: "n4", date: "2026-11-03", person: "ethan", amount: 8, budget: "e-fun", account: "e-main"},
+    {id: "n5", date: "2026-10-28", person: "sophie", amount: 6, budget: "s-fun", account: "s-main"}), "2026-11-05"), "ethan", "2026-11-05");
+  eq("I3: this month (from payday on 29 Oct), since he started, and the runs", [n.from, n.days, n.count, n.total, n.longest, n.current, n.list.length],
+    ["2026-10-29", 8, 6, 8, {days: 3, from: "2026-10-27", to: "2026-10-29"}, 2, 8]);
+  eq("I3: a day with only a refund is a no-spend day", n.list.find(x => x.date === "2026-11-02").spent, false);
+  const n0 = B.noSpend(dbt(null, "2026-10-20"), "ethan", "2026-10-20");
+  eq("I3: before he started, nothing counts", [n0.days, n0.count, n0.total], [0, 0, 0]);
+}
+// I5: saving month by month, out of new money in; money put by for a yearly bill isn't saving
+{
+  const mut = t => t.bills.push({id: "e-ins", person: "ethan", name: "Car insurance", amount: 600, account: "e-car", unit: "year", start: "2027-03-18"});
+  const d = dbt(mut, "2026-12-05"), rs = B.savingRates(d, "ethan", "2026-12-05");
+  eq("I5: full months only (the short first one is left out), this one last", rs.map(r => [r.period.name, r.current]), [["Nov 2026", false], ["Dec 2026", true]]);
+  eq("I5: new money in is pay and Sophie's shares, not what carried over", rs.map(r => r.fresh), [3040, 3040]);
+  const pl = planAt(d, "ethan", "2026-11-10"), sa = lineAmt(pl, l => l.setAside && l.kind === "save"), carried = lineAmt(pl, l => l.leftover || l.already);
+  eq("I5: November had money carried over and set aside for the insurance", [carried > 0, sa > 0], [true, true]);
+  near("I5: saved leaves the insurance out", rs[0].saved, lineAmt(pl, l => (l.kind === "save" && !l.setAside) || l.kind === "topup"));
+  near("I5: (the plan's own total has it in)", pl.totals.save - rs[0].saved, sa);
+  eq("I5: the rate", rs[0].pct, Math.round(rs[0].saved / 3040 * 100));
+  eq("I5: nothing in the short first month", B.savingRates(dbt(null, "2026-11-10"), "sophie", "2026-11-10"), []);
+  eq("I5: Sophie's first full month", B.savingRates(dbt(null, "2026-12-05"), "sophie", "2026-12-05").map(r => r.period.start), ["2026-11-27"]);
+  // the same counting in year() (new money in and saved), the partner summary and kinds()
+  const y = B.year(d, "ethan", "2026-12-05").find(r => r.period.start === "2026-10-29");
+  eq("I5: year() has new money in and real saving beside the plan's totals", [y.fresh, y.saved, y.in > y.fresh, y.save > y.saved], [3040, rs[0].saved, true, true]);
+  const k = B.kinds(pl.lines);
+  near("I5: kinds() always adds up", k.in - k.bill - k.spend - k.save - k.left, 0);
+  eq("I5: kinds(): set aside is bills money, a top-up is saving", [B.kindOf({kind: "save", setAside: true}), B.kindOf({kind: "topup"}), B.kindOf({kind: "save"}), B.newMoney({kind: "in", leftover: true}), B.newMoney({kind: "in", id: "opening"}), B.newMoney({kind: "in", isPay: true})], ["bill", "save", "save", false, false, true]);
+}
+// I5b: the partner's "Saving this month" doesn't count money put by for a yearly bill (Sophie's membership)
+{
+  const d = dbt(null, "2026-12-05"), pl = planAt(d, "sophie", "2026-12-05"), sa = lineAmt(pl, l => l.setAside && l.kind === "save");
+  eq("I5b: Sophie puts money by for her membership in December", sa > 0, true);
+  near("I5b: and it isn't in what Ethan sees as saved", B.summary(d, "sophie", "2026-12-05").saved, pl.totals.save - sa);
+}
+// I10: where each budget is heading by payday
+{
+  const mut = t => {
+    t.budgets.push({id: "e-hob", person: "ethan", name: "Hobbies", amount: 140, mode: "daily", account: "e-main"},
+      {id: "e-groc", person: "ethan", name: "Groceries", amount: 280, mode: "weekly", account: "e-main"},
+      {id: "e-gift", person: "ethan", name: "Gifts", amount: 60, mode: "oneoff", account: "e-main"});
+    t.transactions.push({id: "f0", date: "2026-10-27", person: "ethan", amount: 5, budget: "e-hob", account: "e-main"},
+      {id: "f1", date: "2026-11-01", person: "ethan", amount: 50, budget: "e-hob", account: "e-main"}, {id: "f2", date: "2026-11-10", person: "ethan", amount: 30, budget: "e-hob", account: "e-main"},
+      {id: "f3", date: "2026-10-29", person: "ethan", amount: 90, budget: "e-groc", account: "e-main"}, {id: "f4", date: "2026-11-05", person: "ethan", amount: 60, budget: "e-groc", account: "e-main"},
+      {id: "f5", date: "2026-11-12", person: "ethan", amount: 100, budget: "e-groc", account: "e-main"}, {id: "f6", date: "2026-11-03", person: "ethan", amount: 20, budget: "e-gift", account: "e-main"});
+  };
+  const f = B.forecast(dbt(mut, "2026-11-13"), "ethan", "2026-11-13"), by = id => f.budgets.find(b => b.id === id);
+  eq("I10: day 16 of 28, not early", [f.day, f.days, f.daysLeft, f.early], [16, 28, 12, false]);
+  // day to day: £80 in 16 days, steadied by a week at the budget's own £5 a day: (80 + 35) / 23 a day for 12 days
+  near("I10: day to day: on course to finish on budget", by("e-hob").end, 140); near("I10: (under)", by("e-hob").under, 0);
+  // weekly: £150 over two weeks done (steadied by a planned £70 week: £73.33 a week), £100 already this week
+  near("I10: weekly: this week costs what's spent in it, the last week a usual week", by("e-groc").end, 150 + 100 + 220 / 3);
+  near("I10: weekly: over", by("e-groc").under, 280 - (250 + 220 / 3));
+  eq("I10: one-off: what's left is what's left", [by("e-gift").end, by("e-gift").under], [20, 40]);
+  eq("I10: saving (the LISA, the Cash ISA's whatever is left) isn't forecast", f.budgets.some(b => b.id === "e-lisa-b" || b.id === "e-isa-b"), false);
+  // a pound on the first day of the last week: that week will still cost a usual week
+  const g = B.forecast(dbt(t => { mut(t); t.transactions.push({id: "f7", date: "2026-11-19", person: "ethan", amount: 1, budget: "e-groc", account: "e-main"}); }, "2026-11-19"), "ethan", "2026-11-19").budgets.find(b => b.id === "e-groc");
+  near("I10: weekly, a week later: the three weeks so far set the pace", g.end, 250 + (250 + 70) / 4);
+  // early in the pay period: too early to say, unless it's already over
+  const e1 = B.forecast(dbt(t => { mut(t); t.transactions.push({id: "f8", date: "2026-10-30", person: "ethan", amount: 150, budget: "e-hob", account: "e-main"}); }, "2026-11-02"), "ethan", "2026-11-02");
+  eq("I10: day 5: too early, says from when", [e1.early, e1.sure, e1.budgets.find(b => b.id === "e-groc").end], [true, "2026-11-04", null]);
+  eq("I10: but a budget already over says so (what's spent isn't a guess)", [e1.budgets.find(b => b.id === "e-hob").end, e1.budgets.find(b => b.id === "e-hob").under], [230, -90]);
+  const eo = B.forecast(dbt(mut, "2026-10-27"), "ethan", "2026-10-27");
+  eq("I10: the short first month never gets a week in: from a week after payday", [eo.early, eo.from, eo.days, eo.sure], [true, "2026-10-26", 3, "2026-11-04"]);
+  // the usual is from full months only (the short first one would make any normal month look high)
+  const u = B.forecast(dbt(mut, "2026-12-10"), "ethan", "2026-12-10").budgets.find(b => b.id === "e-hob");
+  eq("I10: usual: November's £80, not October's £5", u.usual, 80);
+  eq("I10: Sophie's whatever-is-left Fun is forecast like a day-to-day budget", B.forecast(dbt(null, "2026-12-10"), "sophie", "2026-12-10").budgets.map(b => [b.id, b.mode]), [["s-food", "weekly"], ["s-fun", "remainder"]]);
+}
+// I11: a Cash ISA gets a monthly reminder like the LISA's, first a month after starting
+{
+  const isa = (d, p, x) => B.checks(d, p, x).filter(c => /^isa-/.test(c.id));
+  eq("I11: not in the first month", isa(dbt(null, "2026-11-20"), "ethan").length, 0);
+  eq("I11: a month in, never checked", isa(dbt(null, "2026-11-26"), "ethan"), [{id: "isa-month-2026-11-e-isa", key: "check:isa-month-2026-11-e-isa", text: "Check your Cash ISA and update its value", action: "potcheck", value: "e-isa", order: 41}]);
+  eq("I11: checked lately, nothing to do", isa(dbt(t => t.valuations.push({id: "vi", account: "e-isa", date: "2026-11-10", amount: 3300}), "2026-11-26"), "ethan").length, 0);
+  eq("I11: \"It's right\" hides it for the month", isa(dbt(t => t.settings.push({person: "ethan", key: "check:isa-month-2026-11-e-isa", value: "done"}), "2026-11-26"), "ethan").length, 0);
+  eq("I11: Sophie has no ISA", isa(dbt(null, "2026-12-27"), "sophie").length, 0);
 }
 
 console.log(fails ? fails + " failed, " + passes + " passed" : "All " + passes + " passed");
