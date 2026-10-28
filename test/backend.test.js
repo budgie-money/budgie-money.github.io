@@ -855,5 +855,68 @@ const phone = (F, k) => { const P = {T: {}, since: 0}; P.sync = (ops) => { const
   ok("Q5: and Sophie's private payment added that way still only reaches her", !next.rows.transactions.some(r => r.id === "t-q5") && nextS.rows.transactions.some(r => r.id === "t-q5"));
 }
 
+// POOL: the flat bills as a pooled estimate, and a split that changes from a date
+{
+  const e2 = makeEnv(), c2 = e2.ctx; c2.setup();
+  const fx2 = fixture();
+  fx2.transactions.push(
+    {id: "pt-ctax", date: "2026-11-02", person: "ethan", amount: 150, budget: "e-flat", account: "e-bills", note: "Council tax"},
+    {id: "pt-lunch", date: "2026-11-03", person: "ethan", amount: 9, budget: "e-fun", account: "e-main", note: "Lunch"});
+  Object.keys(fx2).forEach(t => { if (!e2.sheets[t]) return; const sh = e2.sheets[t], head = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0]; fx2[t].forEach(r => sh.appendRow(head.map(h => r[h] === undefined ? "" : r[h]))); });
+  c2.CACHE_ = {}; c2.setup();
+  const call2 = (b) => { c2.CACHE_ = {}; return JSON.parse(c2.handle_(b).text); };
+  const E = e2.props.KEY_ethan, Sk = e2.props.KEY_sophie;
+  const flat = Object.assign({}, fx2.bills.find(b => b.id === "e-flat"), {name: "Flat bills and council tax", amount: 450, pool: "2026-10-16"});
+  const sB = call2({key: Sk});
+  ok("POOL: before it's pooled, Sophie doesn't get Ethan's council tax", !sB.rows.transactions.some(r => r.id === "pt-ctax"));
+  const w = call2({key: E, since: Date.now() - 1000, ops: [{op: "put", table: "bills", row: flat}]});
+  ok("POOL: Ethan makes the flat bills a pooled estimate", w.applied.length === 1 && w.rows.bills.some(b => b.id === "e-flat" && b.pool === "2026-10-16"), w);
+  const s2 = call2({key: Sk, since: sB.now});
+  ok("POOL: Sophie's next sync brings the flat bills' real payments with the bill, and none of his others", s2.rows.transactions.some(r => r.id === "pt-ctax") && !s2.rows.transactions.some(r => r.id === "pt-lunch"), s2.rows.transactions.map(r => r.id));
+  ok("POOL: a full sync too", (r => r.some(x => x.id === "pt-ctax") && !r.some(x => x.id === "pt-lunch"))(call2({key: Sk}).rows.transactions));
+  const fake = call2({key: E, ops: [{op: "put", table: "settings", row: {id: "ethan:pool:e-flat:2026-10-16", person: "ethan", key: "pool:e-flat:2026-10-16", value: JSON.stringify({next: "2026-11-16", estimate: 450, actual: 450, back: 0, owes: 0})}}]});
+  ok("POOL: how a month settled is the sheet's to record, not a phone's", fake.rejected.length === 1, fake);
+  const notHers = call2({key: Sk, ops: [{op: "put", table: "transactions", row: {id: "pt-ctax", date: "2026-11-02", person: "ethan", amount: 1, budget: "e-flat", account: "e-bills"}}]});
+  ok("POOL: Sophie sees his real bills but can't change them", notHers.rejected.length === 1, notHers);
+  // he takes it off the flat bills: it goes from Sophie's phone
+  const s3 = call2({key: Sk}); call2({key: E, ops: [{op: "put", table: "transactions", row: {id: "pt-ctax", date: "2026-11-02", person: "ethan", amount: 150, budget: "e-fun", account: "e-bills", note: "Council tax"}}]});
+  const s4 = call2({key: Sk, since: s3.now});
+  ok("POOL: one taken off the flat bills is taken off Sophie's phone", s4.rows.transactions.some(r => r.id === "pt-ctax" && r.deleted === true), s4.rows.transactions);
+  // the split changes from 1 Dec: either of you can say so (a split is both of yours), as a dated row
+  const sp = call2({key: Sk, ops: [{op: "put", table: "amounts", row: {id: "amt-sp1", item: "bills", start: "2026-12-01", shares: "ethan:1, sophie:1"}}]});
+  ok("POOL: a split's new shares from a date are saved", sp.applied.length === 1, sp);
+  ok("POOL: and both phones get them", call2({key: E}).rows.amounts.some(a => a.id === "amt-sp1" && a.shares === "ethan:1, sophie:1"));
+  // the month is recorded once, two days after it ends, by the sheet (hourly, with the budget tabs), and both phones get it
+  call2({key: E, ops: [{op: "put", table: "transactions", row: {id: "pt-ctax", date: "2026-11-02", person: "ethan", amount: 150, budget: "e-flat", account: "e-bills", note: "Council tax"}}]});
+  c2.CACHE_ = {};
+  const fz = (d) => { c2.CACHE_ = {}; return c2.poolFreeze_(c2.Budgie.load(c2.allTables_(), d), d); };
+  ok("POOL: not recorded the day after the month", fz("2026-11-16") === 0);
+  ok("POOL: recorded two days after, once", fz("2026-11-18") === 1 && fz("2026-11-19") === 0);
+  c2.CACHE_ = {};
+  const rec = c2.readTable_("settings").rows.filter(r => /^pool:/.test(r.key));
+  ok("POOL: what it recorded: Sophie gets £100 of the £300 left back", rec.length === 1 && rec[0].person === "ethan" && rec[0].key === "pool:e-flat:2026-10-16" && JSON.parse(rec[0].value).back === 100, rec);
+  ok("POOL: Sophie's phone gets the record", call2({key: Sk}).rows.settings.some(r => r.key === "pool:e-flat:2026-10-16"));
+  // a pooled bill of his own (not shared): its records aren't Sophie's to see
+  call2({key: E, ops: [{op: "put", table: "bills", row: {id: "e-privpool", person: "ethan", name: "Gym and hobbies", amount: 60, account: "e-main", unit: "month", on: "1", start: "2026-10-01", pool: "2026-10-16"}}]});
+  c2.CACHE_ = {}; c2.applyOne_("ethan", {op: "put", table: "settings", row: {id: "ethan:pool:e-privpool:2026-10-16", person: "ethan", key: "pool:e-privpool:2026-10-16", value: JSON.stringify({next: "2026-11-16", estimate: 60, actual: 41, back: 0, owes: 0, keep: 19, mineOver: 0, paid: {}})}}, Date.now(), "sheet", {sys: true});
+  const sv = call2({key: Sk}).rows.settings.map(r => r.key);
+  ok("POOL: a private pooled bill's record isn't sent to the partner (the shared one's is)", sv.indexOf("pool:e-privpool:2026-10-16") < 0 && sv.indexOf("pool:e-flat:2026-10-16") >= 0, sv);
+  ok("POOL: (Ethan gets his own)", call2({key: E}).rows.settings.some(r => r.key === "pool:e-privpool:2026-10-16"));
+  // he shares it: Sophie's next sync (not a full one) brings its records with it; private again, they go
+  const sv0 = call2({key: Sk});
+  const priv = (extra) => call2({key: E, ops: [{op: "put", table: "bills", row: Object.assign({id: "e-privpool", person: "ethan", name: "Gym and hobbies", amount: 60, account: "e-main", unit: "month", on: "1", start: "2026-10-01", pool: "2026-10-16"}, extra)}]});
+  priv({split: "half"});
+  const sv1 = call2({key: Sk, since: sv0.now});
+  ok("POOL: shared: its records come with it on the next sync", !sv1.full && sv1.rows.bills.some(r => r.id === "e-privpool") && sv1.rows.settings.some(r => r.key === "pool:e-privpool:2026-10-16"), [sv1.full, sv1.rows.settings.map(r => r.key)]);
+  priv({split: ""});
+  const sv2 = call2({key: Sk, since: sv1.now});
+  ok("POOL: private again: they're taken off her phone", sv2.rows.settings.some(r => r.id === "ethan:pool:e-privpool:2026-10-16" && r.deleted === true), sv2.rows.settings);
+  // and it holds: an old payment changed after it was recorded doesn't settle the month again
+  call2({key: E, ops: [{op: "put", table: "transactions", row: {id: "pt-ctax", date: "2026-11-02", person: "ethan", amount: 449, budget: "e-flat", account: "e-bills", note: "Council tax"}}]});
+  c2.CACHE_ = {};
+  const db2 = c2.Budgie.load(c2.allTables_(), "2026-11-20");
+  ok("POOL: a recorded month keeps what was recorded", c2.Budgie.poolMonth(db2, db2.byId["e-flat"], "2026-10-16").back === 100 && c2.Budgie.poolMonth(db2, db2.byId["e-flat"], "2026-10-16").frozen === true);
+}
+
 console.log(fails ? fails + " failed, " + passes + " passed" : "All " + passes + " passed");
 process.exit(fails ? 1 : 0);

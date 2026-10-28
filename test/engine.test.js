@@ -481,7 +481,7 @@ const savedUp = (pl, id) => lineAmt(pl, l => l.setAside && l.bill === id && l.ki
   const bs = B.budgetState(c, me, per);
   eq("compat: budgetState(db, me, per)", ["amount", "spent", "left", "avail", "carryIn", "carryOut", "over"].every(k => k in bs["e-fun"]) && bs["e-fun"].period.start === per.start, true);
   eq("compat: still exported", ["load", "coming", "periodAt", "planFor", "budgetState", "today", "checks", "lisa", "yearly", "yearReview"].every(k => typeof B[k] === "function"), true);
-  eq("compat: version", B.VERSION, "1.4.18");
+  eq("compat: version", B.VERSION, "1.4.19");
 })();
 
 // C3: a payday move ticked in the app and by the bank feed counts once (the latest)
@@ -1118,6 +1118,281 @@ const tickPay11 = (t, p, d) => { const L0 = B.load(t, d), per = B.periodAt(L0, p
   eq("I11: checked lately, nothing to do", isa(dbt(t => t.valuations.push({id: "vi", account: "e-isa", date: "2026-11-10", amount: 3300}), "2026-11-26"), "ethan").length, 0);
   eq("I11: \"It's right\" hides it for the month", isa(dbt(t => t.settings.push({person: "ethan", key: "check:isa-month-2026-11-e-isa", value: "done"}), "2026-11-26"), "ethan").length, 0);
   eq("I11: Sophie has no ISA", isa(dbt(null, "2026-12-27"), "sophie").length, 0);
+}
+
+// P: a pooled bill. "Flat bills and council tax" is a £450 estimate on the 1st from the Bills pot, shared 2 to 1; Sophie
+// sends £150 into the pot on the 1st. The real bills are payments logged against it. Bills months run 16th to 15th.
+{
+  const flat = (t, extra) => {
+    Object.assign(t.bills.find(b => b.id === "e-flat"), {name: "Flat bills and council tax", amount: 450, pool: "2026-10-16", variable: ""}, extra || {});
+    t.transfers.find(x => x.id === "s-to-e-bills").amount = 150;
+  };
+  const pay = (t, id, date, amount, extra) => t.transactions.push(Object.assign({id, date, person: "ethan", amount, budget: "e-flat", account: "e-bills", note: id}, extra || {}));
+  // the real bills of 16 Oct to 15 Nov: £370 in all (£80 under)
+  const under = t => { flat(t); pay(t, "ctax", "2026-11-02", 150); pay(t, "energy", "2026-11-05", 90); pay(t, "water", "2026-11-10", 92); pay(t, "sky", "2026-11-12", 38); };
+  const tickPayday = (t, date) => { const d = B.load(t, date), per = B.periodAt(d, "ethan", date); B.payday(d, "ethan", per).moves.forEach((m, i) => t.moves.push({id: "pm" + date + i, date: per.start, person: "ethan", from: m.from, to: m.to, amount: m.amount, key: "pay:" + per.start + ":" + m.to})); };
+  const out = (d, from, to) => B.flows(d, B.addDays(from, -1), B.addDays(to, -1)).filter(f => f.account === "e-bills" && f.amount < 0 && (f.what === "Flat bills and council tax" || d.byId[f.src] && d.byId[f.src].budget === "e-flat" || /^(ctax|energy|water|sky|big)/.test(f.src))).reduce((a, f) => a - f.amount, 0);
+
+  // P1: the bills month
+  const d1 = dbt(under, "2026-11-13"), m1 = B.poolMonth(d1, d1.byId["e-flat"], "2026-10-16");
+  eq("P1: a bills month runs 16th to 15th, with the estimate dated in it", [m1.start, m1.end, m1.date, m1.estimate, m1.actual, m1.closed], ["2026-10-16", "2026-11-15", "2026-11-01", 450, 370, false]);
+  eq("P1: a date picks its bills month", [B.poolStart(d1.byId["e-flat"], "2026-11-15"), B.poolStart(d1.byId["e-flat"], "2026-11-16"), B.poolStart(d1.byId["e-flat"], "2027-01-03")], ["2026-10-16", "2026-11-16", "2026-12-16"]);
+  eq("P1: the start day is the pool date's day (a setting, not fixed)", B.poolStart(dbt(t => { under(t); t.bills.find(b => b.id === "e-flat").pool = "2026-10-03"; }, "2026-11-13").byId["e-flat"], "2026-11-13"), "2026-11-03");
+
+  // P2: the double count can't happen. Money out of the Bills pot for the flat bills over the month is the estimate
+  // (£450: £370 paid and £80 still to go until the month is over), never £450 + £370
+  near("P2: mid-month, the pot's flat bills come to the estimate, not the estimate plus the real bills", out(d1, "2026-10-16", "2026-11-16"), 450);
+  const d1b = dbt(under, "2026-11-16");
+  near("P2: once the month is over, only what was really paid", out(d1b, "2026-10-16", "2026-11-16"), 370);
+  near("P2: going over, the real bills (never the estimate on top)", out(dbt(t => { under(t); pay(t, "big", "2026-11-14", 110); }, "2026-11-13"), "2026-10-16", "2026-11-16"), 480);
+  const fl1 = B.flows(d1, "2026-10-31", "2026-11-01").filter(f => f.what === "Flat bills and council tax");
+  eq("P2: no £450 payment on the 1st once the real bills are in: what's still to go, from tomorrow", B.flows(d1, "2026-10-15", "2026-12-15").filter(f => f.what === "Flat bills and council tax").map(f => [f.date, f.amount]), [["2026-11-14", -80], ["2026-12-01", -450]]);
+  eq("P2: (nothing at all on the 1st itself)", fl1.length, 0);
+  // the payday that funds the month moves the estimate once, whatever's been paid; and To do never asks to fill the pot for
+  // the real bills when the payday moves were made
+  const t2 = fixture(); under(t2); t2.transactions = t2.transactions.filter(x => x.date < "2026-10-29"); tickPayday(t2, "2026-10-29");
+  under(t2); t2.transactions = t2.transactions.filter((x, i, a) => a.findIndex(y => y.id === x.id) === i);
+  const pd29 = B.payday(dbt(() => {}, "2026-10-29"), "ethan", B.periodAt(dbt(() => {}, "2026-10-29"), "ethan", "2026-10-29"));
+  const d2 = B.load(t2, "2026-11-13");
+  near("P2: the payday move into the Bills pot is the estimate once (rent, flat bills, phone less Sophie's)", t2.moves.find(m => m.to === "e-bills").amount, 1200 + 450 + 20 - 650 - 100);
+  eq("P2: To do never says the pot is short or asks to fill it for the real bills", B.todo(d2, "ethan", "2026-11-13").filter(x => x.from === "e-bills" || x.to === "e-bills" || x.type === "warn").map(x => x.what), []);
+  near("P2: while the month is going, what's left of the estimate is still to go", B.balances(d2, "2026-11-15")["e-bills"], 100 + 920 + 150 + 500 - 370 - 20 - 80);
+  near("P2: once it's over, the pot holds just what's left (£80) before the rent", B.balances(B.load(t2, "2026-11-16"), "2026-11-15")["e-bills"], 100 + 920 + 150 + 500 - 370 - 20);
+  eq("P2: the plan still shows the £450 estimate as the bill (the Money tab)", B.planFor(d2, "ethan", B.periodAt(d2, "ethan", "2026-11-13")).lines.filter(l => l.id === "e-flat").map(l => [l.amount, l.pool]), [[450, true]]);
+  eq("P2: a pooled bill isn't set aside for, and its real bills aren't spending", [d2.byId["e-flat"].setAside, B.noSpend(d2, "ethan", "2026-11-12").list.filter(x => x.date === "2026-11-10")[0].spent], [false, false]);
+  // next month's real bills before the payday that funds it were paid from that estimate: no catch-up for them
+  const t3 = JSON.parse(JSON.stringify(t2)); pay(t3, "ctax2", "2026-11-20", 150);
+  const p3 = B.payday(B.load(t3, "2026-11-25"), "ethan", B.periodAt(B.load(t3, "2026-11-25"), "ethan", "2026-11-26"));
+  const p2b = B.payday(B.load(t2, "2026-11-25"), "ethan", B.periodAt(B.load(t2, "2026-11-25"), "ethan", "2026-11-26"));
+  near("P2: a bill of next month paid before payday doesn't make payday move it twice (the same move: it was paid from the estimate)", p3.moves.find(m => m.to === "e-bills").amount, p2b.moves.find(m => m.to === "e-bills").amount);
+  eq("P2: and isn't a catch-up", p3.plan.lines.filter(l => l.catchup && l.account === "e-bills").length, 0);
+  eq("P2: Coming up shows what's still to come of next month's estimate", B.coming(B.load(t3, "2026-11-25"), "ethan", "2026-11-25", 14).filter(c => c.item === "e-flat").map(c => [c.date, c.amount]), [["2026-12-01", 300]]);
+  eq("P2: the year's bills count what really went", B.yearReview(B.load(t3, "2026-11-25"), "ethan", "2026-04-06").billsBy.filter(x => x.id === "e-flat").map(x => x.amount), [370 + 150]);
+
+  // P3: a month under the estimate: £80 left, split 2 to 1. Sophie's £26.67 comes back; Ethan's £53.33 stays in the pot
+  // and goes to his savings through the next payday (less goes into the pot, more to whatever is left)
+  near("P3: Sophie gets her third of what's left back", m1.back, 26.67);
+  near("P3: Ethan keeps two thirds", m1.keep, 53.33);
+  eq("P3: nothing owed before the month is over", B.between(d1, "ethan", "2026-11-13").net, 0);
+  eq("P3: no move to savings at all (it goes through payday)", B.todo(d1b, "ethan", "2026-11-16").filter(x => x.type === "move" && /^pool:/.test(x.key)).length, 0);
+  const te = B.todo(d1b, "ethan", "2026-11-16"), ts = B.todo(d1b, "sophie", "2026-11-16");
+  eq("P3: the 16th, Ethan: pay Sophie her share", te.filter(x => !x.payday && x.type !== "warn" && !/^fill/.test(x.key)).map(x => [x.what, x.why]), [
+    ["Pay Sophie £26.67", "Sophie's share of what's left of flat bills and council tax, 16 Oct to 15 Nov."]]);
+  eq("P3: Sophie sees the same from her side", ts.filter(x => x.type === "settle").map(x => [x.what, x.why]), [["Ethan owes you £26.67", "Your share of what's left of flat bills and council tax, 16 Oct to 15 Nov. Tick when it arrives."]]);
+  eq("P3: between you, from both sides", [B.between(d1b, "ethan", "2026-11-16").iOwe, B.between(d1b, "sophie", "2026-11-16").owedToMe], [26.67, 26.67]);
+  eq("P3: paying Sophie back squares it", B.between(dbt(t => { under(t); t.settlements.push({id: "s", date: "2026-11-17", from: "ethan", to: "sophie", amount: 26.67}); }, "2026-11-17"), "sophie", "2026-11-17").net, 0);
+  // the next payday counts what's left, still in the pot, as already there (Ethan paid Sophie from his main account),
+  // so £80 less goes into the pot and £80 more to his Cash ISA (whatever is left) than if it had come to the estimate
+  const t4 = JSON.parse(JSON.stringify(t2)); t4.settlements.push({id: "s", date: "2026-11-16", from: "ethan", to: "sophie", amount: 26.67});
+  const p4 = B.payday(B.load(t4, "2026-11-25"), "ethan", B.periodAt(B.load(t4, "2026-11-25"), "ethan", "2026-11-26"));
+  const t5 = JSON.parse(JSON.stringify(t4)); pay(t5, "rest", "2026-11-14", 80);
+  const p5 = B.payday(B.load(t5, "2026-11-25"), "ethan", B.periodAt(B.load(t5, "2026-11-25"), "ethan", "2026-11-26"));
+  eq("P3: next payday: what's left counts as already in the pot, and says where it's from", p4.plan.lines.filter(l => l.already && l.account === "e-bills").map(l => [l.amount, l.poolLeft && l.poolLeft.amount, l.poolLeft && l.poolLeft.start]), [[80, 80, "2026-10-16"]]);
+  near("P3: so £80 less goes into the pot", p5.moves.find(m => m.to === "e-bills").amount - p4.moves.find(m => m.to === "e-bills").amount, 80);
+  // (both had Ethan pay Sophie £26.67 from his account, so the £80 freed is his £53.33 plus the £26.67 he paid her)
+  near("P3: and the pay that frees goes to whatever is left (the Cash ISA)", p4.plan.remainder - p5.plan.remainder, 80);
+
+  // P4: a month over the estimate: £480, £30 over. Sophie owes her £10; Ethan's £20 is his own
+  const over = t => { under(t); pay(t, "big", "2026-11-14", 110); };
+  const d5 = dbt(over, "2026-11-16"), m5 = B.poolMonth(d5, d5.byId["e-flat"], "2026-10-16");
+  eq("P4: over", [m5.actual, m5.left, m5.owes, m5.mineOver, m5.keep, m5.back], [480, -30, 10, 20, 0, 0]);
+  eq("P4: Ethan: Sophie owes him her share", B.todo(d5, "ethan", "2026-11-16").filter(x => x.type === "settle").map(x => [x.what, x.why]), [["Sophie owes you £10.00", "Sophie's share of flat bills and council tax going over, 16 Oct to 15 Nov. Tick when it arrives."]]);
+  eq("P4: Sophie: pay Ethan her share", B.todo(d5, "sophie", "2026-11-16").filter(x => x.type === "settle").map(x => [x.what, x.why]), [["Pay Ethan £10.00", "Your share of flat bills and council tax going over, 16 Oct to 15 Nov."]]);
+  eq("P4: between you", B.between(d5, "sophie", "2026-11-16").iOwe, 10);
+
+  // P5: Sophie's view: her phone gets the bill and its real payments (not Ethan's other payments) and works out the same
+  const sophieRows = t => { under(t); t.transactions.push({id: "lunch", date: "2026-11-03", person: "ethan", amount: 9, budget: "e-fun", account: "e-main"}); };
+  const ds = dbt(t => { sophieRows(t); t.transactions = t.transactions.filter(x => x.budget === "e-flat"); }, "2026-11-13");
+  eq("P5: Sophie's phone, from the rows she gets, sees the same running total", (({estimate, actual, back}) => [estimate, actual, back])(B.poolMonth(ds, ds.byId["e-flat"], "2026-10-16")), [450, 370, 26.67]);
+  eq("P5: the pooled bills she can see: shared with her", [B.pools(ds, "sophie").map(b => b.id), B.pools(ds, "ethan").map(b => b.id)], [["e-flat"], ["e-flat"]]);
+  eq("P5: none of it is her spending", B.yearReview(ds, "sophie", "2026-04-06").spent.length, 0);
+
+  // P6: the estimate changes (amounts) and the split changes (a dated split), from 1 Dec: November keeps its own
+  const changed = t => { under(t); t.amounts.push({id: "a1", item: "e-flat", start: "2026-12-01", amount: 500}, {id: "a2", item: "bills", start: "2026-12-01", shares: "ethan:1, sophie:1"}); t.amounts.push({id: "a3", item: "s-to-e-bills", start: "2026-12-01", amount: 250}); pay(t, "ctax2", "2026-11-20", 150); pay(t, "energy2", "2026-12-05", 90); };
+  const d6 = dbt(changed, "2026-12-16"), mA = B.poolMonth(d6, d6.byId["e-flat"], "2026-10-16"), mB = B.poolMonth(d6, d6.byId["e-flat"], "2026-11-16");
+  eq("P6: the old month keeps £450 and 2 to 1", [mA.estimate, mA.back, mA.keep], [450, 26.67, 53.33]);
+  eq("P6: the new month: £500, half each", [mB.estimate, mB.actual, mB.back, mB.keep], [500, 240, 130, 130]);
+  eq("P6: between you: November's back, then December's (her £250 matches her new half)", B.between(d6, "sophie", "2026-12-16").owedToMe, B.round(26.67 + 130));
+  eq("P6: the split from a date, and before it", [B.sharesAt(d6, "bills", "2026-11-30"), B.sharesAt(d6, "bills", "2026-12-01")], ["ethan:2, sophie:1", "ethan:1, sophie:1"]);
+  eq("P6: a split payment from before the change keeps its share", B.myShare(dbt(t => { changed(t); t.transactions.push({id: "sp", date: "2026-11-20", person: "ethan", amount: 30, budget: "e-fun", split: "bills"}); }, "2026-12-16"), "sophie", {date: "2026-11-20", person: "ethan", amount: 30, split: "bills"}), 10);
+  eq("P6: Sophie's back for both months is one settling up", B.todo(d6, "ethan", "2026-12-16").filter(x => x.type === "settle").map(x => [x.amount, x.why]), [[156.67, "Sophie's share of what's left of flat bills and council tax, 16 Oct to 15 Dec."]]);
+
+  // P7: a partial first month: pooling from 5 Nov. The 1 Nov estimate is an ordinary bill; the first bills month is
+  // 5 Nov to 4 Dec, and a real bill before 5 Nov isn't in it
+  const d7 = dbt(t => { under(t); t.bills.find(b => b.id === "e-flat").pool = "2026-11-05"; }, "2026-12-05");
+  const m7 = B.poolMonth(d7, d7.byId["e-flat"], "2026-11-05");
+  eq("P7: first month", [m7.start, m7.end, m7.estimate, m7.actual], ["2026-11-05", "2026-12-04", 450, 220]);
+  eq("P7: before it, the estimate is paid as an ordinary bill", B.flows(d7, "2026-10-31", "2026-11-01").filter(f => f.what === "Flat bills and council tax").map(f => f.amount), [-450]);
+  eq("P7: the months before the pool date aren't settled up", B.between(d7, "sophie", "2026-12-05").pools.map(x => x.month.start), ["2026-11-05"]);
+
+  // P8: a real bill paid by card from the main account: the money for it goes back from the Bills pot
+  const d8 = dbt(t => { under(t); t.transactions.find(x => x.id === "water").account = "e-main"; }, "2026-11-13");
+  eq("P8: paid from the main account: To do moves it back from the pot", B.todo(d8, "ethan", "2026-11-13").filter(x => x.from === "e-bills" && x.to === "e-main").map(x => [x.amount, x.why]), [[92, "You paid for flat bills and council tax from Main account."]]);
+  near("P8: and it still counts against the estimate", B.poolMonth(d8, d8.byId["e-flat"], "2026-10-16").actual, 370);
+}
+
+// P9-P14 (review of 1.4.19): weekend shifts, skipped estimates, one-date amounts, frozen months, a year of paydays
+{
+  const pay = (t, id, date, amount, extra) => t.transactions.push(Object.assign({id, date, person: "ethan", amount, budget: "e-flat", account: "e-bills", note: id}, extra || {}));
+  const flat = (t, extra) => { Object.assign(t.bills.find(b => b.id === "e-flat"), {name: "Flat bills", amount: 450, pool: "2026-10-16", variable: ""}, extra || {}); t.transfers.find(x => x.id === "s-to-e-bills").amount = 150; };
+  const months = (d, list) => list.map(s => (m => [m.start, m.estimate, m.actual, m.back, m.owes])(B.poolMonth(d, d.byId["e-flat"], s)));
+  // P9: the estimate on the 15th, moved to the next working day (Sun 15 Nov is Mon 16 Nov, in the next bills month by
+  // its day): each bills month still has exactly one estimate, its own
+  const shifted = t => { flat(t, {on: "15", shift: "next working day", start: "2026-10-15"}); pay(t, "a1", "2026-10-20", 370); pay(t, "a2", "2026-11-20", 370); pay(t, "a3", "2026-12-20", 370); };
+  const d9 = dbt(shifted, "2027-01-20");
+  eq("P9: one estimate a month, whatever day a weekend moves it to", months(d9, ["2026-10-16", "2026-11-16", "2026-12-16"]), [["2026-10-16", 450, 370, 26.67, 0], ["2026-11-16", 450, 370, 26.67, 0], ["2026-12-16", 450, 370, 26.67, 0]]);
+  eq("P9: settled up: £26.67 back to Sophie each month", B.between(d9, "sophie", "2027-01-20").pools.map(x => x.amount), [26.67, 26.67, 26.67]);
+  const prev = t => { flat(t, {on: "16", shift: "previous working day", start: "2026-10-16"}); pay(t, "a1", "2026-10-20", 370); pay(t, "a2", "2026-11-20", 370); pay(t, "a3", "2026-12-20", 370); };
+  const d9b = dbt(prev, "2027-01-20");
+  eq("P9: the previous working day, crossing back into the month before, doesn't either", months(d9b, ["2026-10-16", "2026-11-16", "2026-12-16"]).map(x => x[1]), [450, 450, 450]);
+  eq("P9: (Sat 16 Jan's estimate is paid on Fri 15 Jan, and still belongs to the month from the 16th)", B.poolMonth(d9b, d9b.byId["e-flat"], "2027-01-16").date, "2027-01-15");
+  // P10: a month whose estimate was skipped, or the bill stopped while late bills still came: settled against nothing
+  const skip = t => { flat(t); pay(t, "c", "2026-11-02", 150); pay(t, "c2", "2026-11-20", 300); pay(t, "c3", "2027-01-02", 100); t.exceptions.push({id: "xs", item: "e-flat", date: "2026-12-01", action: "skip"}); };
+  const d10 = dbt(skip, "2027-01-20");
+  eq("P10: a skipped estimate's month is settled up against nothing (Sophie's third of the £300)", B.between(d10, "sophie", "2027-01-20").pools.map(x => [x.month.start, x.amount]), [["2026-10-16", 100], ["2026-11-16", -100], ["2026-12-16", 116.67]]);
+  const stop = t => { flat(t, {end: "2026-11-30"}); pay(t, "c", "2026-11-02", 400); pay(t, "late", "2026-12-04", 60); };
+  const d10b = dbt(stop, "2027-01-20");
+  eq("P10: stopped, with a late bill after: that month settles too (Sophie pays her third of it)", B.between(d10b, "sophie", "2027-01-20").pools.map(x => [x.month.start, x.amount]), [["2026-10-16", 16.67], ["2026-11-16", -20]]);
+  // P11: a one-date amount (or the bank feed's day) on a pooled estimate isn't its estimate: the payments are the money
+  const ex = t => { flat(t); pay(t, "c", "2026-11-02", 370); t.exceptions.push({id: "x-e-flat-2026-11-01-bank-ethan", item: "e-flat", date: "2026-11-01", action: "amount", amount: 472.1}, {id: "x-e-flat-2026-11-01-bankday-ethan", item: "e-flat", date: "2026-11-01", action: "move", newDate: "2026-11-03"}); };
+  const d11 = dbt(ex, "2026-11-20"), m11 = B.poolMonth(d11, d11.byId["e-flat"], "2026-10-16");
+  eq("P11: the estimate stays £450 on its own day", [m11.estimate, m11.date, m11.back], [450, "2026-11-01", 26.67]);
+  eq("P11: but before the pool date an amount for one date still counts", B.occurrences(dbt(t => { flat(t, {start: "2026-10-01"}); t.exceptions.push({id: "x1o", item: "e-flat", date: "2026-10-01", action: "amount", amount: 400}); }), t => 0, "2026-10-01", "2026-10-02").length === undefined ? 0 : B.occurrences(dbt(t => { flat(t, {start: "2026-10-01"}); t.exceptions.push({id: "x1o", item: "e-flat", date: "2026-10-01", action: "amount", amount: 400}); }), dbt(t => flat(t, {start: "2026-10-01"})).byId["e-flat"], "2026-10-01", "2026-10-02").map(o => o.amount), [400]);
+  // P12: a month that's over is frozen (settings "pool:<bill>:<start>"); after that, moving the pool date, turning
+  // pooling off or changing a past payment doesn't settle it again, and pooling only changes from the next month
+  const base = t => { flat(t); pay(t, "c", "2026-11-02", 150); pay(t, "e", "2026-11-05", 90); pay(t, "w", "2026-11-10", 92); pay(t, "s", "2026-11-12", 38); t.settlements.push({id: "st", date: "2026-11-16", from: "ethan", to: "sophie", amount: 26.67}); };
+  const freeze = (t, date) => B.poolToFreeze(B.load(t, date), "ethan", date).forEach(f => t.settings.push({person: "ethan", key: f.key, value: f.value}));
+  const tf = fixture(); base(tf);
+  eq("P12: not frozen until two days after the month", B.poolToFreeze(B.load(tf, "2026-11-17"), "ethan", "2026-11-17").length, 0);
+  freeze(tf, "2026-11-18");
+  eq("P12: then once", [tf.settings.filter(x => /^pool:/.test(x.key)).map(x => x.key), B.poolToFreeze(B.load(tf, "2026-11-19"), "ethan", "2026-11-19").length], [["pool:e-flat:2026-10-16"], 0]);
+  const net = (mut) => B.between(dbt(t => { base(t); t.settings = t.settings.concat(tf.settings.filter(x => /^pool:/.test(x.key))); pay(t, "d", "2026-11-25", 100); mut(t); }, "2026-11-30"), "sophie", "2026-11-30").net;
+  eq("P12: settled, as it is", net(() => {}), 0);
+  eq("P12: the pool date moved to the 1st: the settled month stays settled", net(t => { t.bills.find(b => b.id === "e-flat").pool = "2026-11-01"; }), 0);
+  eq("P12: pooling turned off: the same", net(t => { t.bills.find(b => b.id === "e-flat").pool = ""; }), 0);
+  eq("P12: an old payment changed afterwards: the same", net(t => { t.transactions.find(x => x.id === "c").amount = 50; }), 0);
+  const d12 = dbt(t => { base(t); t.settings = t.settings.concat(tf.settings.filter(x => /^pool:/.test(x.key))); t.bills.find(b => b.id === "e-flat").pool = "2026-11-01"; }, "2026-11-30");
+  eq("P12: a new pool date applies from the end of the last settled month", B.poolMonths(d12, d12.byId["e-flat"], "2026-10-01", "2027-01-05").map(m => [m.start, m.next, m.frozen]), [["2026-10-16", "2026-11-16", true], ["2026-11-16", "2026-12-01", false], ["2026-12-01", "2027-01-01", false], ["2027-01-01", "2027-02-01", false]]);
+  const d12b = dbt(t => { base(t); t.settings = t.settings.concat(tf.settings.filter(x => /^pool:/.test(x.key))); t.bills.find(b => b.id === "e-flat").pool = ""; }, "2026-11-30");
+  eq("P12: pooling off: the settled month keeps its record, and the next estimate is an ordinary bill again", [B.poolMonth(d12b, d12b.byId["e-flat"], "2026-10-16").back, B.flows(d12b, "2026-11-30", "2026-12-01").filter(f => f.what === "Flat bills").map(f => f.amount)], [26.67, [-450]]);
+  // P13: a pooled bill's real bill before the pool date isn't one of its payments
+  eq("P13: tagged before the pool date, it's not counted in a month (nor is it a bill's)", [B.isPoolTx(dbt(t => { flat(t); pay(t, "old", "2026-10-10", 50); }), {budget: "e-flat", person: "ethan", date: "2026-10-10"}), B.isPoolTx(dbt(t => flat(t)), {budget: "e-flat", person: "ethan", date: "2026-10-20"})], [false, true]);
+  // P14: a year of paydays (the review's simulation): each payday's moves made, Sophie settled each 16th. The Bills pot
+  // is never short, never asks to be filled, what's left goes through payday, and it all adds up
+  const sim = (cfg) => {
+    const t = fixture(); flat(t, {on: cfg.on || "1", shift: cfg.shift || "", start: cfg.start || "2026-11-01"});
+    let n = 0; const real = {2: 150, 5: 90, 10: 92, 12: 38}, log = [];
+    for (let day = "2026-10-26"; day <= "2027-09-30"; day = B.addDays(day, 1)) {
+      const dd = +day.slice(8, 10);
+      if (real[dd]) t.transactions.push({id: "rb" + n++, date: day, person: "ethan", amount: Math.round(real[dd] * (cfg.scale || 1) * (1 + 0.3 * Math.sin(n)) * 100) / 100, budget: "e-flat", account: "e-bills", note: "real"});
+      let d = B.load(t, day); const per = B.periodAt(d, "ethan", day);
+      if (per.pay && per.start === day && day !== "2026-10-26") { B.payday(d, "ethan", per).moves.forEach(m => t.moves.push({id: "pm" + n++, date: day, person: "ethan", from: m.from, to: m.to, amount: m.amount, key: "pay:" + day + ":" + m.to})); d = B.load(t, day); }
+      const td = B.todo(d, "ethan", day);
+      td.filter(x => x.type === "move" && /^(back|refund):/.test(x.key)).forEach(x => x.keys.forEach(k => t.moves.push({id: "o" + n++, date: day, person: "ethan", from: x.from, to: x.to, amount: k.amount, key: k.key})));
+      td.filter(x => x.type === "warn" || (x.type === "move" && /^fill:/.test(x.key) && x.to === "e-bills")).forEach(x => log.push(day + " " + x.what));
+      const bt = B.between(d, "ethan", day);
+      if (dd === 16 && Math.abs(bt.net) > 0.004) t.settlements.push(bt.iOwe ? {id: "s" + n++, date: day, from: "ethan", to: "sophie", amount: bt.iOwe} : {id: "s" + n++, date: day, from: "sophie", to: "ethan", amount: bt.owedToMe});
+      // (the sheet's hourly record, as the re-review's simulation runs it: every day)
+      B.poolToFreeze(d, "ethan", day).forEach(f => t.settings.push({person: "ethan", key: f.key, value: f.value}));
+    }
+    const d = B.load(t, "2027-09-30"), ms = B.poolMonths(d, d.byId["e-flat"], "2026-10-16", "2027-09-16").filter(m => m.closed);
+    return {log, months: ms.length, frozen: ms.filter(m => m.frozen).length, between: B.between(d, "ethan", "2027-09-30").net, est: ms.every(m => m.estimate === 450)};
+  };
+  const s1 = sim({});
+  eq("P14: a year: never short, every month one estimate, settled, frozen", [s1.log, s1.months, s1.frozen, s1.est, s1.between], [[], 11, 11, true, 0]);
+  const s2 = sim({on: "15", shift: "next working day", start: "2026-10-15"});
+  eq("P14: the same with the estimate on the 15th, moved for weekends", [s2.log, s2.est, s2.between], [[], true, 0]);
+  const s3 = sim({scale: 1.3});
+  // (going over is real money the pot hasn't got: To do fills it until payday, which then tops it up; it's never short
+  // with nowhere to fill it from)
+  eq("P14: and going over every month: filled until payday, never short", [s3.log.filter(l => / short$/.test(l) && !/^2026-1[01]/.test(l)), s3.between, s3.est], [[], 0, true]);
+}
+
+// P15-P21 (re-review of 1.4.19): late bills for a recorded month, waiting to record, old-style payments from the pot,
+// changes only from the next month, and one month's estimate changed by hand
+{
+  const pay = (t, id, date, amount, extra) => t.transactions.push(Object.assign({id, date, person: "ethan", amount, budget: "e-flat", account: "e-bills", note: id}, extra || {}));
+  const flat = (t, extra) => { Object.assign(t.bills.find(b => b.id === "e-flat"), {name: "Flat bills", amount: 450, pool: "2026-10-16", variable: ""}, extra || {}); t.transfers.find(x => x.id === "s-to-e-bills").amount = 150; };
+  const freeze = (t, date, sync) => B.poolToFreeze(B.load(t, date), "ethan", date, sync).forEach(f => t.settings.push({person: "ethan", key: f.key, value: f.value}));
+  const base = () => { const t = fixture(); flat(t); pay(t, "c", "2026-11-02", 150); pay(t, "e", "2026-11-05", 90); pay(t, "w", "2026-11-10", 92); pay(t, "s", "2026-11-12", 38); return t; };
+  // P15: a 12 Nov direct debit said "Part of flat bills" on 20 Nov, after 16 Oct to 15 Nov was recorded on the 18th: it
+  // goes into the month going now, listed as late from the recorded month, and is shared at its settling up
+  const t15 = base(); freeze(t15, "2026-11-18");
+  pay(t15, "dd", "2026-11-12", 60);
+  const d15 = B.load(t15, "2026-11-20"), b15 = d15.byId["e-flat"], rec15 = B.poolMonth(d15, b15, "2026-10-16"), cur15 = B.poolMonth(d15, b15, "2026-11-16");
+  eq("P15: the recorded month keeps what it had, and lists just that", [rec15.actual, rec15.payments.map(x => x.id), rec15.payments.reduce((a, x) => a + x.amount, 0)], [370, ["c", "e", "w", "s"], 370]);
+  eq("P15: the late one is in the month going now, as late from the recorded one", [cur15.actual, cur15.late.map(x => [x.id, x.from, x.amount])], [60, [["dd", "2026-10-16", 60]]]);
+  eq("P15: so Sophie's share of it comes at that month's settling up", B.between(B.load(t15, "2026-12-16"), "sophie", "2026-12-16").pools.map(x => [x.month.start, x.amount]), [["2026-10-16", 26.67], ["2026-11-16", 130]]);
+  freeze(t15, "2026-12-18");
+  const d15b = B.load(t15, "2026-12-20"), m15 = B.poolMonth(d15b, d15b.byId["e-flat"], "2026-11-16");
+  eq("P15: once that month is recorded, it lists the late one too, and it isn't late again", [m15.frozen, m15.actual, m15.late.map(x => x.id), B.poolMonth(d15b, d15b.byId["e-flat"], "2026-12-16").late.length], [true, 60, ["dd"], 0]);
+  // taken off again after both were recorded: it comes off the month going then
+  const t15c = JSON.parse(JSON.stringify(t15)); t15c.transactions.find(x => x.id === "dd").budget = "e-fun";
+  const d15c = B.load(t15c, "2026-12-20");
+  eq("P15: taken off later: taken off the month going then", B.poolMonth(d15c, d15c.byId["e-flat"], "2026-12-16").late.map(x => [x.id, x.amount]), [["dd", -60]]);
+  // P16: the record waits while a payment from the pot in the month is still to be checked, or the bank hasn't been read
+  // since the day after (Monzo needing approval again), up to 10 days
+  const t16 = base(); t16.transactions.push({id: "q", date: "2026-11-14", person: "ethan", amount: 25, budget: "", account: "e-bills", note: "NEW PAYEE", review: true});
+  const nf = (t, d, sync) => B.poolToFreeze(B.load(t, d), "ethan", d, sync).length;
+  eq("P16: waits for an unchecked payment from the pot", [nf(t16, "2026-11-18"), nf(t16, "2026-11-25"), nf(t16, "2026-11-26")], [0, 0, 1]);
+  eq("P16: waits for the bank to be read after the month", [nf(base(), "2026-11-18", "2026-11-15"), nf(base(), "2026-11-18", "2026-11-17"), nf(base(), "2026-11-26", "2026-11-15")], [0, 1, 1]);
+  // P17: a payment saved the old way (from Main, with the bank's move from the pot) and counted in later: already paid
+  // from the pot, so To do doesn't ask to move it back
+  const d17 = dbt(t => { flat(t); pay(t, "old", "2026-11-03", 75, {account: "e-main"}); t.moves.push({id: "bk-monzo-oldwd", date: "2026-11-03", person: "ethan", from: "e-bills", to: "e-main", amount: 75, key: "bank:oldwd"}); }, "2026-11-13");
+  eq("P17: an old-style payment from the pot isn't moved back", B.todo(d17, "ethan", "2026-11-13").filter(x => x.from === "e-bills" && x.to === "e-main").length, 0);
+  eq("P17: (without the bank's move, it is)", B.todo(dbt(t => { flat(t); pay(t, "old", "2026-11-03", 75, {account: "e-main"}); }, "2026-11-13"), "ethan", "2026-11-13").filter(x => x.from === "e-bills" && x.to === "e-main").map(x => x.amount), [75]);
+  // P18: turning pooling off, or a new day, counts from the next bills month that hasn't started: the month going now
+  // and one waiting to be recorded stay as they are
+  const t18 = base(); t18.settlements.push({id: "st", date: "2026-11-16", from: "ethan", to: "sophie", amount: 26.67});
+  const d18 = B.load(t18, "2026-11-17"), b18 = d18.byId["e-flat"];
+  eq("P18: off on 17 Nov (16 Oct to 15 Nov waiting to be recorded): from 16 Dec", B.poolChange(d18, b18, false, 16, "2026-11-17"), "2026-10-16, off 2026-12-16");
+  eq("P18: the 1st instead: from 1 Jan, after a short month to 31 Dec", B.poolChange(d18, b18, true, 1, "2026-11-17"), "2026-10-16, 2027-01-01");
+  const off18 = dbt(t => { Object.assign(t, JSON.parse(JSON.stringify(t18))); t.bills.find(b => b.id === "e-flat").pool = "2026-10-16, off 2026-12-16"; }, "2026-11-17");
+  eq("P18: off: the settled month and the month going now are as they were", [B.between(off18, "sophie", "2026-11-17").net, B.poolMonths(off18, off18.byId["e-flat"], "2026-10-01", "2027-02-01").map(m => m.start)], [0, ["2026-10-16", "2026-11-16"]]);
+  eq("P18: and from 16 Dec it's an ordinary bill again", B.flows(off18, "2026-12-31", "2027-01-01").filter(f => f.what === "Flat bills").map(f => f.amount), [-450]);
+  const day18 = dbt(t => { Object.assign(t, JSON.parse(JSON.stringify(t18))); t.bills.find(b => b.id === "e-flat").pool = "2026-10-16, 2027-01-01"; }, "2026-11-17");
+  eq("P18: a new day: the months run on to it", B.poolMonths(day18, day18.byId["e-flat"], "2026-10-01", "2027-03-01").map(m => [m.start, m.end, m.estimate]), [["2026-10-16", "2026-11-15", 450], ["2026-11-16", "2026-12-15", 450], ["2026-12-16", "2026-12-31", 0], ["2027-01-01", "2027-01-31", 450], ["2027-02-01", "2027-02-28", 450]]);
+  eq("P18: turned on (not yet pooled): from the bills month going now", B.poolChange(dbt(t => { flat(t, {pool: ""}); }, "2026-11-20"), dbt(t => { flat(t, {pool: ""}); }).byId["e-flat"], true, 16, "2026-11-20"), "2026-11-16");
+  eq("P18: a change not started yet is replaced", B.poolChange(off18, off18.byId["e-flat"], true, 16, "2026-11-20"), "2026-10-16");
+  // P19: one month's estimate changed by hand ("December's is £520") counts; the bank feed's own amount doesn't
+  const d19 = dbt(t => { flat(t); t.exceptions.push({id: "x-e-flat-2026-12-01-amount", item: "e-flat", date: "2026-12-01", action: "amount", amount: 520}, {id: "x-e-flat-2027-01-01-bank-ethan", item: "e-flat", date: "2027-01-01", action: "amount", amount: 380}); }, "2026-11-20");
+  eq("P19: your own change to one month's estimate counts, the bank's doesn't", [B.poolMonth(d19, d19.byId["e-flat"], "2026-11-16").estimate, B.poolMonth(d19, d19.byId["e-flat"], "2026-12-16").estimate], [520, 450]);
+}
+
+// P22-P23 (final review): To do's own move back isn't an old-style payment; once pooling has stopped for good, a
+// recorded month isn't offered any more
+{
+  // P22: water £40 paid by card from Main, To do asks for it back from the pot and Ethan ticks it; then £25 of energy
+  // from Main: To do asks for the £25 (the ticked move isn't taken for an old-style payment from the pot)
+  const t = fixture(); Object.assign(t.bills.find(b => b.id === "e-flat"), {amount: 450, pool: "2026-10-16", variable: ""});
+  t.transactions.push({id: "wat", date: "2026-11-03", person: "ethan", amount: 40, budget: "e-flat", account: "e-main", note: "Water"});
+  const back = (d) => B.todo(B.load(t, d), "ethan", d).filter(x => x.type === "move" && x.from === "e-bills" && x.to === "e-main").map(x => x.amount);
+  eq("P22: water from Main: To do asks for it back", back("2026-11-03"), [40]);
+  const it = B.todo(B.load(t, "2026-11-03"), "ethan", "2026-11-03").find(x => x.from === "e-bills" && x.to === "e-main");
+  t.moves.push({id: "tick1", date: "2026-11-03", person: "ethan", from: "e-bills", to: "e-main", amount: 40, key: it.keys[0].key});
+  eq("P22: ticked: done", back("2026-11-03"), []);
+  t.transactions.push({id: "eng", date: "2026-11-08", person: "ethan", amount: 25, budget: "e-flat", account: "e-main", note: "Energy top-up"});
+  eq("P22: then energy £25 from Main: it asks for that", back("2026-11-08"), [25]);
+  // the same with the bank feed's own move ticking it (a To do key): still not an old-style one
+  const t2 = JSON.parse(JSON.stringify(t)); t2.moves.find(m => m.id === "tick1").id = "bk-monzo-tx_tick"; t2.meta.push({key: "pot.pairFromAt", value: String(Date.UTC(2027, 0, 1))});
+  eq("P22: (also when the bank feed ticked it)", B.todo(B.load(t2, "2026-11-08"), "ethan", "2026-11-08").filter(x => x.type === "move" && x.from === "e-bills" && x.to === "e-main").map(x => x.amount), [25]);
+  // a bank move written after it started pairing isn't old-style either
+  const t3 = fixture(); Object.assign(t3.bills.find(b => b.id === "e-flat"), {amount: 450, pool: "2026-10-16", variable: ""}); t3.meta.push({key: "pot.pairFromAt", value: "1000"});
+  t3.transactions.push({id: "old", date: "2026-11-03", person: "ethan", amount: 75, budget: "e-flat", account: "e-main"}); t3.moves.push({id: "bk-monzo-x", date: "2026-11-03", person: "ethan", from: "e-bills", to: "e-main", amount: 75, key: "bank:x", updated: 5000});
+  eq("P22: a bank move written after pairing began isn't an old-style payment", B.todo(B.load(t3, "2026-11-13"), "ethan", "2026-11-13").filter(x => x.from === "e-bills" && x.to === "e-main").map(x => x.amount), [75]);
+  // P23 (e7): pooling stopped from 16 Nov, 16 Oct to 15 Nov recorded; a 10 Nov bill counted in afterwards has no month to
+  // go into: it isn't offered, and if it's counted in anyway it changes nothing (nothing counted twice)
+  const t7 = fixture(); Object.assign(t7.bills.find(b => b.id === "e-flat"), {amount: 450, pool: "2026-10-16, off 2026-11-16", variable: ""});
+  t7.transfers.find(x => x.id === "s-to-e-bills").amount = 150;
+  const pay = (id, date, amount) => t7.transactions.push({id, date, person: "ethan", amount, budget: "e-flat", account: "e-bills", note: id});
+  pay("c", "2026-11-02", 150);
+  B.poolToFreeze(B.load(t7, "2026-11-18"), "ethan", "2026-11-18").forEach(f => t7.settings.push({person: "ethan", key: f.key, value: f.value}));
+  const d7a = B.load(t7, "2026-12-20"), net0 = B.between(d7a, "sophie", "2026-12-20").net;
+  eq("P23: not offered for the recorded month once pooling has stopped (before it was recorded, it was)", [B.poolOffer(d7a, d7a.byId["e-flat"], "2026-11-10"), (d => B.poolOffer(d, d.byId["e-flat"], "2026-11-10"))(B.load(Object.assign({}, t7, {settings: t7.settings.filter(x => !/^pool:/.test(x.key))}), "2026-11-12"))], [false, true]);
+  pay("late", "2026-11-10", 60);
+  const d7 = B.load(t7, "2026-12-20");
+  eq("P23: counted in anyway: changes nothing", [B.between(d7, "sophie", "2026-12-20").net, B.poolMonths(d7, d7.byId["e-flat"], "2000-01-01", "2027-01-20").map(m => [m.start, m.actual, m.late.length]), B.isPoolTx(d7, t7.transactions.find(x => x.id === "late"))], [net0, [["2026-10-16", 150, 0]], true]);
+  eq("P23: and isn't spending either", B.yearReview(d7, "ethan", "2026-04-06").spent.filter(x => /flat|household/i.test(x.name)).length, 0);
 }
 
 console.log(fails ? fails + " failed, " + passes + " passed" : "All " + passes + " passed");

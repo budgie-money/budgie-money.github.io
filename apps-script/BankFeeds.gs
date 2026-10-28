@@ -116,7 +116,8 @@ function bankNotify_(p, what) {
 function bankKey_(kind, p) { return "BANK_" + kind + "_" + p; }   // TOKEN, CLIENT (secrets), STATUS (no secrets)
 function bankStatus_(p) { return bankGet_(bankKey_("STATUS", p)) || {}; }
 // A property holds at most 9 KB, and a status that can't be saved stops every read. Lots of holds waiting, or lots of
-// pots with long names, could get near that, so the oldest holds stop being watched and long names are cut short first.
+// pots with long names, could get near that, so the oldest remembered bills-pot pairs are let go, then the oldest holds
+// stop being watched, and long names are cut short first.
 var BANK_STATUS_MAX_ = 8000;
 function bankBytes_(v) { var t = JSON.stringify(v); try { return encodeURIComponent(t).replace(/%[0-9A-F]{2}/gi, "x").length; } catch (e) { return t.length * 3; } }
 function bankFitStatus_(s) {
@@ -125,6 +126,9 @@ function bankFitStatus_(s) {
   (s.payCarry || []).forEach(function (x) { if (x) x.name = String(x.name || "").slice(0, 12); });
   var cut = function (n) { if (bankBytes_(s) > BANK_STATUS_MAX_) (s.accounts || []).forEach(function (a) { if (a && a.name) a.name = Array.from(String(a.name)).slice(0, n).join(""); }); };
   cut(32);
+  // (the older bills-pot pairs remembered as left alone go first, oldest first: a read only drops what it can't see)
+  var old = s.potOld || {}, oids = Object.keys(old).sort(function (a, b) { var x = String(old[a] || ""), y = String(old[b] || ""); return x < y ? 1 : x > y ? -1 : 0; });
+  while (oids.length && bankBytes_(s) > BANK_STATUS_MAX_) delete old[oids.pop()];
   var pend = s.pending || {}, ids = Object.keys(pend).sort(function (a, b) { var x = String((pend[a] || {}).date || ""), y = String((pend[b] || {}).date || ""); return x < y ? 1 : x > y ? -1 : 0; });
   while (ids.length && bankBytes_(s) > BANK_STATUS_MAX_) delete pend[ids.pop()];
   cut(16); cut(6);
@@ -400,7 +404,9 @@ function monzoTxn_(t, accId) {
   return {
     id: String(t.id), acc: accId, date: bankDate_(t.created), amount: -minor / 100, pending: !t.settled, declined: !!t.decline_reason,
     name: (merchant && merchant.name) || (t.counterparty && t.counterparty.name) || (pot ? "" : String(t.description || "")),
-    category: String(t.category || ""), pot: pot, card: !!t.merchant, load: !!t.is_load
+    category: String(t.category || ""), pot: pot, card: !!t.merchant, load: !!t.is_load,
+    // (a bill paid from a bills pot: the pot it names, the moment, and why a pot's money came out)
+    at: Date.parse(t.created) || 0, billsPot: String(meta.bills_pot_id || ""), trigger: String(meta.trigger || "")
   };
 }
 
@@ -704,6 +710,11 @@ function bankGuess_(db, p, name, category, date) {
     var parts = String(rule).split("|"), b = db.byId[parts[0]], sp = parts[1] ? db.byId[parts[1]] : null;
     // the split is only a hint until you confirm the payment (splitting shares it with your partner)
     if (b && b.person === p && db.budgets.indexOf(b) >= 0) return {budget: b.id, split: "", splitHint: sp && db.splits.indexOf(sp) >= 0 ? sp.id : ""};
+    // a payee you said is part of a pooled bill (the flat bills): it's counted against it straight away, with nothing
+    // more to ask (its split is the bill's own)
+    // (only in its pooled months: a payment from before pooling began is the old way's)
+    if (b && b.person === p && db.bills.indexOf(b) >= 0 && Budgie.poolOffer(db, b, date)) return {budget: b.id, split: "", splitHint: "", pool: true};
+    if (b && db.bills.indexOf(b) >= 0) return {budget: "", split: "", splitHint: ""};
   }
   var re = BANK_CATS_[String(category || "").toLowerCase()];
   if (re) {
@@ -881,10 +892,12 @@ function bankApply_(p, data, windowFrom, payCarry) {
       var a = t.amount, lo = D.addDays(t.date, -3), hi = D.addDays(t.date, 4);
       var win = function (item) { return D.occurrences(db, item, D.addDays(t.date, -10), D.addDays(t.date, 11)).filter(function (o) { var d = planDay(o); return d >= lo && d < hi; }); };
       db.bills.forEach(function (b) {
+        // (a pooled estimate is never paid as itself: its real bills come in as payments counted against it)
         if (b.person !== p) return;
         var bw = bankMerchantKey_(b.name).split(" "), nameHit = words.some(function (w) { return bw.indexOf(w) >= 0; });
         if (needName && !nameHit) return;   // a card payment only counts as a bill if the names agree (a subscription, say)
         win(b).forEach(function (o) {
+          if (Budgie.pooledOn(db, b, o.sched || o.orig)) return;
           // (an amount the bank feed itself set for that date, from the payment an earlier read took for it, isn't what
           // was expected: weighed against it, that payment would keep the bill when the bill's own payment comes in)
           var base = D.amountAt(db, b, o.orig), exact = near(a, base) || (!bankX[b.id + "|" + o.orig] && near(a, o.amount));
@@ -987,6 +1000,59 @@ function bankApply_(p, data, windowFrom, payCarry) {
     });
     planPairs.sort(function (x, y) { return x.h.score - y.h.score || x.i - y.i; });
     var planTook = {}; planPairs.forEach(function (x) { if (planTook[x.h.occ.key] || planPick[x.t.id]) return; planTook[x.h.occ.key] = true; planPick[x.t.id] = x.h; });
+    // A Monzo bills pot pays a bill (a direct debit, or one Monzo pays itself, like Monzo Max) by moving the money into
+    // the account first: two payments in the account's feed at the same moment for the same amount, the pot's withdrawal
+    // (trigger "committed_spending", triggered_by "direct-debit" or "monzo-paid") and the bill. A direct debit also
+    // names the pot itself (bills_pot_id); one Monzo pays doesn't, so then only the withdrawal ties it to the pot.
+    // The two are one payment from the pot, never a move as well:
+    // - a planned bill (or payment to your partner) paid from that pot: the plan already takes it from the pot, so the
+    //   withdrawal isn't a move too (that would take it from the pot twice and give it to the account);
+    // - anything else (the flat bills' real bills, say): a payment from the pot, and the withdrawal isn't a move.
+    // (A planned one that the plan has coming from another account keeps the move: the money did come from the pot.)
+    // paidFrom: payment id -> the pot's Budgie account; potPaid: the withdrawals that are half of a payment
+    var paidFrom = {}, potPaid = {}, potOf = function (ext) { var a = accOf(ext, false); return a && accRow[a] && accRow[a].kind === "pot" ? a : null; };
+    var plannedFrom = function (h) {
+      if (h.kind === "bill") return h.item.account || main;
+      if (h.kind === "transfer") return (h.occ.item && h.occ.item.fromAccount) || main;
+      if (h.kind === "settlement") { var sx = db.settlements.filter(function (r) { return "set:" + r.id === h.occ.key; })[0]; return (sx && sx.fromAccount) || main; }
+      return main;
+    };
+    var near2 = function (w, t) { return w.at && t.at ? Math.abs(w.at - t.at) <= 2 * 60000 : w.date === t.date; };
+    // Rows an older version saved (a payment from the account, a move from the pot, written before this first ran: meta
+    // "pot.pairFromAt", the moment) are left exactly as they were, so nothing already settled is moved after the fact
+    // (and To do doesn't ask for the same money twice). Which pairs those were is remembered (status potOld), so a row
+    // changed since (counted in the flat bills, say) still isn't paired, and every read decides the same.
+    var cutRow = readTable_("meta").rows.filter(function (r) { return r.key === "pot.pairFromAt"; })[0], cutAt = cutRow ? +cutRow.value || 0 : 0;
+    if (!cutAt) { cutAt = Date.now(); try { setMeta_("pot.pairFromAt", String(cutAt)); } catch (e) {} }
+    var potOld = Object.assign({}, st0.potOld || {}), oldRow = function (r) { return !!r && (+r.updated || 0) < cutAt; };
+    var mayPair = function (w, t) {
+      if (potOld[t.id] || potOld[w.id]) return false;
+      if (oldRow(byBank[t.id] || byIdRow["bk-" + provider + "-" + t.id]) || oldRow(moveRows["bk-" + provider + "-" + w.id])) { potOld[t.id] = t.date; potOld[w.id] = w.date; return false; }
+      return true;
+    };
+    var outs = txList.filter(function (t) { return !t.pot && t.amount > 0 && t.date && !t.declined && !t.reversed && !!accOf(t.acc, true); });
+    var wds = txList.filter(function (w) { return w.pot && w.amount < 0 && w.date && !w.declined && !w.reversed && !!potOf(w.pot) && !!accOf(w.acc, false); });
+    var wTaken = {};
+    // the bill names its pot: that pot, when its withdrawal (the same amount at the same moment) is there too (without
+    // it, the money came from the account after all, as before)
+    outs.forEach(function (t) {
+      var pa = t.billsPot ? potOf(t.billsPot) : null; if (!pa) return;
+      var w = wds.filter(function (x) { return !wTaken[x.id] && x.acc === t.acc && potOf(x.pot) === pa && same(-x.amount, t.amount) && near2(x, t) && mayPair(x, t); })[0];
+      if (w) { wTaken[w.id] = true; t.potWd = w.id; paidFrom[t.id] = pa; }
+    });
+    // otherwise a withdrawal made for a bill, and the payment for the same amount at the same moment
+    wds.forEach(function (w) {
+      if (wTaken[w.id] || !/^committed_sp/i.test(String(w.trigger || ""))) return;
+      var t = outs.filter(function (x) { return !paidFrom[x.id] && !x.potWd && x.acc === w.acc && same(x.amount, -w.amount) && near2(w, x) && mayPair(w, x); })[0];
+      if (t) { wTaken[w.id] = true; paidFrom[t.id] = potOf(w.pot); t.potWd = w.id; }
+    });
+    outs.forEach(function (t) {
+      if (!paidFrom[t.id]) return;
+      var h = planPick[t.id];
+      if (h) { var from = plannedFrom(h); if (from !== paidFrom[t.id]) { delete paidFrom[t.id]; return; } }
+      if (t.potWd) potPaid[t.potWd] = true;
+      if (h) delete paidFrom[t.id];   // (a planned one isn't a payment row at all)
+    });
     // Which row you logged (by hand, or Peckish) each payment is, over the whole read: each pair the loop below could
     // link, best first, each row and each payment at most once. Which pairs those are follows the loop exactly:
     // - a payment with no row yet (not a pot move, Moneybox move or planned item): one logged to the penny, or a
@@ -1041,6 +1107,8 @@ function bankApply_(p, data, windowFrom, payCarry) {
       if (t.pot) {
         var potAcc = accOf(t.pot, false), mainAcc = accOf(ext, false);
         if (!potAcc || !mainAcc) return;   // not mapped yet: it's listed in the status so it can be
+        // (the pot's side of a bill paid from it: the bill is the payment, so this isn't a move too)
+        if (potPaid[t.id]) { var pm0 = moveRows["bk-" + provider + "-" + t.id]; if (pm0 && pm0.person === p && !bankTrue_(pm0.deleted)) update("moves", pm0.id, {deleted: true}); return; }
         if (!asMove()) return;
         var into = t.amount > 0, from = into ? mainAcc : potAcc, to = into ? potAcc : mainAcc, amt = Math.abs(t.amount);
         var pm = into ? paydayMatch(to, amt, t.date) : null;
@@ -1056,7 +1124,7 @@ function bankApply_(p, data, windowFrom, payCarry) {
         putMove(t, from, to, amt, pm ? pm.key : "bank:" + t.id, false);
         return;
       }
-      var acc = accOf(ext, true); if (!acc) return;   // an account set to be ignored
+      var acc = paidFrom[t.id] || accOf(ext, true); if (!acc) return;   // an account set to be ignored
       if (t.amount > 0) {
         // money going out: Moneybox, a planned bill or transfer, or a payment
         if (/moneybox/i.test(t.name)) {
@@ -1112,8 +1180,9 @@ function bankApply_(p, data, windowFrom, payCarry) {
         // the bank shows it again, so it comes back
         if (bankTrue_(mine.deleted)) { if (!(String(mine.by) === "bank" && /^bk-/.test(mine.id))) return; f.deleted = false; }
         if (!same(+mine.amount, t.amount)) f.amount = t.amount;      // a pending payment settled at a different amount
+        if (paidFrom[t.id] && confirmed && mine.account !== acc && /^bk-/.test(mine.id)) f.account = acc;   // paid from a bills pot
         if (!confirmed) { if (mine.account !== acc && /^bk-/.test(mine.id)) f.account = acc;   // the account was mapped since
-          if (!mine.note && t.name) f.note = t.name; if (!mine.budget) { var g0 = bankGuess_(db, p, t.name, t.category, t.date); if (g0.budget) { f.budget = g0.budget; if (!mine.split && g0.splitHint) f.splitHint = g0.splitHint; } } }
+          if (!mine.note && t.name) f.note = t.name; if (!mine.budget) { var g0 = bankGuess_(db, p, t.name, t.category, t.date); if (g0.budget) { f.budget = g0.budget; if (!mine.split && g0.splitHint) f.splitHint = g0.splitHint; if (g0.pool) f.review = false; } } }
         if (Object.keys(f).length) update("transactions", mine.id, f);
         return;
       }
@@ -1123,7 +1192,7 @@ function bankApply_(p, data, windowFrom, payCarry) {
       if (dupe) { linkDupe(t, dupe); return; }
       var g = bankGuess_(db, p, t.name, t.category, t.date);
       var row = {id: eid, date: t.date, person: p, amount: t.amount, budget: g.budget, account: acc, split: "", splitHint: g.splitHint || "", note: t.name, source: provider, bankId: t.id,
-        review: t.date >= st};   // payments from before you started Budgie are history, nothing to check
+        review: t.date >= st && !g.pool};   // payments from before you started Budgie are history, nothing to check
       create("transactions", row);
     });
 
@@ -1163,7 +1232,11 @@ function bankApply_(p, data, windowFrom, payCarry) {
       catch (e) { failed++; if (u.pend) pending[u.pend.id] = u.pend.x; Logger.log("Bank feed skipped " + u.t + " " + u.row.id + ": " + (e && e.message || e)); }
     }
     SpreadsheetApp.flush();
-    var s1 = bankStatus_(p); s1.pending = pending; delete s1.peers; bankSaveStatus_(p, s1);
+    var s1 = bankStatus_(p); s1.pending = pending; delete s1.peers;
+    // (the older pairs left as they were, for as long as a wide read could see them again)
+    var oldKeep = {}, oldFrom = D.addDays(today, -120); Object.keys(potOld).forEach(function (id) { if (String(potOld[id]) >= oldFrom) oldKeep[id] = potOld[id]; });
+    if (Object.keys(oldKeep).length) s1.potOld = oldKeep; else delete s1.potOld;
+    bankSaveStatus_(p, s1);
     return {added: added, updated: updated, stopped: stopped, failed: failed};
   } finally { lock.releaseLock(); }
 }

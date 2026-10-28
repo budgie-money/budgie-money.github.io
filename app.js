@@ -1,7 +1,7 @@
 /* Budgie app: screens, syncing and offline queue. The maths lives in engine.js. */
 (function () {
   "use strict";
-  var B = window.Budgie, TH = window.BudgieThemes, APP_VERSION = "1.4.18";
+  var B = window.Budgie, TH = window.BudgieThemes, APP_VERSION = "1.4.19";
   var $ = function (s) { return document.querySelector(s); };
   var esc = function (s) { return String(s === undefined || s === null ? "" : s).replace(/[&<>"']/g, function (c) { return {"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]; }); };
   // wiped: Budgie's copy at the old address has been wiped (it's moving across), so nothing is saved here again
@@ -305,6 +305,7 @@
     insights: function () { return ["Insights", "How your spending is going"]; }, gifts: function () { return ["Gifts", "Ideas and what you've bought"]; }, settings: function () { return ["Settings", person().name]; },
     checks: function () { return ["Things to check", fromTitle()]; },
     edit: function () { return [S.view.p.title || "Edit", fromTitle()]; }, list: function () { return [S.view.p.title || "", fromTitle()]; }, themes: function () { return ["Themes", "How Budgie looks"]; },
+    pool: function () { return ["Bills month", fromTitle()]; },
     payments: function () { var d = db(), pp = S.view.p, b = pp.budget ? d.byId[pp.budget] : null, per = B.periodAt(d, me(), pp.start || todayIso()); return ["Payments", (b ? b.name.replace(/ \(what's left\)/, "") + " · " : "") + per.name]; },
     emailset: function () { return ["Sunday email", "Settings"]; }, linked: function () { return ["Linked apps", "Settings"]; },
     bank: function () { return ["Bank connection", "Settings"]; }, review: function () { return ["New payments", "From " + bankName()]; },
@@ -488,6 +489,11 @@
         why = M(l.spent) + " spent · " + (left < -0.004 ? '<span class="bad">' + M(-left) + " over</span>" : M(left) + " left") + bar(l.avail ? l.spent / l.avail * 100 : (l.spent > 0 ? 100 : 0), null, "var(--k-spend)");
       }
       else if (l.id === "opening") { name = "What you started with"; why = "In your account and " + esc(potWord(true)) + " on " + esc(B.nice(l.date)); }
+      else if (l.pool && d.byId[l.id] && B.poolMonthAt(d, d.byId[l.id], l.sched || l.date)) {
+        // an estimate the real bills count against: how far its bills month has got
+        var pm = B.poolMonthAt(d, d.byId[l.id], l.sched || l.date);
+        return li(esc(name), (pm.closed ? "Came to " + M(pm.actual) : M(pm.actual) + " paid so far") + bar(pm.estimate > 0 ? pm.actual / pm.estimate * 100 : 100, null, "var(--k-bill)"), right, "pool", l.id + "|" + pm.start);
+      }
       else if (l.date) why = esc(B.nice(l.date)) + (l.actual ? " · actual" : "");
       else if (l.setAside && l.due) why = "Due " + esc(B.nice(l.due));
       else if (l.kind === "topup") why = "Puts back what covered going over budget";
@@ -622,7 +628,8 @@
       (sm.tiles ? sm.tiles.map(function (x) { return '<div style="margin-top:12px"><div class="row small"><span style="font-weight:600">' + esc(x.name.replace(/ \(what's left\)/, "")) + '</span><span class="num">' + M(x.spent) + " of " + M(x.amount) + "</span></div>" + '<div style="margin-top:5px">' + bar(x.pct, x.mode === "oneoff" ? null : x.paceMark, col) + "</div></div>"; }).join("") + '<p class="tiny muted" style="margin:12px 0 0">The black line is where they\'d expect to be by today.</p>' : '<p class="small muted">' + esc(qp.name) + " isn't sharing their budget details.</p>"));
     // their own goals and payments, when they've chosen to share them
     (sm.goals || []).forEach(function (g) { html += card('<div class="row"><span style="font-weight:700">' + esc(g.name) + '</span><span class="tiny muted">' + esc(qp.name) + "'s goal</span></div>" + '<div style="margin:8px 0 6px">' + bar(g.pct, null, col) + '</div><div class="row small"><span class="num" style="font-weight:600">' + M0(g.saved) + " of " + M0(g.target) + "</span>" + num(g.pct + "%") + "</div>"); });
-    var theirPays = d.transactions.filter(function (x) { return x.person === q && x.date >= B.addDays(now, -31); }).sort(function (a, b) { return a.date < b.date ? 1 : -1; });
+    // (a pooled bill's real bills are shown with that bill, not as their payments)
+    var theirPays = d.transactions.filter(function (x) { return x.person === q && x.date >= B.addDays(now, -31) && !B.isPoolTx(d, x); }).sort(function (a, b) { return a.date < b.date ? 1 : -1; });
     if (theirPays.some(function (x) { return !x.split; }) && !demoOn()) html += card('<div class="row"><h2>' + esc(qp.name) + "'s payments</h2>" + '<span class="tiny muted">The last month</span></div><div class="list" style="margin-top:6px">' + theirPays.slice(0, 12).map(function (x) { var b = d.byId[x.budget]; return li(esc(x.note || (b ? b.name.replace(/ \(what's left\)/, "") : "Payment")), esc(B.nice(x.date)) + (x.split ? " · split with you" : ""), num(M(x.amount))); }).join("") + "</div>" + '');
     // between you two
     var bt = B.between(d, p, now), mo = bt.month;
@@ -646,7 +653,9 @@
     });
     var shared = d.bills.filter(function (b) { return b.split; });
     if (shared.length) html += card('<h2>Shared bills</h2><div class="list" style="margin-top:6px">' + shared.map(function (b) {
-      var amt = B.amountAt(d, b, now), parts = d.people.map(function (x) { return esc(x.name) + " " + M(B.shareOf(d, b.split, x.id, amt, b.person)); }).join(" · ");
+      // (an estimate the real bills count against: how far this bills month has got, and how the last one settled)
+      var pmNow = B.poolOn(d, b) ? B.poolMonthAt(d, b, now) : null; if (pmNow) return poolRow(pmNow);
+      var amt = B.amountAt(d, b, now), parts = d.people.map(function (x) { return esc(x.name) + " " + M(B.shareOf(d, b.split, x.id, amt, b.person, now)); }).join(" · ");
       return li(esc(b.name), parts, num(M(amt)));
     }).join("") + "</div>");
     B.goals(d, p, now).filter(function (g) { return String((d.byId[g.id] || {}).owners || "").split(/[,\s]+/).filter(Boolean).length > 1; }).forEach(function (g) { html += goalCard(g); });
@@ -691,7 +700,8 @@
     html += card('<div class="row"><h2>Move from ' + esc(B.accName(d, pd.payAccount)) + '</h2><span class="small muted">' + (upcoming ? "On payday" : doneN + " of " + pd.moves.length + " done") + '</span></div><div class="list" style="margin-top:6px">' + (rows || '<p class="muted">Nothing to move.</p>') + "</div>" +
       '<div class="row" style="padding-top:10px;border-top:1px solid var(--line2);margin-top:4px"><span>Stays in ' + esc(B.accName(d, pd.payAccount)) + ' <span class="tiny muted">for spending from there</span></span>' + num(M(pd.keeps)) + "</div>");
     var left = pd.plan.lines.filter(function (l) { return l.leftover; })[0];
-    if (pd.already.length || left) html += '<div class="banner small">Less to move: ' + pd.already.map(function (a) { return M(a.amount) + " is already in your " + esc(a.name); }).concat(left ? [M(left.amount) + " still in your " + esc(B.accName(d, pd.payAccount)) + " from last month counts towards it"] : []).join(", ") + ".</div>";
+    // (what's left of a pooled bill's last bills month stays in its pot and is part of that, so it goes to savings instead)
+    if (pd.already.length || left) html += '<div class="banner small">Less to move: ' + pd.already.map(function (a) { return M(a.amount) + " is already in your " + esc(a.name) + (a.poolLeft ? " (" + M(a.poolLeft.amount) + " left from " + esc(a.poolLeft.names.join(" and ").toLowerCase()) + ", " + esc(B.dayRange(a.poolLeft.start, a.poolLeft.end)) + ")" : ""); }).concat(left ? [M(left.amount) + " still in your " + esc(B.accName(d, pd.payAccount)) + " from last month counts towards it"] : []).join(", ") + ".</div>";
     if (pd.plan.owe > 0.004) html += '<div class="banner small">' + M(pd.plan.owe) + " you owe " + esc(person(partner()).name || "your partner") + " stays in your " + esc(B.accName(d, B.mainOf(d, p))) + " for settling up.</div>";
     (pd.later || []).forEach(function (m) { html += '<div class="banner small">' + M(m.amount) + " more goes to your " + esc(B.accName(d, m.to)) + " once " + esc(m.names.join(" and ")) + " has come in" + (m.date > per.start ? ", after payday" : "") + ". To do asks for it then.</div>"; });
     if (upcoming && pd.estimate) html += '<p class="tiny muted" style="margin:8px 4px">Estimates until payday, from what should be in your ' + esc(potWord(true)) + " then.</p>";
@@ -725,6 +735,10 @@
     var x = (tables().transactions || []).filter(function (r) { return r.id === id; })[0], d = db(), p = me(); if (!x) return;
     S.ui.payEdit = id;
     var buds = d.budgets.filter(function (b) { return b.person === p && b.mode !== "saving"; });
+    // (and a pooled bill of yours: a real bill that counts against its estimate, like the water bill in the flat bills)
+    // (a long name is cut short, so it fits the list)
+    // (only when its date is in a pooled month: one from before pooling began is paid the old way)
+    buds = buds.concat(d.bills.filter(function (b) { return b.person === p && (B.poolOffer(d, b, x.date) || b.id === x.budget); }).map(function (b) { return {id: b.id, name: b.name.length > 22 ? b.name.slice(0, 21).trim() + "…" : b.name}; }));
     var accs = B.accountsOf(d, p).filter(function (a) { return /main|pot|saving|credit/.test(a.kind || "pot"); });
     // one from the bank: the amount, the date and the account are the bank's, so only what it was for and the note change
     var bk = isBankTx(x), lock = bk ? " disabled" : "";
@@ -774,6 +788,9 @@
     var mine = d.bills.filter(function (b) { return b.person === p; }), subs = 0;
     mine.forEach(function (b) { if (/sub/i.test(b.category || "")) { B.occurrences(d, b, now, B.addDays(now, 365)).forEach(function (o) { subs += o.amount; }); } });
     var nextOf = function (it) { var o = B.occurrences(d, it, now, B.addDays(now, 400))[0]; return o ? B.nice(o.date) : "no more dates"; };
+    // an estimate the real bills count against (the flat bills): where this bills month has got to
+    var pooled = mine.map(function (b) { return B.poolOn(d, b) ? B.poolMonthAt(d, b, now) : null; }).filter(Boolean);
+    if (pooled.length) html += card('<div class="list">' + pooled.map(poolRow).join("") + "</div>", "flush");
     html += '<h2 class="h2">Your bills</h2>';
     html += card('<div class="list">' + mine.map(function (b) { return li(esc(b.name) + (b.split ? ' <span class="tiny muted">shared</span>' : ""), esc(B.describe(b)) + " · next " + esc(nextOf(b)), num(M(B.amountAt(d, b, now))), "edit", "bills:" + b.id); }).join("") + "</div>" +
       (subs ? '<div class="row" style="padding-top:10px;border-top:1px solid var(--line2);font-weight:700"><span>Subscriptions over a year</span>' + num(M0(subs)) + "</div>" : ""), "flush");
@@ -791,6 +808,62 @@
     if (tr.length) html += '<h2 class="h2">You pay ' + esc(person(partner()).name || "") + "</h2>" + card('<div class="list">' + tr.map(function (t) { return li(esc(t.name), esc(B.describe(t)) + " · next " + esc(nextOf(t)), num(M(B.amountAt(d, t, now))), "edit", "transfers:" + t.id); }).join("") + "</div>", "flush");
     return html;
   };
+
+  // ----- Pooled bills: an estimate the real bills count against (the flat bills). One row says how far this bills
+  // month has got, and how the last one settled up, from your side; tapping it shows the month itself.
+  function poolSettled(m) {
+    var b = m.bill, payer = b.person === me(), qn = shortName(person(payer ? m.partner : b.person).name);
+    if (!m.partner) return m.left < -0.004 ? M(-m.left) + " over" : M(m.left) + " left";
+    if (m.back > 0.004) return M(m.back) + " back to " + (payer ? esc(qn) : "you");
+    if (m.owes > 0.004) return payer ? esc(qn) + " pays " + M(m.owes) + " more" : "you pay " + M(m.owes) + " more";
+    return "spot on";
+  }
+  function poolRow(m) {
+    var d = db(), b = m.bill, pct = m.estimate > 0 ? m.actual / m.estimate * 100 : (m.actual > 0 ? 100 : 0);
+    var pv = B.poolMonthAt(d, b, B.addDays(m.start, -1)), last = pv && pv.closed && B.poolCounts(d, pv) ? pv : null;
+    return '<button type="button" class="li" data-a="pool" data-v="' + esc(b.id + "|" + m.start) + '" style="display:block"><div class="row" style="flex-wrap:wrap;row-gap:2px"><span class="what">' + esc(b.name) + "</span>" + num(M(m.actual) + " of " + M(m.estimate), m.left < -0.004 ? "bad" : "") + "</div>" +
+      '<div style="margin-top:8px">' + bar(pct, null, "var(--k-bill)") + '</div><div class="small muted" style="margin-top:6px">' + (m.closed ? "" : "So far, ") + esc(B.dayRange(m.start, m.end)) + "</div>" +
+      (last ? '<div class="small" style="margin-top:2px">Last month ' + M(last.actual) + " · " + poolSettled(last) + "</div>" : "") + "</button>";
+  }
+  SCREENS.pool = function (pp) {
+    var d = db(), p = me(), b = d.byId[pp.bill], now = todayIso();
+    var m = b && B.poolOn(d, b) ? B.poolMonthAt(d, b, pp.start || now) || B.poolMonths(d, b, "2000-01-01", B.addDays(now, 1)).slice(-1)[0] : null;
+    if (!m) return '<p class="empty">This bill isn\'t counted that way any more.</p>';
+    var s = m.start, prevM = B.poolMonthAt(d, b, B.addDays(s, -1)), payer = b.person === p, qn = m.partner ? shortName(person(payer ? m.partner : b.person).name) : "", over = m.left < -0.004;
+    var html = '<div class="row" style="margin:4px 0 0;align-items:center"><button type="button" class="round" data-a="poolmonth" data-v="-1" aria-label="Earlier bills month"' + (!prevM ? " disabled" : "") + ">" + icon("back", 18) + '</button><div style="text-align:center;font-weight:800">' + esc(B.dayRange(m.start, m.end)) + '</div><button type="button" class="round" data-a="poolmonth" data-v="1" aria-label="Later bills month" style="transform:scaleX(-1)"' + (m.next > now || !B.poolMonthAt(d, b, m.next) ? " disabled" : "") + ">" + icon("back", 18) + "</button></div>";
+    var left = B.diff(now, m.next);
+    html += card('<div class="row"><span style="font-weight:700;min-width:0">' + esc(b.name) + '</span><span class="small muted" style="white-space:nowrap">' + (m.closed ? "Came to" : left + " day" + (left === 1 ? "" : "s") + " left") + '</span></div><div class="row" style="align-items:baseline;margin-top:2px"><span style="font-size:26px;font-weight:800" class="num' + (over ? " bad" : "") + '">' + M(m.actual) + '</span><span class="num muted">of ' + M(m.estimate) + "</span></div>" +
+      '<div style="margin-top:8px">' + bar(m.estimate > 0 ? m.actual / m.estimate * 100 : 100, null, "var(--k-bill)") + "</div>");
+    // settled up the day after the bills month: what's left (or gone over), and who has what of it
+    if (m.closed) {
+      var rows = li(over ? "Gone over" : "Left over", "", num(M(Math.abs(m.left))));
+      if (m.partner && m.back > 0.004) rows += li(payer ? "Back to " + esc(qn) : "Back to you", "", num(M(m.back)));
+      if (m.partner && m.owes > 0.004) rows += li(payer ? esc(qn) + "'s share" : "Your share", "", num(M(m.owes)));
+      // (his share stays in the pot: the next payday puts that much less in, and more into savings)
+      if (payer && m.keep > 0.004) rows += li("Yours, to savings on payday", "", '<span class="num" style="color:var(--k-save)">' + M(m.keep) + "</span>");
+      if (payer && m.mineOver > 0.004) rows += li("Your share", "", num(M(m.mineOver)));
+      html += card('<h2>Settled up ' + esc(B.nice(m.next)) + '</h2><div class="list" style="margin-top:6px">' + rows + "</div>");
+    }
+    // (a month that's been recorded lists what it had then; one counted in for a recorded month afterwards is listed
+    // under the month it went into, as late from its own, so the list always adds up to what it came to)
+    var pays = m.payments.slice().sort(function (a, c) { return a.date < c.date ? 1 : a.date > c.date ? -1 : 0; }), late = m.late || [];
+    var exists = function (id) { return (tables().transactions || []).some(function (r) { return r.id === id && !r.deleted; }); };
+    var row = function (x, why) {
+      var acc = x.account && x.account !== m.account ? " · " + esc(B.accName(d, x.account)) : "";
+      return payer && exists(x.id) ? li(esc(x.note || b.name), why + acc, num(M(x.amount)), "payedit1", x.id) : li(esc(x.note || b.name), why, num(M(x.amount)));
+    };
+    var rowsP = pays.map(function (x) { return row(x, esc(B.nice(x.date))); }).concat(late.map(function (x) {
+      var t = x.tx || {}, from = x.from ? "Late from " + esc(B.dayRange(x.from, x.end)) : "Late";
+      return row({id: x.id, note: x.amount < 0 ? (t.note || b.name) + " (taken off)" : t.note, account: t.account, amount: x.amount}, from);
+    }));
+    html += card('<div class="row"><h2>Payments</h2><span class="small muted">' + rowsP.length + "</span></div>" + (rowsP.length ? '<div class="list" style="margin-top:6px">' + rowsP.join("") + "</div>" : '<p class="muted" style="margin:8px 0 0">None yet.</p>'));
+    return html;
+  };
+  var maxIso = function (a, b) { return a > b ? a : b; };
+  // the pooled bills of yours whose money is kept in an account (the flat bills in the Bills pot)
+  // (on a date: a payment from before pooling began isn't asked about)
+  function poolsIn(acc, date) { var d = db(), p = me(); return d.bills.filter(function (b) { return b.person === p && B.poolOffer(d, b, date) && (b.account || B.mainOf(d, p)) === acc; }); }
+  var isPoolBill = function (id) { var b = db().byId[id]; return !!b && db().bills.indexOf(b) >= 0 && B.poolOn(db(), b); };
 
   // ----- Goals
   function goalCard(g) {
@@ -1172,6 +1245,11 @@
     if (!list.length) return '<p class="empty">All checked. Nice.</p>';
     var all = addBudgets(todayIso()), top = all.length > 4 ? all.slice(0, 3) : all;
     return '<p class="small muted" style="margin:0 4px 10px">Tap what each one was for. Budgie remembers for next time.</p>' + list.slice(0, 30).map(function (x) {
+      // a payee Budgie hasn't seen before taking money from a pooled bill's pot (the flat bills): is it one of them?
+      var pb = poolsIn(x.account, x.date)[0];
+      if (pb && !isPoolBill(x.budget) && !getSetting("bank.rule." + merchantKey(x.note), "") && !(S.ui.revNoPool || {})[x.id])
+        return card('<div class="row"><span style="font-weight:700">' + esc(x.note || "Payment") + "</span>" + num(M(x.amount)) + '</div><div class="small muted">' + esc(B.nice(x.date)) + " · " + esc(B.accName(d, x.account)) + "</div>" +
+          '<div style="font-weight:700;margin-top:10px">Part of ' + esc(String(pb.name).toLowerCase()) + '?</div><div class="two fit" style="margin-top:8px"><button type="button" class="btn sm" data-a="revpool" data-v="' + esc(x.id + "|" + pb.id) + '">Yes</button><button type="button" class="btn ghost sm" data-a="revpool" data-v="' + esc(x.id + "|") + '">No</button></div>');
       // (what it's down as now is always one of them)
       var opts = top.slice(); if (x.budget && !opts.some(function (b) { return b.id === x.budget; }) && d.byId[x.budget]) { if (all.length > 4) opts.pop(); opts.unshift(d.byId[x.budget]); }
       return card('<div class="row"><span style="font-weight:700">' + esc(x.note || "Payment") + "</span>" + num(M(x.amount)) + '</div><div class="small muted">' + esc(B.nice(x.date)) + " · " + esc(B.accName(d, x.account)) + "</div>" +
@@ -1240,7 +1318,7 @@
     income: {title: "Pay and money coming in", filter: function (r) { return r.person === me(); }, row: function (r) { return [r.name + (r.isPay ? " (payday)" : ""), B.describe(r), M(B.amountAt(db(), r, todayIso()))]; }, add: "Add money coming in"},
     budgets: {title: "Budgets", filter: function (r) { return r.person === me(); }, row: function (r) { return [r.name, ({daily: "Builds up each day", weekly: "Paced week by week", oneoff: "For one-offs", saving: "Saved on payday", remainder: "Gets whatever is left"})[r.mode || "daily"] + " · " + B.accName(db(), r.account), r.mode === "remainder" ? "What's left" : M(B.amountAt(db(), r, todayIso()))]; }, add: "Add a budget"},
     accounts: {title: "Accounts and " + "pots", filter: function (r) { return r.owner === me(); }, row: function (r) { return [r.name + (r.fallback ? " (covers going over)" : ""), ({main: "Main account", pot: "Pot or Space", saving: "Savings", isa: "ISA", lisa: "Lifetime ISA", pension: "Pension", credit: "Credit or overdraft"})[r.kind || "pot"] + (r.purpose ? " · " + r.purpose : ""), ""]; }, add: "Add an account"},
-    splits: {title: "How you split things", filter: function () { return true; }, row: function (r) { return [r.name, describeShares(r.shares), ""]; }, add: "Add a split"},
+    splits: {title: "How you split things", filter: function () { return true; }, row: function (r) { return [r.name, describeShares(B.sharesAt(db(), r.id, todayIso())), ""]; }, add: "Add a split"},
     transfers: {title: "Regular payments", filter: function (r) { return r.from === me(); }, row: function (r) { return [r.name, B.describe(r) + " · to " + person(r.to).name, M(B.amountAt(db(), r, todayIso()))]; }, add: "Add a regular payment"}
   };
   function describeShares(s) {
@@ -1256,7 +1334,7 @@
 
   var SCHED = function () { return [{k: "unit", t: "how"}, {k: "start", t: "date", l: "Starts (or the first date)"}, {k: "end", t: "date", l: "Ends (leave empty for never)"}]; };
   var FORMS = {
-    bills: {title: "Bill", fields: function () { return [{k: "name", t: "text", l: "Name"}, {k: "amount", t: "money", l: "Amount"}].concat(SCHED()).concat([{k: "account", t: "account", l: "Comes out of"}, {k: "category", t: "select", l: "Type", o: [["home", "Home and flat bills"], ["subscription", "Subscription"], ["phone", "Phone"], ["car", "Car"], ["health", "Health"], ["work", "Work and fees"], ["insurance", "Insurance"], ["other", "Other"]]}, {k: "split", t: "split", l: "Shared with your partner?"}, {k: "variable", t: "check", l: "The amount changes each time (like energy)"}, {k: "setAside", t: "setaside"}, {k: "notes", t: "text", l: "Notes"}]); }, owner: "person"},
+    bills: {title: "Bill", fields: function () { return [{k: "name", t: "text", l: "Name"}, {k: "amount", t: "money", l: "Amount"}].concat(SCHED()).concat([{k: "account", t: "account", l: "Comes out of"}, {k: "category", t: "select", l: "Type", o: [["home", "Home and flat bills"], ["subscription", "Subscription"], ["phone", "Phone"], ["car", "Car"], ["health", "Health"], ["work", "Work and fees"], ["insurance", "Insurance"], ["other", "Other"]]}, {k: "split", t: "split", l: "Shared with your partner?"}, {k: "variable", t: "check", l: "The amount changes each time (like energy)"}, {k: "pool", t: "pool"}, {k: "setAside", t: "setaside"}, {k: "notes", t: "text", l: "Notes"}]); }, owner: "person"},
     income: {title: "Money coming in", fields: function () { return [{k: "name", t: "text", l: "Name"}, {k: "amount", t: "money", l: "Amount (after tax)"}].concat(SCHED()).concat([{k: "account", t: "account", l: "Goes into"}, {k: "isPay", t: "check", l: "This is my pay (it sets my pay periods)"}, {k: "notes", t: "text", l: "Notes"}]); }, owner: "person"},
     budgets: {title: "Budget", fields: function () { return [{k: "name", t: "text", l: "Name"}, {k: "amount", t: "money", l: "Amount each pay period (leave empty for whatever is left)"}, {k: "mode", t: "select", l: "How it works", info: "modes", o: [["daily", "Day to day"], ["weekly", "Weekly (food shops)"], ["oneoff", "One-offs"], ["saving", "Saving on payday"], ["remainder", "Whatever is left"]]}, {k: "account", t: "account", l: "Kept in", all: true}, {k: "carry", t: "check", l: "Carry anything unspent into next month"}, {k: "start", t: "date", l: "Starts (optional)"}, {k: "end", t: "date", l: "Ends (optional)"}]; }, owner: "person"},
     accounts: {title: "Account", fields: function () { return [{k: "name", t: "text", l: "Name"}, {k: "kind", t: "select", l: "Kind", o: [["main", "Main account"], ["pot", "Pot or Space"], ["saving", "Savings pot"], ["isa", "ISA"], ["lisa", "Lifetime ISA"], ["pension", "Pension"], ["credit", "Credit or overdraft"]]}, {k: "purpose", t: "text", l: "What it's for"}, {k: "fallback", t: "check", l: "Covers going over budget (only one should)"}, {k: "order", t: "number", l: "Order on screen"}]; }, owner: "owner"},
@@ -1268,8 +1346,12 @@
   };
   var EDIT = {};
   var DATED = /^(bills|income|transfers|budgets)$/;
+  // a split that a bill or a payment from before today uses
+  function splitUsed(id) { var d = db(), now = todayIso(); return d.bills.some(function (b) { return b.split === id && (b.start || "") < now; }) || d.transactions.some(function (x) { return x.split === id && x.date < now; }); }
   function openEditor(table, id) {
     var row = id ? Object.assign({}, (tables()[table] || []).filter(function (r) { return r.id === id; })[0] || {}) : {};
+    // (a split shows how it's shared today, which may come from a dated change)
+    if (table === "splits" && id) row.shares = B.sharesAt(db(), id, todayIso());
     if (id && !canEditRow(table, row)) { toast("That belongs to " + (person(row.person || row.from || row.owner).name || "your partner") + ", so only they can change it"); return; }
     if (table === "loans" && row.id) row.direction = row.lender === me() ? "in" : "out";
     // show what it costs today, which may come from a dated price change rather than the first amount
@@ -1294,6 +1376,17 @@
       case "number": return input("number", ' inputmode="numeric"');
       case "money": return input("text", ' inputmode="decimal" placeholder="£"');
       case "date": return input("date");
+      case "pool":
+        // an estimate the real bills count against (the flat bills): settled up each bills month, which starts on the day
+        // chosen. Turned on (or the day changed), it counts from the bills month going now: never back over months paid
+        // the old way
+        // (a change to it counts from the next bills month that hasn't started, which it says)
+        var sg = B.poolSegs({pool: EDIT.orig.pool}), lastSg = sg[sg.length - 1], onNow = !!lastSg && !lastSg.off;
+        var pon = r.poolOn !== undefined ? r.poolOn === true : onNow, pday = poolDayOf(r), dopts = "", pend = lastSg && lastSg.from > todayIso() ? lastSg : null;
+        for (var di = 1; di <= 28; di++) dopts += '<option value="' + di + '"' + (pday === di ? " selected" : "") + ">The " + ordinal(di) + "</option>";
+        return '<label class="check"><input type="checkbox" data-f="poolOn"' + (pon ? " checked" : "") + ">It's an estimate: the real bills count against it</label>" +
+          (pon ? '<label class="f">Bills months start on<select data-f="poolDay">' + dopts + "</select></label>" : "") +
+          (pend ? '<p class="small muted" style="margin:6px 0 0">' + (pend.off ? "Stops" : "Changes") + " from " + esc(B.nice(pend.from)) + ".</p>" : "");
       case "setaside":
         // only for bills that come round once a year or every few months
         var rare = r.unit === "year" || r.unit === "once" ? r.unit === "year" : r.unit === "month" && +r.every >= 3;
@@ -1326,6 +1419,8 @@
     }
     return "";
   }
+  // the day a bill's bills months start on: its pool date's, else the day it's due (up to the 28th), else the 1st
+  function poolDayOf(r) { if (r.poolDay) return +r.poolDay; var on = B.poolSegs({pool: EDIT.orig ? EDIT.orig.pool : r.pool}).filter(function (x) { return !x.off; }).slice(-1)[0]; if (on) return on.day; var d = parseInt(r.on, 10); return d >= 1 && d <= 28 ? d : 1; }
   function ordinal(n) { return n + (n % 10 === 1 && n !== 11 ? "st" : n % 10 === 2 && n !== 12 ? "nd" : n % 10 === 3 && n !== 13 ? "rd" : "th"); }
   function readForm() {
     var r = EDIT.row, root = $("#main");
@@ -1346,6 +1441,29 @@
     var t = EDIT.table, r = readForm(), F = FORMS[t], now = todayIso();
     if (!r.name && t !== "splits") { toast("Give it a name first"); return; }
     if (!EDIT.id) r.id = newId(t.slice(0, 3));
+    // a pooled bill turned on or off, or a new day: from the bills month going now (on), or the next one that hasn't
+    // started (off, or a new day), as the engine works it out
+    if (t === "bills" && r.poolOn !== undefined) { var lastS = B.poolSegs({pool: EDIT.orig.pool}).slice(-1)[0]; if (r.poolOn !== !!(lastS && !lastS.off) || (r.poolOn && +r.poolDay !== lastS.day)) r.pool = B.poolChange(db(), {id: r.id || "new", pool: EDIT.orig.pool || ""}, r.poolOn, +r.poolDay || poolDayOf(r), now); }
+    delete r.poolOn; delete r.poolDay;
+    // a split's shares can come from a dated change (amounts): the editor shows today's, but the split's own row keeps its
+    // own, so earlier months keep theirs. Changing just the name changes only the name. Shared differently: from today
+    // (a new dated change), or a mistake (corrected where today's shares come from: the dated change, or the split's row)
+    if (t === "splits" && EDIT.id) {
+      var baseS = (tables().splits || []).filter(function (x) { return x.id === r.id; })[0] || {}, newSh = String(r.shares || "");
+      var curS = (tables().amounts || []).filter(function (x) { return x.item === r.id && x.shares && !x.deleted && x.start <= now; }).sort(function (a, b) { return a.start < b.start ? 1 : -1; })[0];
+      if (newSh === String(EDIT.orig.shares || "") || (!curS && !splitUsed(r.id))) {
+        if (newSh === String(EDIT.orig.shares || "")) r.shares = baseS.shares;
+        put(t, r, true); toast("Saved"); leave(); return;
+      }
+      S.ui.amtFinish = function (fromToday) {
+        if (fromToday) put("amounts", {id: newId("amt"), item: r.id, start: now, shares: newSh}, true);
+        else if (curS) put("amounts", Object.assign({}, curS, {shares: newSh}), true);
+        r.shares = fromToday || curS ? baseS.shares : newSh;
+        put(t, r, true); toast("Saved" + (fromToday ? ": the new split counts from today" : "")); leave();
+      };
+      openSheet('<h2>From when?</h2><p class="muted">From today, earlier months keep the split they had. If it was a mistake, it\'s corrected ' + (curS ? "from " + esc(B.nice(curS.start)) : "for every month") + '.</p><button type="button" class="btn wide" data-a="amtwhen" data-v="today">From today</button><button type="button" class="btn ghost wide" style="margin-top:10px" data-a="amtwhen" data-v="always">It was a mistake</button>');
+      return;
+    }
     if (F.owner === "person") r.person = r.person || me();
     if (F.owner === "owner") r.owner = r.owner || me();
     if (F.owner === "owners") r.owners = r.owners || me();
@@ -1483,13 +1601,20 @@
     },
     tick: function (v) { tickItem(last.todo[+v]); },
     payments: function (v) { var k = v.split("|"); go("payments", {start: k[0], budget: k[1] || ""}); },
+    pool: function (v) { var k = v.split("|"); go("pool", {bill: k[0], start: k[1] || ""}); },
+    poolmonth: function (v) { var d = db(), b = d.byId[S.view.p.bill]; if (!b) return; var m = B.poolMonthAt(d, b, S.view.p.start || todayIso()); if (!m) return; var to = +v > 0 ? B.poolMonthAt(d, b, m.next) : B.poolMonthAt(d, b, B.addDays(m.start, -1)); if (to) { S.view.p.start = to.start; render(); window.scrollTo(0, 0); } },
+    // a new payee taking money from a pooled bill's pot: part of it, or not (asked once: Budgie remembers the payee)
+    revpool: function (v) { var k = v.split("|"); if (k[1]) { reviewSave(k[0], {budget: k[1], split: "", review: false}, true); toast("Counted in " + ((db().byId[k[1]] || {}).name || "the bill")); } else { S.ui.revNoPool = S.ui.revNoPool || {}; S.ui.revNoPool[k[0]] = true; } render(); },
     paymonth: function (v) { var d = db(), per = B.periodAt(d, me(), S.view.p.start || todayIso()); per = +v > 0 ? B.nextPeriod(d, me(), per) : B.prevPeriod(d, me(), per); if (per) { S.view.p.start = per.start; render(); window.scrollTo(0, 0); } },
     payedit1: function (v) { paymentSheet(v); },
     pesave: function () {
       var x = (tables().transactions || []).filter(function (r) { return r.id === S.ui.payEdit; })[0]; if (!x) return;
-      if (isBankTx(x)) { put("transactions", Object.assign({}, x, {budget: $("#peBud").value, note: $("#peNote").value}), true); closeSheet(); toast("Payment changed"); render(); return; }
+      // (counted in a pooled bill, or not any more: that's remembered for the payee, as checking a new payment is)
+      var nb = $("#peBud").value, poolSwap = isPoolBill(nb) !== isPoolBill(x.budget);
+      if (poolSwap && isBankTx(x) && x.note) setting("bank.rule." + merchantKey(x.note), nb);
+      if (isBankTx(x)) { put("transactions", Object.assign({}, x, {budget: nb, note: $("#peNote").value}, isPoolBill(nb) ? {split: ""} : {}), true); closeSheet(); toast("Payment changed"); render(); return; }
       var a = +String(($("#peAmt") || {}).value || "").replace(/[£,\s]/g, ""); if (!(a > 0)) { toast("Type the amount first"); return; }
-      put("transactions", Object.assign({}, x, {amount: B.round(a), budget: $("#peBud").value, account: $("#peAcc").value, date: $("#peDate").value || x.date, note: $("#peNote").value}), true);
+      put("transactions", Object.assign({}, x, {amount: B.round(a), budget: nb, account: $("#peAcc").value, date: $("#peDate").value || x.date, note: $("#peNote").value}, isPoolBill(nb) ? {split: ""} : {}), true);
       closeSheet(); toast("Payment changed"); render();
     },
     pedel: function () { var id = S.ui.payEdit; del("transactions", id, true); closeSheet(); toast("Payment deleted", {t: "transactions", ids: [id], restore: true}); render(); },
@@ -1582,6 +1707,12 @@
       var date = a.date || todayIso();
       if (a.mode === "bill") {
         var b = db().byId[a.bill]; if (!b) { toast("Choose which bill it was"); return; }
+        // (one of the real bills of an estimate, like the water bill in the flat bills: a payment counted against it)
+        if (B.poolOffer(db(), b, date)) {
+          var pr = put("transactions", {id: newId("t"), date: date, person: me(), amount: amt, budget: b.id, account: b.account || B.mainOf(db(), me()), split: "", note: a.note || "", source: "app"}, true);
+          toast("Counted in " + b.name, {t: "transactions", ids: [pr.id]});
+          S.ui.keys = ""; S.ui.add = {mode: "spend"}; if (document.activeElement) document.activeElement.blur(); go("today"); return;
+        }
         // the one it was ("When was it?"): the latest on or before that day, or failing that the next one due
         var near = B.occurrences(db(), b, B.addDays(date, -25), B.addDays(date, 26)), was = near.filter(function (o) { return o.date <= date; });
         var occ = was.length ? was[was.length - 1] : near[0];
@@ -1691,7 +1822,7 @@
       if (el.dataset.f === "on") S.ui.onTouched = true;
       // a new bill's day follows its start date until you pick a day yourself
       if (el.dataset.f === "start" && !EDIT.id && !S.ui.onTouched && B.isIso(el.value)) { var onEl = $("#main").querySelector('[data-f="on"]'); if (onEl) onEl.value = String(+el.value.slice(8, 10)); }
-      if (el.dataset.f === "how" || (el.dataset.f === "direction" && EDIT.table === "loans")) render();   // render reads the form first, so nothing typed is lost
+      if (el.dataset.f === "how" || el.dataset.f === "poolOn" || (el.dataset.f === "direction" && EDIT.table === "loans")) render();   // render reads the form first, so nothing typed is lost
       return;
     }
     if (!c) return;

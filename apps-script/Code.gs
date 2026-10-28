@@ -28,7 +28,7 @@ var SCHEMA = {
   people: ["id", "name", "bank", "potWord", "partner", "colour"],
   accounts: ["id", "owner", "name", "kind", "purpose", "fallback", "order"],
   income: ["id", "person", "name", "amount", "account", "isPay", "unit", "every", "on", "shift", "start", "end", "dates", "notes"],
-  bills: ["id", "person", "name", "category", "amount", "account", "split", "variable", "setAside", "unit", "every", "on", "shift", "start", "end", "dates", "notes"],
+  bills: ["id", "person", "name", "category", "amount", "account", "split", "variable", "setAside", "unit", "every", "on", "shift", "start", "end", "dates", "pool", "notes"],
   budgets: ["id", "person", "name", "amount", "mode", "account", "carry", "start", "end", "notes"],
   splits: ["id", "name", "shares", "notes"],
   transfers: ["id", "from", "to", "name", "amount", "fromAccount", "toAccount", "purpose", "unit", "every", "on", "shift", "start", "end", "dates", "notes"],
@@ -38,7 +38,7 @@ var SCHEMA = {
   loans: ["id", "lender", "borrower", "name", "amount", "date", "account", "repay", "repayFrom", "repayDay", "notes"],
   goals: ["id", "owners", "name", "target", "due", "accounts", "kind", "extra", "price", "notes"],
   valuations: ["id", "account", "date", "amount", "note"],
-  amounts: ["id", "item", "start", "amount", "note"],
+  amounts: ["id", "item", "start", "amount", "shares", "note"],
   exceptions: ["id", "item", "date", "action", "newDate", "amount", "note"],
   settings: ["id", "person", "key", "value"],
   gifts: ["id", "person", "name", "idea", "occasion", "date", "limit", "cost", "bought", "notes"],
@@ -49,12 +49,12 @@ var SCHEMA = {
 var SERVER_ONLY = {meta: true, prices: true};
 var HELP = {
   people: "One row per person.", accounts: "Every bank account, pot, Space, ISA and LISA. kind: main, pot, saving, isa, lisa, pension, credit. fallback = TRUE on the one pot that covers going over budget.",
-  income: "Money that comes in on a schedule. isPay = TRUE for your salary (it sets your pay periods).", bills: "Money that goes out on a schedule. split: a row id from splits if you share it.",
+  income: "Money that comes in on a schedule. isPay = TRUE for your salary (it sets your pay periods).", bills: "Money that goes out on a schedule. split: a row id from splits if you share it. pool: for an estimate that the real bills count against (flat bills), when its first bills month starts (its day is the day each one starts), then any change (\"2026-10-16, off 2027-01-16\"); set it in the app.",
   budgets: "mode: daily, weekly, oneoff, saving or remainder (gets whatever is left).", splits: "shares: \"ethan:2, sophie:1\" for parts, or \"sophie=500\" for a fixed amount.",
   transfers: "One of you paying the other on a schedule, like a rent share.", transactions: "Every payment you log.", moves: "Pot moves you ticked off in the app.",
   settlements: "One-off payments between you two. loan: a row id from loans if it repays one.", loans: "Money one of you owes the other. repay: amount each month from repayFrom.",
   goals: "owners: who it belongs to. accounts: which accounts count towards it.", valuations: "A balance you checked. Everything after its date is worked out.",
-  amounts: "A price or pay change for a bill, income or budget, from the start date.", exceptions: "A change to one date: skip, move (newDate) or amount (what it really was).",
+  amounts: "A price or pay change for a bill, income or budget, from the start date. Or a split's new shares (item: the split's id).", exceptions: "A change to one date: skip, move (newDate) or amount (what it really was).",
   settings: "Settings for each person.", gifts: "Gift ideas and what you bought. Only you see your own list.", prices: "Fund prices for the LISA tracker, filled in by the script.", meta: "Housekeeping."
 };
 
@@ -295,7 +295,8 @@ function writers_(t, r) {
   return owner_(t, r);
 }
 function byId_(t, id) { return index_(t)[id] || null; }
-var ITEM_TABS_ = ["income", "bills", "budgets", "transfers", "loans"];
+// (a split is an item too: its shares can change from a date, as a dated row in amounts)
+var ITEM_TABS_ = ["income", "bills", "budgets", "transfers", "loans", "splits"];
 // An id names one thing, whatever its tab: the engine finds accounts, items, splits and goals by id alone (db.byId),
 // and a price or one-date change finds its item by id alone. So a new row can't take an id another tab already uses
 // (a split called after your partner's main account would make the bank feed skip their payments, and an income
@@ -313,13 +314,19 @@ function findItem_(id) {
   return hit;
 }
 function itemOwner_(id) { var it = findItem_(id); return it ? owner_(it.t, it.row) : []; }
+// a pooled bill you share (an estimate the real bills count against): its real payments are shared too, so you both
+// see the same running total and settling up
+function poolBillShared_(b) { return !!b && !!b.split && !!Budgie.poolDate(b) && !toBoolCell_(b.deleted); }
+function poolShared_(r) { var b = r && r.budget ? byId_("bills", r.budget) : null; return poolBillShared_(b) && String(b.person) === String(r.person); }
 function isLisa_(accId) { var a = accId ? byId_("accounts", accId) : null; return !!a && /lisa/.test(String(a.kind)); }
 function canSee_(me, t, r, sharing) {
   if (t === "meta" || t === "prices") return true;
   var o = owner_(t, r); if (o === null || o.indexOf(me) >= 0) return true;
   // the partner's own things: names, shared items, and their LISA (it counts towards the house)
   if (t === "accounts" || t === "people") return true;
-  if (t === "transactions") return !!r.split || !!sharing.payments;
+  if (t === "transactions") return !!r.split || !!sharing.payments || poolShared_(r);
+  // (and how a pooled bill's months were settled up, when you can see that bill: you both see the same)
+  if (t === "settings" && /^pool:/.test(String(r.key))) { var pk = String(r.key).match(/^pool:(.+):\d{4}-\d{2}-\d{2}$/), pb = pk ? byId_("bills", pk[1]) : null; return !!pb && String(pb.person) === String(r.person) && canSee_(me, "bills", pb, sharing); }
   if (t === "settings") return /^(share\.|theme|colour|start$|lisa\.)/.test(String(r.key));
   if (t === "bills") return !!r.split || !!sharing.payments;
   if (t === "valuations") return !!sharing.payments || isLisa_(r.account);
@@ -424,6 +431,8 @@ function applyOne_(me, op, now, by, opts) {
     if (idUsedElsewhere_(t, id)) throw cant();
   }
   if (existing && t === "settings" && !sys && src.key !== undefined && String(src.key) !== String(existing.key)) throw refuse_("A setting's key can't change");
+  // how a pooled bill's month was settled up is recorded by the sheet alone, once (poolFreeze_)
+  if (t === "settings" && !sys && /^pool:/.test(String(src.key !== undefined ? src.key : (existing || {}).key || id.replace(/^[^:]*:/, "")))) throw refuse_("The sheet records that itself");
   var bankRow = !sys && isBankRow_(t, existing);
   if (op.op === "delete") { if (!existing) return; row.deleted = true; }
   else {
@@ -704,7 +713,11 @@ function noteHidden_(t, before, after) {
       add.push({t: t, i: before.id, q: q.id, a: now});
       // the changes to a bill or budget go with it
       if (t === "bills" || t === "budgets" || t === "income") ["amounts", "exceptions"].forEach(function (k) { readTable_(k).rows.forEach(function (r) { if (r.item === before.id) add.push({t: k, i: r.id, q: q.id, a: now}); }); });
+      // (and a pooled bill's records of how its months settled)
+      if (t === "bills") readTable_("settings").rows.forEach(function (r) { if (r.id && String(r.person) === String(before.person) && String(r.key).indexOf("pool:" + before.id + ":") === 0) add.push({t: "settings", i: r.id, q: q.id, a: now}); });
     }
+    // a pooled bill that's no longer shared or pooled takes its real payments with it (the ones not shared anyway)
+    if (t === "bills" && o && poolBillShared_(before) && !poolBillShared_(after)) readTable_("transactions").rows.forEach(function (r) { if (r.budget === before.id && String(r.person) === String(before.person) && !r.split && !sh.payments) add.push({t: "transactions", i: r.id, q: q.id, a: now}); });
   });
   if (!add.length) return;
   var props = PropertiesService.getScriptProperties(), log = hiddenLog_().concat(add), cut = now - 60 * 86400000, dropped = 0;
@@ -758,6 +771,14 @@ function sync_(me, since, full, snap) {
       var have = {}; rows[k].forEach(function (x) { have[x.id] = true; });
       tables[k].forEach(function (x) { if (items[x.item] && !have[x.id] && canSee_(me, k, x, sharing)) rows[k].push(x); });
     });
+    // and a pooled bill that's just become visible brings the records of how its months settled
+    var billsSent = {}; rows.bills.forEach(function (r) { if (!r.deleted && !r.hidden && r.id) billsSent[r.id] = r; });
+    var haveSet = {}; rows.settings.forEach(function (x) { haveSet[x.id] = true; });
+    tables.settings.forEach(function (x) { var m = String(x.key || "").match(/^pool:(.+):\d{4}-\d{2}-\d{2}$/); if (m && billsSent[m[1]] && !haveSet[x.id] && canSee_(me, "settings", x, sharing)) rows.settings.push(x); });
+    // and a pooled bill that's just become shared brings its real payments
+    var pooled = {}; rows.bills.forEach(function (r) { if (!r.deleted && r.person !== me && poolBillShared_(r)) pooled[r.id] = true; });
+    var haveTx = {}; rows.transactions.forEach(function (x) { haveTx[x.id] = true; });
+    tables.transactions.forEach(function (x) { if (pooled[x.budget] && !haveTx[x.id] && canSee_(me, "transactions", x, sharing)) rows.transactions.push(x); });
   }
   // the partner's budgets you can't see, cut down to what matching needs
   var sent = {}; rows.budgets.forEach(function (r) { if (!r.deleted) sent[r.id] = true; });
@@ -807,9 +828,34 @@ function maybeRefreshViews_() {
   props.setProperty("VIEWS_AT", String(Date.now()));
   refreshBudgetTabs();
 }
+// A pooled bill's bills month (the flat bills) is settled up the day after it ends, and two days after that the sheet
+// records how (settings "pool:<bill>:<start>", once, Budgie.poolToFreeze), so a later change (the pool date, pooling
+// turned off, an old payment) never settles it again. Run every hour with the budget tabs, so it doesn't wait for a
+// phone. Returns how many it recorded.
+function poolFreeze_(db, today) {
+  var todo = [];
+  db.people.forEach(function (p) {
+    // (with a bank connected, the day it was last read: a month isn't recorded until it's been read since the month ended)
+    var sync = "";
+    try { if (typeof bankGet_ === "function" && bankGet_(bankKey_("TOKEN", p.id))) { var ls = +bankStatus_(p.id).lastSync || 0; sync = ls ? Utilities.formatDate(new Date(ls), tz_(), "yyyy-MM-dd") : "2000-01-01"; } } catch (e) {}
+    Budgie.poolToFreeze(db, p.id, today, sync).forEach(function (f) { todo.push({p: p.id, f: f}); });
+  });
+  if (!todo.length) return 0;
+  var lock = LockService.getScriptLock(); try { lock.waitLock(10000); } catch (e) { return 0; }
+  try {
+    CACHE_ = {}; var now = Date.now(), n = 0, have = {};
+    readTable_("settings").rows.forEach(function (r) { if (!toBoolCell_(r.deleted)) have[r.person + "|" + r.key] = true; });
+    todo.forEach(function (x) {
+      if (have[x.p + "|" + x.f.key]) return;
+      applyOne_(x.p, {op: "put", table: "settings", row: {id: x.p + ":" + x.f.key, person: x.p, key: x.f.key, value: x.f.value}}, now, "sheet", {sys: true}); n++;
+    });
+    return n;
+  } finally { lock.releaseLock(); }
+}
 function refreshBudgetTabs() {
   CACHE_ = {};
   var today = Utilities.formatDate(new Date(), tz_(), "yyyy-MM-dd"), db = Budgie.load(allTables_(), today), ss = ss_();
+  try { if (poolFreeze_(db, today)) { CACHE_ = {}; db = Budgie.load(allTables_(), today); } } catch (e) { Logger.log("Recording settled bills months failed: " + (e && e.message || e)); }
   db.people.forEach(function (p) {
     var name = p.name + " budget", sh = ss.getSheetByName(name) || ss.insertSheet(name, 0);
     var cur = Budgie.periodAt(db, p.id, today), list = [cur], per = cur;
