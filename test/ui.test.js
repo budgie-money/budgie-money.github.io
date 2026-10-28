@@ -1,7 +1,7 @@
 // Clicks through every screen in demo mode and with the test backend. Run with the test server up.
 const { chromium, devices } = require("playwright");
 const PORT = process.env.PORT || 8790;
-const links = require("./.links.json"), OUT = "/tmp/claude-0/-home-claude/6647f075-e63a-5e5e-a642-61d34bf7d70e/scratchpad/shots/";
+const links = require("./.links.json"), OUT = process.env.SHOTS || "/tmp/claude-0/-home-claude/6647f075-e63a-5e5e-a642-61d34bf7d70e/scratchpad/shots/";
 const T = s => (s || "").replace(/\s+/g, " ").trim();
 const fails = [], check = (name, cond, extra) => { if (cond) console.log("ok", name); else fails.push(name + (extra !== undefined ? " :: " + JSON.stringify(extra).slice(0, 300) : "")); };
 (async () => {
@@ -16,6 +16,27 @@ const fails = [], check = (name, cond, extra) => { if (cond) console.log("ok", n
     page.on("console", m => { if (m.type() === "error" && !/fonts\.g/.test(m.text())) errs.push("console: " + m.text()); });
     await page.clock.install({time: new Date((date || "2026-10-26") + "T19:30:00")});
     return page;
+  };
+  // the sheet for one thing that's coming up, opened the way Bills offers it: a day on the calendar, then the thing
+  // (pick says which key; by default the first bill, pay or payment of the person's own from today on). Returns its key, "" if none.
+  const openOcc = async (page, pick) => {
+    const today = await page.evaluate(() => new Date().toLocaleDateString("en-CA")); let pick0 = null;
+    if (!pick) pick0 = k => /@/.test(k) && k.split("@")[1] >= today;
+    await page.evaluate(() => { document.querySelector("#sheets").innerHTML = ""; window.BudgieApp.go("bills"); }); await page.waitForTimeout(60);
+    for (let m = 0; m < 3; m++) {
+      const n = (await page.$$(".cal button.has")).length;
+      for (let i = 0; i < n; i++) {
+        await page.locator(".cal button.has").nth(i).click(); await page.waitForTimeout(40);
+        const keys = await page.$$eval('#sheets [data-a="occ"]', els => els.map(e => e.dataset.v));
+        for (const k of keys.filter(x => pick ? pick(x) : pick0(x))) {
+          await page.click('#sheets [data-a="occ"][data-v="' + k + '"]'); await page.waitForTimeout(60);
+          if (pick || await page.$('#sheets [data-a="occdo"]')) return k;
+        }
+        await page.evaluate(() => { document.querySelector("#sheets").innerHTML = ""; }); await page.waitForTimeout(30);
+      }
+      await page.click('[data-a="cal"][data-v="1"]'); await page.waitForTimeout(40);
+    }
+    return "";
   };
   const shot = (page, n, full) => page.screenshot({path: OUT + n + ".png", fullPage: !!full});
   const visitAll = async (page, tag) => {
@@ -93,7 +114,7 @@ const fails = [], check = (name, cond, extra) => { if (cond) console.log("ok", n
   const am = await (await page.request.get("http://localhost:" + PORT + "/dump?amounts")).json(); console.log("amounts:", am.map(r => r.item + " " + r.amount + " from " + r.start));
   const phone = (await (await page.request.get("http://localhost:" + PORT + "/dump?bills")).json()).find(r => r.id === "e-phone"); console.log("phone base amount still", phone.amount);
   // Coming up: mark one as didn't happen
-  await page.click('nav [data-v="today"]'); const occ = await page.$('.swipe .face'); if (occ) { await occ.click(); await page.waitForTimeout(100); await shot(page, "22-occ-sheet"); await page.click('[data-a="occdo"][data-v^="skip"]'); await page.waitForTimeout(1200); }
+  const occ = await openOcc(page); if (occ) { await shot(page, "22-occ-sheet"); await page.click('[data-a="occdo"][data-v^="skip"]'); await page.waitForTimeout(1200); }
   const ex = await (await page.request.get("http://localhost:" + PORT + "/dump?exceptions")).json(); console.log("exceptions:", ex.map(r => r.item + " " + r.action + " " + r.date));
   await page.click('nav [data-v="partner"]'); await shot(page, "23-ethan-partner", true);
   console.log("partner:", T(await page.textContent("main")).slice(0, 500));
@@ -139,9 +160,8 @@ const fails = [], check = (name, cond, extra) => { if (cond) console.log("ok", n
   // Coming up: a loan repayment can't be swiped to "didn't happen"; tapping it asks if it's been paid
   page = await newPage("2026-12-20");
   await page.goto(links.ethan); await page.waitForFunction(() => /Hi Ethan/.test(document.querySelector("#top").textContent), null, {timeout: 8000});
-  const loanRow = await page.$('.swipe:has(.face[data-v="loan:sofa:2026-12-28"])');
-  check("a loan repayment is in Coming up without swipe buttons", loanRow && !(await loanRow.$(".acts")));
-  if (loanRow) { await page.click('.face[data-v="loan:sofa:2026-12-28"]'); await page.waitForTimeout(100); check("and tapping it asks if it's been paid", /It's been paid to me/.test(T(await page.textContent("#sheets")))); }
+  const loanKey = await openOcc(page, k => k === "loan:sofa:2026-12-28");
+  { const sh = T(await page.textContent("#sheets")); check("a loan repayment (found in Bills) can't be marked 'didn't happen': tapping it asks if it's been paid", !!loanKey && /It's been paid to me/.test(sh) && !/It didn't happen/.test(sh), sh.slice(0, 150)); }
   await page.context().close();
   // Christmas pay comes early (moved to 24 Dec) after a pay rise: changing it starts from the new pay
   const kE = JSON.parse(Buffer.from(links.ethan.split("#connect=")[1], "base64url").toString()).k;
@@ -346,7 +366,7 @@ const fails = [], check = (name, cond, extra) => { if (cond) console.log("ok", n
   check("settings without an id don't overwrite each other on the phone", await page.evaluate(() => window.BudgieApp.S.data.tables.settings.filter(r => !r.id && r.key === "start").map(r => r.person).sort().join()) === "ethan,sophie");
   // a peek ends in an open sheet too, not just on the screen behind it
   await page.evaluate(() => { const S = window.BudgieApp.S; S.prefs.hide = true; S.ui.reveal = true; window.BudgieApp.go("today"); });
-  await page.click(".swipe .face"); await page.waitForTimeout(100);
+  await openOcc(page);
   const sheetPeek = /£\d/.test(T(await page.textContent("#sheets")));
   const away2 = (state) => page.evaluate(st => { Object.defineProperty(document, "visibilityState", {get: () => st, configurable: true}); document.dispatchEvent(new Event("visibilitychange")); }, state);
   await away2("hidden"); await page.waitForTimeout(100);
@@ -399,14 +419,14 @@ const fails = [], check = (name, cond, extra) => { if (cond) console.log("ok", n
   {
     page = await newPage("2026-11-02");
     await page.goto(links.ethan); await page.waitForFunction(() => /Hi Ethan/.test(document.querySelector("#top").textContent), null, {timeout: 8000});
-    // (the first of his own things in Coming up)
-    const occKey = await page.evaluate(() => { const f = [...document.querySelectorAll(".swipe")].find(x => x.querySelector(".acts") && /@/.test(x.querySelector(".face").dataset.v)); return f ? f.querySelector(".face").dataset.v : ""; });
-    const face = '.swipe .face[data-v="' + occKey + '"]', skip = '#sheets [data-a="occdo"][data-v="skip|' + occKey + '"]', exId = "x-" + occKey.replace("@", "-") + "-skip";
-    const skipIt = async () => { await page.click(face); await page.waitForTimeout(80); await page.click(skip); await page.waitForTimeout(80); };
+    // (the first of his own things in Bills)
+    const occKey = await openOcc(page); await page.evaluate(() => { document.querySelector("#sheets").innerHTML = ""; });
+    const skip = '#sheets [data-a="occdo"][data-v="skip|' + occKey + '"]', exId = "x-" + occKey.replace("@", "-") + "-skip";
+    const skipIt = async () => { await openOcc(page, k => k === occKey); await page.click(skip); await page.waitForTimeout(80); };
     await skipIt(); await page.click('#toast [data-a="undo"]'); await page.waitForTimeout(800);
     await skipIt(); await page.waitForTimeout(1200);
     const ex = (await (await page.request.get("http://localhost:" + PORT + "/dump?exceptions")).json()).filter(r => r.id === exId);
-    check("Didn't happen again after an Undo counts, on the phone", !(await page.$(face)), T(await page.textContent("main")).slice(0, 200));
+    check("Didn't happen again after an Undo counts, on the phone", await page.evaluate(id => window.BudgieApp.S.data.tables.exceptions.some(r => r.id === id && !r.deleted), exId), exId);
     check("and in the sheet", !!occKey && ex.length === 1 && ex[0].deleted !== true && ex[0].action === "skip", {occKey, ex});
     // a sharing setting that was taken off (in the sheet, say) can be turned on again from the app
     const kE2 = JSON.parse(Buffer.from(links.ethan.split("#connect=")[1], "base64url").toString()).k;
@@ -455,8 +475,8 @@ const fails = [], check = (name, cond, extra) => { if (cond) console.log("ok", n
     await page.evaluate(() => { document.querySelector("#sheets").innerHTML = ""; window.BudgieApp.go("payday"); });
     await page.click('[data-a="payedit"]'); await page.fill("#payAmt", "2412.345"); await page.click('[data-a="paysave"]'); await page.waitForTimeout(200);
     await page.evaluate(() => window.BudgieApp.go("today")); await page.waitForTimeout(100);
-    const occ2 = await page.evaluate(() => { const f = [...document.querySelectorAll(".swipe")].find(x => x.querySelector(".acts")); return f ? f.querySelector(".face").dataset.v : ""; });
-    await page.click('.swipe .face[data-v="' + occ2 + '"]'); await page.waitForTimeout(80); await page.click('#sheets [data-a="occdo"][data-v="amount|' + occ2 + '"]'); await page.waitForTimeout(80);
+    const occ2 = await openOcc(page);
+    await page.click('#sheets [data-a="occdo"][data-v="amount|' + occ2 + '"]'); await page.waitForTimeout(80);
     await page.fill("#occAmt", "20.555"); await page.click('[data-a="occsave"][data-v="amount"]'); await page.waitForTimeout(200);
     await page.evaluate(() => window.BudgieApp.go("pots")); await page.click('[data-a="potcheck"][data-v="e-food"]'); await page.fill("#potBal", "40.125"); await page.click('[data-a="potsave"]'); await page.waitForTimeout(200);
     await page.evaluate(() => window.BudgieApp.go("lisa")); await page.click('[data-a="lisapaid"][data-v="e-lisa"]'); await page.fill("#lisaPaid", "1000.005"); await page.click('[data-a="lisapaidsave"]'); await page.waitForTimeout(1500);
@@ -480,8 +500,8 @@ const fails = [], check = (name, cond, extra) => { if (cond) console.log("ok", n
     await page.waitForTimeout(1500); const ex4 = (await (await page.request.get("http://localhost:" + PORT + "/dump?exceptions")).json()).filter(r => r.item === "e-flat" && r.action === "amount");
     check("(saved for 1 Nov, not 1 Dec)", ex4.length === 1 && ex4[0].date === "2026-11-01" && +ex4[0].amount === 431.2, ex4);
     await page.evaluate(() => window.BudgieApp.go("today")); await page.waitForTimeout(100);
-    const occ3 = await page.evaluate(() => { const f = [...document.querySelectorAll(".swipe")].find(x => x.querySelector(".acts")); return f ? f.querySelector(".face").dataset.v : ""; });
-    await page.click('.swipe .face[data-v="' + occ3 + '"]'); await page.waitForTimeout(80); await page.click('#sheets [data-a="occdo"][data-v="amount|' + occ3 + '"]'); await page.waitForTimeout(80);
+    const occ3 = await openOcc(page);
+    await page.click('#sheets [data-a="occdo"][data-v="amount|' + occ3 + '"]'); await page.waitForTimeout(80);
     await page.fill("#occAmt", ""); await page.click('[data-a="occsave"][data-v="amount"]'); await page.waitForTimeout(1500);
     const ex3 = (await (await page.request.get("http://localhost:" + PORT + "/dump?exceptions")).json()).filter(r => r.id === "x-" + occ3.replace("@", "-") + "-amount");
     check("an empty real amount isn't saved as £0", !ex3.some(r => +r.amount === 0), ex3);
@@ -554,7 +574,7 @@ const fails = [], check = (name, cond, extra) => { if (cond) console.log("ok", n
     await page.evaluate(() => { document.querySelector("#sheets").innerHTML = ""; window.BudgieApp.go("partner"); }); await page.waitForTimeout(150);
     const t15 = T(await page.textContent("main"));
     check("Ethan's Between you two says what Sophie owes him in loans, and when the next repayment is", /Sophie owes you £600\.00 in loans ?Next £200\.00 on Mon 28 Dec/.test(t15) && /You owe Sophie £[\d,]+\.\d\d in loans/.test(t15) && !/You're all square/.test(t15), t15.slice(t15.indexOf("Between"), t15.indexOf("Between") + 300));
-    check("and the shared bills line says it's only about those", /(All square on shared bills|owes you £[\d,.]+ for shared bills|You owe Sophie £[\d,.]+ for shared bills)/.test(t15), t15.slice(t15.indexOf("Between"), t15.indexOf("Between") + 200));
+    check("and the shared bills line says it's only about those", /(All square on shared bills and payments|owes you £[\d,.]+ for shared bills and payments|You owe Sophie £[\d,.]+ for shared bills and payments)/.test(t15), t15.slice(t15.indexOf("Between"), t15.indexOf("Between") + 200));
     if (await page.$('[data-a="info"][data-v="between"]')) { await page.click('[data-a="info"][data-v="between"]'); await page.waitForTimeout(100); } // (by selector: a sync can re-draw the screen in between)
     check("how it's worked out is behind the (i)", /Shared bills are split by your rules/.test(await page.textContent("#sheets")));
     await page.context().close();
@@ -822,6 +842,39 @@ const fails = [], check = (name, cond, extra) => { if (cond) console.log("ok", n
     check("the editor says when it stops", /Stops from Wed 16 Dec\./.test(await page.textContent("main")) && await page.$eval('[data-f="poolOn"]', e => e.checked) === false);
     await page.check('[data-f="poolOn"]'); await page.waitForTimeout(100); await page.click('[data-a="editsave"]'); await page.waitForTimeout(250);
     check("on again before then: back as it was", await poolStr() === "2026-10-16", await poolStr());
+    await page.context().close();
+  }
+
+  // ===== review 2026-10-28: Today shows Recent (payments and money in), your share of a payment your partner split is
+  // listed, and Payday can tick every move at once
+  {
+    const key = who => JSON.parse(Buffer.from(links[who].split("#connect=")[1], "base64url").toString()).k;
+    const push = (who, rows) => page.request.post("http://localhost:" + PORT + "/exec", {data: JSON.stringify({key: key(who), ops: rows.map(r => ({op: "put", table: "transactions", row: r}))})});
+    page = await newPage("2026-11-09");
+    await page.goto(links.ethan); await page.waitForFunction(() => /Hi Ethan/.test(document.querySelector("#top").textContent), null, {timeout: 8000});
+    await push("ethan", [{id: "t-sale", date: "2026-11-09", person: "ethan", amount: -40, budget: "", account: "e-main", note: "Lego sale", source: "app"}]);
+    await push("sophie", [{id: "t-split", date: "2026-11-08", person: "sophie", amount: 30, budget: "s-food", account: "s-main", split: "half", note: "Big shop", source: "app"}]);
+    await page.evaluate(() => window.BudgieApp.sync(true)); await page.waitForTimeout(500); await page.evaluate(() => window.BudgieApp.go("today")); await page.waitForTimeout(100);
+    const rt = T(await page.textContent("main"));
+    check("Today has Recent, not Coming up", /Recent/.test(rt) && !/Coming up/.test(rt), rt.slice(0, 200));
+    check("Recent shows money in: its name, the amount as money in, and the account it went into", /Lego sale/.test(rt) && /\+£40\.00/.test(rt) && /Into Main account/.test(rt), rt.slice(rt.indexOf("Recent"), rt.indexOf("Recent") + 300));
+    check("Recent has See all", !!(await page.$('main [data-a="payments"]')));
+    await page.click('main [data-a="payedit1"][data-v="t-sale"]'); await page.waitForTimeout(100);
+    const sh = T(await page.textContent("#sheets"));
+    check("tapping a row opens it to check or change: money in, from the account it went into, with no budget needed", /Money in/.test(sh) && /Not for a budget/.test(sh) && (await page.$$eval("#peAcc option", o => o.length)) > 1, sh.slice(0, 200));
+    await page.keyboard.press("Escape"); await page.evaluate(() => { document.querySelector("#sheets").innerHTML = ""; });
+    await page.evaluate(() => window.BudgieApp.go("payments", {start: "2026-11-09", budget: "e-food-b"})); await page.waitForTimeout(100);
+    const pl = T(await page.textContent("main"));
+    check("a budget's payments list has your share of a split payment your partner made (it counts against the budget)", /Sophie paid: Big shop/.test(pl) && /Your share, split: Half each/.test(pl) && /£15\.00 of/.test(pl) && !/No payments logged/.test(pl), pl.slice(0, 300));
+    check("(and it can't be opened to change: it's hers)", !(await page.$('main [data-a="payedit1"]')));
+    await page.evaluate(() => window.BudgieApp.go("payday")); await page.waitForTimeout(100);
+    check("Payday offers 'I've moved them all'", !!(await page.$('main [data-a="payall"]')));
+    const movesNow = async () => (await (await page.request.get("http://localhost:" + PORT + "/dump?moves")).json()).filter(m => /^pay:2026-10-29:/.test(m.key) && m.person === "ethan" && m.deleted !== true).length;
+    const toDo = (await page.$$eval('input[data-c="paytick"]:not(:checked)', els => els.length)), before = await movesNow();
+    await page.click('main [data-a="payall"]'); await page.waitForTimeout(1200);
+    const after = T(await page.textContent("main"));
+    check("'I've moved them all' ticks every move left, and Payday moves on to the next payday", toDo > 1 && /^Next payday/.test(after) && !(await page.$('main [data-a="payall"]')), {toDo, after: after.slice(0, 60)});
+    check("each one is saved to the sheet", (await movesNow()) - before === toDo, {toDo, before, now: await movesNow()});
     await page.context().close();
   }
 
