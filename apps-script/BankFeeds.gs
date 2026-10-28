@@ -1153,7 +1153,17 @@ function bankApply_(p, data, windowFrom, payCarry) {
           if (mine || namesPartner(t)) return;
           var pi = payIn(t);
           if (pi) { usedOcc[pi.o.key] = true; if (!same(-t.amount, pi.o.amount)) exception(pi.i.id, pi.o.orig, -t.amount, "from " + label); }
-          return;   // other money in (Sophie's share, a friend paying you back) is already planned or isn't spending
+          // other money in that isn't planned (selling something, a friend paying you back, interest): kept as a payment of
+          // less than nothing, for no budget, so it shows up in Recent and in the account it went into, and spends nothing.
+          // Money that matches a planned income or a regular payment to you (Sophie's share of the rent) is already in the plan.
+          var inAmt = -t.amount, plannedIn = false;
+          var inWin = function (item) { return D.occurrences(db, item, D.addDays(t.date, -10), D.addDays(t.date, 11)).filter(function (o) { var d = planDay(o); return d >= D.addDays(t.date, -3) && d < D.addDays(t.date, 4); }); };
+          // (anything pay-sized near a payday is left for the pay check, which might not have seen that payday yet when a first read comes in parts)
+          db.income.forEach(function (i) { if (i.person === p) inWin(i).forEach(function (o) { var base = D.amountAt(db, i, o.orig); if (near(inAmt, o.amount) || (i.isPay && base > 0 && Math.abs(inAmt - base) <= base * 0.5)) plannedIn = true; }); });
+          db.transfers.forEach(function (tr) { if (tr.to === p) inWin(tr).forEach(function (o) { if (near(inAmt, o.amount)) plannedIn = true; }); });
+          if (plannedIn) return;
+          create("transactions", {id: "bk-" + provider + "-" + t.id, date: t.date, person: p, amount: t.amount, budget: "", account: acc, split: "", splitHint: "", note: t.name, source: provider, bankId: t.id, review: false});
+          return;
         }
       }
       // a payment (or card refund)

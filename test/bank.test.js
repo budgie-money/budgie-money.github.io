@@ -2038,6 +2038,27 @@ const found = [].concat(leaks("responses", responses.join("\n")), leaks("logs", 
 ok("no token, refresh token, client secret or code in any response, log, the sheet or the status", found.length === 0, found);
 ok("no secret anywhere in Script Properties (editors can see those)", Object.keys(F.env.props).every(k => !secrets.some(x => F.env.props[k].indexOf(x) >= 0)));
 ok("secrets only under BANK_TOKEN_ / BANK_CLIENT_ / BANK_OAUTH_ in the owner's User Properties", Object.keys(F.env.userProps).every(k => /^BANK_(TOKEN|TOKEN_NEXT|CLIENT|OAUTH)_/.test(k)));
+{
+  // Y1: money in that nothing planned (selling something) is kept as a payment of less than nothing, for no budget, so it
+  // shows in Recent and in its account: once, however often it's read, and not if it's one the plan already has
+  freshMonzo(); NOW = RealDate.parse("2026-11-17T12:00:00Z");
+  monzo.txns = monzoData(planned).concat([
+    mtx("tx_y1_sale", "2026-11-16", 4000, {counterparty: {name: "A BUYER"}, category: "general", time: "10:00:00"}),
+    mtx("tx_y1_rent", "2026-11-13", 50000, {counterparty: {name: "RENT SHARE"}, category: "transfers", time: "10:00:00"})
+  ]);
+  const G = bankEnv(); connectMonzo(G, {acc_00009main: "e-main"});
+  const inRows = () => grow(G, "transactions").filter(r => /tx_y1_/.test(r.id));
+  ok("Y1: money in that isn't planned is kept, for no budget, in the account it went into", inRows().length === 1 && inRows()[0].id === "bk-monzo-tx_y1_sale" && +inRows()[0].amount === -40 && !inRows()[0].budget && inRows()[0].account === "e-main" && inRows()[0].note === "A BUYER" && String(inRows()[0].review) !== "true", inRows());
+  ok("Y1: a regular payment to you (Sophie's rent share) is not, as the plan has it", !inRows().some(r => /rent/.test(r.id)), inRows());
+  NOW += 30 * 60000; G.c.bankPoll(); G.c.bankPoll();
+  ok("Y1: reading again doesn't add it twice", inRows().length === 1, inRows());
+  const dB = B.load(G.c.allTables_(), "2026-11-17"), cashIn = B.balances(dB, "2026-11-17");
+  ok("Y1: the engine counts it as money in to the account, and as no spending", B.flows(dB, "2026-11-15", "2026-11-17").some(f => f.account === "e-main" && f.amount === 40) && B.todo(dB, "ethan", "2026-11-17").every(x => !/A BUYER/.test(x.what + x.why)), B.flows(dB, "2026-11-15", "2026-11-17"));
+  // dismissed on a phone: it stays dismissed
+  G.call({key: G.kE, ops: [{op: "delete", table: "transactions", id: "bk-monzo-tx_y1_sale"}]});
+  NOW += 30 * 60000; G.c.bankPoll();
+  ok("Y1: one dismissed on the phone stays dismissed", grow(G, "transactions").find(r => r.id === "bk-monzo-tx_y1_sale").deleted === true);
+}
 // an error from the bank is shown without anything secret in it
 ok("errors are scrubbed", c.bankScrub_("sophie", "failed Bearer " + SECRET.starling + " token=" + SECRET.starling).indexOf(SECRET.starling) < 0);
 
