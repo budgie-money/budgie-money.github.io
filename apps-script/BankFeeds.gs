@@ -392,8 +392,39 @@ function monzoRead_(p, full, wide, cursor, deadline, maxPages) {
       if (whole && (out.pages >= cap || (deadline && Date.now() > deadline))) { stopped = true; (out.cursor = out.cursor || {})[a.id] = q.since; break; }
       if (!whole && page + 1 >= BANK_MAX_PAGES_) break;
     }
+    if (kind === "main") monzoPotCards_(p, pots, out, full || wide);
   });
   return out;
+}
+// A pot with virtual cards (the Bills pot, say) pays with them from the pot's own ledger account, not the current
+// account: those payments are only in the pot's own feed. Its ledger id comes from the pot's moves in the account's
+// feed (metadata pot_account_id), and is kept in the status so it's known on a read with no move in it. From the pot's
+// feed only its card payments (and their refunds) are taken: its moves are already in the account's feed.
+// A pot feed that can't be read (Monzo saying no) is skipped, so the rest of the read still counts; slowing down isn't.
+function monzoPotCards_(p, pots, out, wide) {
+  var st = bankStatus_(p), known = st.potLedgers && typeof st.potLedgers === "object" ? st.potLedgers : {}, ledgers = {}, have = {};
+  out.txns.forEach(function (t) { have[t.id] = true; if (t.pot && t.potAcc && /^acc_/.test(t.potAcc)) ledgers[t.pot] = t.potAcc; });
+  pots.forEach(function (x) {
+    if (!x || !x.id || x.deleted || !(x.has_virtual_cards === true || x.has_virtual_cards === "true")) return;
+    var led = ledgers[x.id] || known[x.id]; if (!led) return;
+    (out.potLedgers = out.potLedgers || {})[x.id] = led;
+    var q = {account_id: led, limit: 100, "expand[]": "merchant"}, since = bankSince_(false, wide); if (since) q.since = since.toISOString();
+    try {
+      for (var page = 0; page < BANK_MAX_PAGES_; page++) {
+        var list = monzoGet_(p, "/transactions", q).transactions || [];
+        out.pages++;
+        list.forEach(function (t) {
+          var n = monzoTxn_(t, x.id); if (!n || n.pot || n.potMove || have[n.id]) return;
+          n.potCard = true; have[n.id] = true; out.txns.push(n);
+        });
+        if (list.length < 100) break;
+        q.since = list[list.length - 1].id;
+      }
+    } catch (e) {
+      if (e && e.bank === "backoff") throw e;
+      (out.potErrors = out.potErrors || []).push((x.name || "Pot") + ": " + String(e && e.message || e));
+    }
+  });
 }
 function monzoTxn_(t, accId) {
   if (!t || !t.id || !t.created) return null;
@@ -406,7 +437,9 @@ function monzoTxn_(t, accId) {
     name: (merchant && merchant.name) || (t.counterparty && t.counterparty.name) || (pot ? "" : String(t.description || "")),
     category: String(t.category || ""), pot: pot, card: !!t.merchant, load: !!t.is_load,
     // (a bill paid from a bills pot: the pot it names, the moment, and why a pot's money came out)
-    at: Date.parse(t.created) || 0, billsPot: String(meta.bills_pot_id || ""), trigger: String(meta.trigger || "")
+    at: Date.parse(t.created) || 0, billsPot: String(meta.bills_pot_id || ""), trigger: String(meta.trigger || ""),
+    // (the pot's own ledger account, which a pot's virtual card spends from; and whether this is money into or out of a pot)
+    potAcc: String(meta.pot_account_id || ""), potMove: t.scheme === "uk_retail_pot" || !!meta.pot_deposit_id || !!meta.pot_withdrawal_id
   };
 }
 
@@ -630,7 +663,7 @@ function bankRun_(p) {
     if (data.cut) {
       var recent = read(false, true), have = {};
       recent.txns.forEach(function (t) { have[t.id] = true; });
-      note = cutNote(data); data = {provider: data.provider, accounts: recent.accounts, txns: data.txns.filter(function (t) { return !have[t.id]; }).concat(recent.txns)};
+      note = cutNote(data); data = {provider: data.provider, accounts: recent.accounts, txns: data.txns.filter(function (t) { return !have[t.id]; }).concat(recent.txns), potLedgers: recent.potLedgers, potErrors: recent.potErrors};
     }
     // how much this run read, in case it's cut off while saving it
     if (full && data.pages) { var s8 = bankStatus_(p); if (s8.runStart) { s8.runPages = data.pages; bankSaveStatus_(p, s8); } }
@@ -660,7 +693,10 @@ function bankRun_(p) {
     if (gone()) return {ok: false, error: "The bank was disconnected while it was being read."};
     s = bankStatus_(p);
     if (!res.same) { if (fp && !res.stopped && !res.failed) s.applied = {fp: fp, at: Date.now()}; else delete s.applied; }
-    s.provider = tok.provider; s.accounts = data.accounts; s.lastSync = Date.now(); s.lastError = ""; s.needsReconnect = false; s.backoffUntil = 0; s.backoffN = 0;
+    s.provider = tok.provider; s.accounts = data.accounts; s.lastSync = Date.now();
+    // (the ledger of each pot with virtual cards, and any pot whose own feed couldn't be read this time)
+    if (data.potLedgers) s.potLedgers = Object.assign({}, s.potLedgers || {}, data.potLedgers);
+    if (data.potErrors) s.potErrors = data.potErrors; else delete s.potErrors; s.lastError = ""; s.needsReconnect = false; s.backoffUntil = 0; s.backoffN = 0;
     delete s.again; delete s.minuteFails; delete s.runStart; delete s.runPages;
     // ran short of time saving it: the next run (in a minute) reads the same again and does what's left
     if (res.stopped) { s.again = true; if (full) s.note = "Still bringing in your history"; bankEnsureMinuteTrigger_(); }
