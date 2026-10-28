@@ -702,6 +702,7 @@
     }
     var doneN = pd.moves.filter(function (m) { return B.ticked(d, p, "pay:" + per.start + ":" + m.to); }).length;
     html += card('<div class="row"><h2>Move from ' + esc(B.accName(d, pd.payAccount)) + '</h2><span class="small muted">' + (upcoming ? "On payday" : doneN + " of " + pd.moves.length + " done") + '</span></div><div class="list" style="margin-top:6px">' + (rows || '<p class="muted">Nothing to move.</p>') + "</div>" +
+      (!upcoming && pd.moves.length - doneN > 1 ? '<button type="button" class="btn ghost wide" style="margin:6px 0 10px" data-a="payall">I\'ve moved them all</button>' : "") +
       '<div class="row" style="padding-top:10px;border-top:1px solid var(--line2);margin-top:4px"><span>Stays in ' + esc(B.accName(d, pd.payAccount)) + ' <span class="tiny muted">for spending from there</span></span>' + num(M(pd.keeps)) + "</div>");
     var left = pd.plan.lines.filter(function (l) { return l.leftover; })[0];
     // (what's left of a pooled bill's last bills month stays in its pot and is part of that, so it goes to savings instead)
@@ -1616,6 +1617,15 @@
     revpool: function (v) { var k = v.split("|"); if (k[1]) { reviewSave(k[0], {budget: k[1], split: "", review: false}, true); toast("Counted in " + ((db().byId[k[1]] || {}).name || "the bill")); } else { S.ui.revNoPool = S.ui.revNoPool || {}; S.ui.revNoPool[k[0]] = true; } render(); },
     paymonth: function (v) { var d = db(), per = B.periodAt(d, me(), S.view.p.start || todayIso()); per = +v > 0 ? B.nextPeriod(d, me(), per) : B.prevPeriod(d, me(), per); if (per) { S.view.p.start = per.start; render(); window.scrollTo(0, 0); } },
     payedit1: function (v) { paymentSheet(v); },
+    // ticks every move still to do on the Payday screen at once (not the cover for a short pay: that one is its own call)
+    payall: function () {
+      var ids = [];
+      $("#main").querySelectorAll('input[data-c="paytick"]:not(:checked):not(:disabled)').forEach(function (el) {
+        var k = el.dataset.v.split("|"); if (/:cover$/.test(k[0])) return;
+        ids.push(put("moves", {id: newId("mv"), date: payTickDate(k[0], k[1], k[2]), person: me(), from: k[1], to: k[2], amount: +k[3], key: k[0]}, true).id);
+      });
+      if (ids.length) { toast("Done", {t: "moves", ids: ids}); render(); }
+    },
     pesave: function () {
       var x = (tables().transactions || []).filter(function (r) { return r.id === S.ui.payEdit; })[0]; if (!x) return;
       // (counted in a pooled bill, or not any more: that's remembered for the payee, as checking a new payment is)
