@@ -753,9 +753,9 @@
     var bk = isBankTx(x), lock = bk ? " disabled" : "";
     var inn = +x.amount < 0;
     openSheet("<h2>" + (inn ? "Money in" : "Change this payment") + "</h2>" + (bk ? '<p class="small muted" style="margin:4px 0 0">From ' + esc(bankName()) + ": the amount, date and account come from your bank.</p>" : "") +
-      '<label class="f">Amount<input type="text" inputmode="decimal" id="peAmt" value="' + esc(x.amount) + '"' + lock + "></label>" +
+      '<label class="f">Amount<input type="text" inputmode="decimal" id="peAmt" value="' + esc(inn ? -x.amount : x.amount) + '"' + lock + "></label>" +
       '<label class="f">What for<select id="peBud">' + (inn || !x.budget ? '<option value=""' + (x.budget ? "" : " selected") + ">" + (inn ? "Not for a budget" : "Nothing yet") + "</option>" : "") + buds.map(function (b) { return '<option value="' + esc(b.id) + '"' + (b.id === x.budget ? " selected" : "") + ">" + esc(b.name.replace(/ \(what's left\)/, "")) + "</option>"; }).join("") + "</select></label>" +
-      '<label class="f">Paid from<select id="peAcc"' + lock + ">" + accs.map(function (a) { return '<option value="' + esc(a.id) + '"' + (a.id === x.account ? " selected" : "") + ">" + esc(a.name) + "</option>"; }).join("") + "</select></label>" +
+      '<label class="f">' + (inn ? "Paid into" : "Paid from") + '<select id="peAcc"' + lock + ">" + accs.map(function (a) { return '<option value="' + esc(a.id) + '"' + (a.id === x.account ? " selected" : "") + ">" + esc(a.name) + "</option>"; }).join("") + "</select></label>" +
       '<div class="two"><label class="f">Date<input type="date" id="peDate" value="' + esc(x.date) + '"' + lock + '></label><label class="f">Note<input type="text" id="peNote" value="' + esc(x.note || "") + '"></label></div>' +
       (x.split ? '<p class="small muted" style="margin:8px 0 0">Split with ' + esc(person(partner()).name) + ": " + esc((d.byId[x.split] || {}).name || "half each") + "</p>" : "") +
       '<button type="button" class="btn wide" style="margin-top:14px" data-a="pesave">Save</button><button type="button" class="btn danger wide" style="margin-top:10px" data-a="pedel">Delete this ' + (inn ? "one" : "payment") + "</button>");
@@ -1633,7 +1633,7 @@
       if (poolSwap && isBankTx(x) && x.note) setting("bank.rule." + merchantKey(x.note), nb);
       if (isBankTx(x)) { put("transactions", Object.assign({}, x, {budget: nb, note: $("#peNote").value}, isPoolBill(nb) ? {split: ""} : {}), true); closeSheet(); toast("Payment changed"); render(); return; }
       var a = +String(($("#peAmt") || {}).value || "").replace(/[£,\s]/g, ""); if (!(a > 0)) { toast("Type the amount first"); return; }
-      put("transactions", Object.assign({}, x, {amount: B.round(a), budget: nb, account: $("#peAcc").value, date: $("#peDate").value || x.date, note: $("#peNote").value}, isPoolBill(nb) ? {split: ""} : {}), true);
+      put("transactions", Object.assign({}, x, {amount: B.round(+x.amount < 0 ? -a : a), budget: nb, account: $("#peAcc").value, date: $("#peDate").value || x.date, note: $("#peNote").value}, isPoolBill(nb) ? {split: ""} : {}), true);
       closeSheet(); toast("Payment changed"); render();
     },
     pedel: function () { var id = S.ui.payEdit; del("transactions", id, true); closeSheet(); toast("Payment deleted", {t: "transactions", ids: [id], restore: true}); render(); },

@@ -862,7 +862,11 @@ const fails = [], check = (name, cond, extra) => { if (cond) console.log("ok", n
     await page.click('main [data-a="payedit1"][data-v="t-sale"]'); await page.waitForTimeout(100);
     const sh = T(await page.textContent("#sheets"));
     check("tapping a row opens it to check or change: money in, from the account it went into, with no budget needed", /Money in/.test(sh) && /Not for a budget/.test(sh) && (await page.$$eval("#peAcc option", o => o.length)) > 1, sh.slice(0, 200));
-    await page.keyboard.press("Escape"); await page.evaluate(() => { document.querySelector("#sheets").innerHTML = ""; });
+    check("it shows the amount as £40 into the account, and saving keeps it as money in", (await page.inputValue("#peAmt")) === "40" && /Paid into/.test(sh));
+    await page.fill("#peNote", "Lego set sold"); await page.click('[data-a="pesave"]'); await page.waitForTimeout(1200);
+    const sale = (await (await page.request.get("http://localhost:" + PORT + "/dump?transactions")).json()).find(r => r.id === "t-sale");
+    check("(saved as -40 with the new note)", sale && +sale.amount === -40 && sale.note === "Lego set sold", sale);
+    await page.evaluate(() => { document.querySelector("#sheets").innerHTML = ""; });
     await page.evaluate(() => window.BudgieApp.go("payments", {start: "2026-11-09", budget: "e-food-b"})); await page.waitForTimeout(100);
     const pl = T(await page.textContent("main"));
     check("a budget's payments list has your share of a split payment your partner made (it counts against the budget)", /Sophie paid: Big shop/.test(pl) && /Your share, split: Half each/.test(pl) && /£15\.00 of/.test(pl) && !/No payments logged/.test(pl), pl.slice(0, 300));
