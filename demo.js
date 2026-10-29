@@ -65,6 +65,7 @@
         {id: "s-bills-t", from: "sam", to: "alex", name: "Bills share", amount: 115, fromAccount: "s-rent", toAccount: "a-bills", unit: "month", on: "1", start: add(start, -40)}
       ],
       transactions: [], moves: [], settlements: [],
+      loanItems: [{id: "li-sofa", loan: "sofa", name: "Sofa", date: add(start, 5), cost: 1000, share: 500}, {id: "li-del", loan: "sofa", name: "Delivery", date: add(start, 6), cost: 50, share: 25}, {id: "li-rug", loan: "sofa", name: "Rug", date: add(start, 8), cost: 75, share: 75}],
       loans: [{id: "sofa", lender: "alex", borrower: "sam", name: "New sofa", amount: 600, date: add(start, 5), repay: 150, repayFrom: add(today, 20), repayDay: "28"}],
       goals: [
         {id: "g-house", owners: "alex, sam", name: "House deposit", kind: "house", target: 60000, due: add(today, 365 * 4), accounts: "a-lisa, s-lisa", price: 280000},

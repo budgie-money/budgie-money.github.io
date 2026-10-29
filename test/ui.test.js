@@ -973,6 +973,68 @@ const fails = [], check = (name, cond, extra) => { if (cond) console.log("ok", n
     await page.context().close();
   }
 
+
+  // ===== itemised IOUs: made on the form, shared half / all / custom, shown on Debts and Between you two, and worked out as it's paid back
+  {
+    const kS = JSON.parse(Buffer.from(links.sophie.split("#connect=")[1], "base64url").toString()).k, ex = (key, ops) => page.request.post("http://localhost:" + PORT + "/exec", {data: JSON.stringify({key, ops})});
+    const dump = async t => (await (await page.request.get("http://localhost:" + PORT + "/dump?" + t)).json());
+    page = await newPage("2026-11-02");
+    await page.goto(links.ethan); await hiE(page);
+    await page.evaluate(() => { document.querySelector("#sheets").innerHTML = ""; window.BudgieApp.go("debts"); }); await page.waitForTimeout(100);
+    await page.click('[data-a="new"][data-v="loans"]'); await page.waitForTimeout(80);
+    await page.fill('[data-f="name"]', "Flat things");
+    check("IOU: a new IOU has a Total to type and an Add an item button", !!(await page.$('[data-f="amount"]')) && !!(await page.$('[data-a="itemnew"]')));
+    // 1. a half-split item
+    await page.click('[data-a="itemnew"]'); await page.waitForTimeout(60);
+    await page.fill("#liName", "Sofa"); await page.fill("#liDate", "2026-10-20"); await page.fill("#liCost", "230");
+    await page.click('[data-a="itemmode"][data-v="half"]'); await page.waitForTimeout(40);
+    check("IOU: split half shows what Sophie owes: half the cost", /£115\.00/.test(await page.textContent("#liPrev")), await page.textContent("#sheets"));
+    await page.fill("#liCost", "231"); check("IOU: and follows the cost as you type (half of £231 is £115.50)", /£115\.50/.test(await page.textContent("#liPrev")));
+    await page.fill("#liCost", "230");
+    await shot(page, "iou-1-item-sheet");
+    await page.click('[data-a="itemsave"]'); await page.waitForTimeout(60);
+    // 2. an item that is all hers
+    await page.click('[data-a="itemnew"]'); await page.fill("#liName", "Dress"); await page.fill("#liDate", "2026-10-22"); await page.fill("#liCost", "18.40");
+    await page.click('[data-a="itemmode"][data-v="all"]'); await page.click('[data-a="itemsave"]'); await page.waitForTimeout(60);
+    // 3. custom, and a negative one (something Ethan owes her)
+    await page.click('[data-a="itemnew"]'); await page.fill("#liName", "Takeaway"); await page.fill("#liDate", "2026-10-25");
+    await page.click('[data-a="itemmode"][data-v="custom"]'); await page.fill("#liShare", "-20"); await page.fill("#liNote", "her half of my order"); await page.click('[data-a="itemsave"]'); await page.waitForTimeout(60);
+    let t1 = T(await page.textContent("main"));
+    check("IOU: the form lists the items with how each is shared and the total at the bottom", /Sofa.*half £115\.00.*Dress.*all Sophie's.*Takeaway.*Takes off £20\.00.*Total£113\.40/.test(t1) && !(await page.$('[data-f="amount"]')), t1.slice(0, 600));
+    await shot(page, "iou-2-form", true);
+    await page.click('[data-a="editsave"]'); await page.waitForTimeout(500);
+    const ln = (await dump("loans")).find(r => r.name === "Flat things"), its = (await dump("loanItems")).filter(r => r.loan === ln.id && !r.deleted);
+    check("IOU: saved as one IOU of the total, with its three items", ln && +ln.amount === 113.4 && its.length === 3 && its.some(r => r.name === "Sofa" && +r.share === 115 && +r.cost === 230) && its.some(r => r.name === "Takeaway" && +r.share === -20), {ln, its});
+    await page.evaluate(() => { document.querySelector("#sheets").innerHTML = ""; window.BudgieApp.go("debts"); }); await page.waitForTimeout(100);
+    const card = await page.innerText('[data-v="loans:' + ln.id + '"]');
+    check("IOU: Debts shows the items, their state and the total", /Flat things/.test(card) && /Sofa/.test(card) && /Not started/.test(card) && /Total £113\.40/.test(card) && /£0\.00 of £113\.40 paid back/.test(card), card);
+    await shot(page, "iou-3-debts", true);
+    // paid back £100: oldest first, the £20 taken off counts too
+    await ex(kS, [{op: "put", table: "settlements", row: {id: "set-iou1", date: "2026-11-02", from: "sophie", to: "ethan", amount: 100, loan: ln.id, note: "Flat things"}}]);
+    await page.evaluate(() => window.BudgieApp.sync && window.BudgieApp.sync(true)); await page.waitForTimeout(800);
+    const card2 = await page.innerText('[data-v="loans:' + ln.id + '"]');
+    check("IOU: £100 paid back pays the oldest item off and part of the next", /Dress[\s\S]*£13\.40 of £18\.40 left/.test(card2) && /Paid off/.test(card2) && /£100\.00 of £113\.40 paid back/.test(card2), card2);
+    // Sophie sees the same, from Between you two, and taps through to it
+    await page.context().close();
+    page = await newPage("2026-11-02");
+    await page.goto(links.sophie); await page.waitForFunction(() => /Hi Sophie/.test(document.querySelector("#top").textContent), null, {timeout: 8000});
+    await page.click('nav [data-v="partner"]'); await page.waitForTimeout(100);
+    const card3 = await page.innerText('[data-v="loans:' + ln.id + '"]');
+    check("IOU: Sophie sees the same breakdown in Between you two (the amount she owes, her state)", /Sofa/.test(card3) && /half £115\.00/.test(card3) && /all yours/.test(card3) && /Paid off/.test(card3) && /£13\.40 of £18\.40 left/.test(card3), card3);
+    await shot(page, "iou-4-between", true);
+    await page.click('[data-v="loans:' + ln.id + '"]'); await page.waitForTimeout(100);
+    check("IOU: and tapping it opens it to change", /Change money owed/i.test(await page.textContent("#top")) && /Sofa/.test(await page.textContent("main")));
+    // remove an item (the middle one) and edit another; the total follows
+    await page.click('[data-a="itemedit"]'); await page.waitForTimeout(60);
+    check("IOU: a saved item opens with its name, cost and split", (await page.inputValue("#liName")) === "Sofa" && (await page.inputValue("#liCost")) === "230" && (await page.getAttribute('[data-a="itemmode"][data-v="half"]', "aria-pressed")) === "true");
+    await page.click('[data-a="itemdel"]'); await page.waitForTimeout(60);
+    check("IOU: removing an item takes it off the total (the Dress and the £20 are left: -£1.60)", /Total-?£/.test(T(await page.textContent("main"))) && !/Sofa/.test(await page.textContent("main")), T(await page.textContent("main")).slice(0, 500));
+    await page.click('[data-a="editsave"]'); await page.waitForTimeout(500);
+    const after = (await dump("loans")).find(r => r.id === ln.id);
+    check("IOU: and saving keeps the loan's amount at the new total", +after.amount === -1.6, after);
+    await page.context().close();
+  }
+
   // ===== polish 2026-10-27 (1.4.15): on every screen and sheet, at 320, 384 and 412px, with Larger text and with the
   // phone's text at 130%, no button's text runs past its edge, no one-line button wraps, no row of buttons is ragged
   // (all on one line, even lines, or one under another) and nothing is wider than the screen. Long names, big amounts.
@@ -1035,7 +1097,7 @@ const fails = [], check = (name, cond, extra) => { if (cond) console.log("ok", n
     const screens = ["today", "money", "add", "partner", "more", "payday", "pots", "bills", "goals", "lisa", "house", "networth", "debts", "insights", "gifts", "settings", "themes", "bank", "review", "linked", "emailset", "sharing", "sync", "importcsv", "list:income", "list:budgets", "list:accounts", "list:splits"];
     // [screen, what to tap for a sheet or form] (each tap is a data-a, and data-v if given)
     const taps = [["add", "adddatepick"], ["add", "addsplit2"], ["add", "addmode:bill"], ["today", "who"], ["payday", "payedit"], ["pots", "potcheck"], ["partner", "settle"], ["lisa", "lisapaid"], ["bank", "bankoff"], ["review", "revmore"], ["linked", "applink:peckish"],
-      ["list:budgets", "edit"], ["list:income", "new:income"], ["bills", "new:bills"], ["bills", "edit"], ["list:accounts", "new:accounts"], ["list:splits", "new:splits"], ["list:transfers", "new:transfers"], ["debts", "new:loans"], ["goals", "new:goals"], ["gifts", "new:gifts"], ["list:budgets", "new:budgets"], ["money", "outsort:pot"], ["money", "outrow"]];
+      ["list:budgets", "edit"], ["list:income", "new:income"], ["bills", "new:bills"], ["bills", "edit"], ["list:accounts", "new:accounts"], ["list:splits", "new:splits"], ["list:transfers", "new:transfers"], ["debts", "new:loans"], ["debts", "new:loans>itemnew"], ["debts", "edit>itemedit"], ["debts", "edit>itemedit>itemmode:custom"], ["goals", "new:goals"], ["gifts", "new:gifts"], ["list:budgets", "new:budgets"], ["money", "outsort:pot"], ["money", "outrow"]];
     const found = {};
     for (const [w, size, z] of [[320, "normal", 1], [320, "larger", 1], [384, "normal", 1], [384, "larger", 1], [412, "normal", 1], [412, "larger", 1], [384, "normal", 1.3], [412, "normal", 1.3], [295, "normal", 1]]) {
       const tag = w + "px " + size + (z !== 1 ? " text " + z * 100 + "%" : "");
@@ -1052,10 +1114,14 @@ const fails = [], check = (name, cond, extra) => { if (cond) console.log("ok", n
         await goTo("money"); await page.click('[data-a="moneyview"][data-v="year"]'); found[tag + " " + who + " money year"] = await page.evaluate(problems);
         for (const [s, t] of taps) {
           await goTo(s); await page.waitForTimeout(s === "bank" || s === "linked" ? 150 : 20);
-          const [a, v] = t.split(":"), sel = '[data-a="' + a + '"]' + (v ? '[data-v="' + v + '"]' : "");
-          if (!(await page.$("#main " + sel + ", #sheets " + sel))) continue;
-          await page.evaluate(sel => document.querySelector("#main " + sel + ", #sheets " + sel).click(), sel); await page.waitForTimeout(a === "applink" ? 300 : 40);
-          found[tag + " " + who + " " + s + " > " + t] = await page.evaluate(problems);
+          // (a > b taps one thing, then another: a form, then a sheet on it)
+          let went = true;
+          for (const step of t.split(">")) {
+            const [a, v] = step.split(":"), sel = '[data-a="' + a + '"]' + (v ? '[data-v="' + v + '"]' : "");
+            if (!(await page.$("#main " + sel + ", #sheets " + sel))) { went = false; break; }
+            await page.evaluate(sel => document.querySelector("#main " + sel + ", #sheets " + sel).click(), sel); await page.waitForTimeout(a === "applink" ? 300 : 40);
+          }
+          if (went) found[tag + " " + who + " " + s + " > " + t] = await page.evaluate(problems);
         }
         await ctx.close();
       }

@@ -687,11 +687,7 @@
     html += '<h2 class="h2">Between you two' + infoBtn("between") + "</h2>" + card('<div class="row"><span style="font-weight:800;font-size:18px">' + line + "</span></div>" + loanLines +
       (mo && (mo.bills || mo.paidIn || mo.paidOut) ? '<div class="banner small">This month so far: shared bills ' + M(mo.bills) + ". " + (mo.theirShare ? esc(qp.name) + "'s share " + M(mo.theirShare) + ", paid " + M(mo.paidIn) + ". " : "") + (mo.myShare ? "Your share " + M(mo.myShare) + ", paid " + M(mo.paidOut) + "." : "") + "</div>" : "") +
       (bt.owedToMe > 0.004 ? '<button type="button" class="btn ghost sm" style="margin-top:10px" data-a="settle" data-v="in">' + esc(shortName(qp.name)) + " has paid me</button>" : bt.iOwe > 0.004 ? '<button type="button" class="btn ghost sm" style="margin-top:10px" data-a="settle" data-v="out">I\'ve paid ' + esc(shortName(qp.name)) + "</button>" : ""));
-    B.loans(d, p, now).forEach(function (l) {
-      if (l.left <= 0.004) return;
-      var next = l.plan[0];
-      html += card('<div class="row"><span style="font-weight:700">' + esc(l.name) + "</span>" + num(M(l.left) + " left") + '</div><div class="small muted">' + (l.lender === p ? esc(qp.name) + " pays you" : "You pay " + esc(qp.name)) + (next ? " " + M(next.amount) + " on " + esc(B.nice(next.date)) : "") + '</div><div style="margin-top:8px">' + bar(l.pct) + "</div>");
-    });
+    B.loans(d, p, now).forEach(function (l) { if (l.left > 0.004) html += loanCard(l, false); });
     var shared = d.bills.filter(function (b) { return b.split; });
     if (shared.length) html += card('<h2>Shared bills</h2><div class="list" style="margin-top:6px">' + shared.map(function (b) {
       // (an estimate the real bills count against: how far this bills month has got, and how the last one settled)
@@ -1078,14 +1074,7 @@
   // ----- Debts
   SCREENS.debts = function () {
     var d = db(), p = me(), now = todayIso(), html = "", ls = B.loans(d, p, now);
-    ls.forEach(function (l) {
-      var who = l.lender === p ? esc(person(l.borrower).name) + " owes you" : "You owe " + esc(person(l.lender).name);
-      // what it's made of, when the notes list it ("Dress £30; Shoes £20", or a line each)
-      var parts = l.notes.split(/\s*[;\n]\s*/).filter(Boolean);
-      html += '<button type="button" class="card li" style="display:block;text-align:left;padding:16px" data-a="edit" data-v="loans:' + esc(l.id) + '"><div class="row"><span style="font-weight:700">' + esc(l.name) + "</span>" + num(M(l.left)) + '</div><div class="small muted">' + who + " · " + M(l.paid) + " paid so far</div>" +
-        (parts.length ? '<div class="tiny muted" style="margin-top:4px">' + parts.map(esc).join("<br>") + "</div>" : "") + '<div style="margin:8px 0">' + bar(l.pct) + "</div>" +
-        l.plan.slice(0, 4).map(function (r) { return '<div class="row small" style="padding:4px 0"><span>' + esc(B.nice(r.date)) + "</span>" + num(M(r.amount)) + "</div>"; }).join("") + "</button>";
-    });
+    ls.forEach(function (l) { html += loanCard(l, true); });
     B.accountsOf(d, p).filter(function (a) { return a.kind === "credit"; }).forEach(function (a) { var v = B.balances(d, now)[a.id] || 0; html += card('<div class="row"><span style="font-weight:700">' + esc(a.name) + "</span>" + num(M(-v)) + '</div><div class="small muted">' + esc(a.purpose || "") + "</div>"); });
     return (html || '<p class="empty">No debts or IOUs. Nice.</p>') + '<button type="button" class="btn dash" data-a="new" data-v="loans">Add money owed</button>';
   };
@@ -1373,6 +1362,59 @@
     var fixed = txt.match(/([a-z]+)\s*=\s*([\d.]+)/i); if (fixed) return names(fixed[1].toLowerCase()) + " pays " + M(+fixed[2]) + ", the rest by the other";
     var parts = []; txt.replace(/([a-z]+)\s*:\s*([\d.]+)/gi, function (_, a, b) { parts.push(names(a.toLowerCase()) + " " + b); }); return parts.length ? parts.join(" : ") + " parts" : "Half each";
   }
+  // ----- IOUs: what one is made of
+  // who the IOU is owed by, as the form or the engine says it (direction: "in" means your partner owes you)
+  function iouBorrower(direction) { var mine = direction === "out", q = person(partner()); return {mine: mine, name: mine ? "You" : shortName(q.name)}; }
+  // one item: its name and share, then the date, the full cost and how it is shared, then how much of it has been paid off
+  function itemRow(x, bw, act) {
+    var how = x.how === "half" ? "half " + M(x.share) : x.how === "all" ? "all " + (bw.mine ? "yours" : esc(bw.name) + "'s") : x.cost !== null && x.cost !== "" ? M(x.share) + " of it" : "";
+    var det = [x.date ? esc(B.nice(x.date)) : "", x.cost !== null && x.cost !== "" ? M(x.cost) : "", how].filter(Boolean).join(" · ");
+    var st = x.state === "paid" ? '<span class="why good">Paid off</span>' : x.state === "part" ? '<span class="why">' + M(x.left) + " of " + M(x.share) + " left</span>" : x.state === "credit" ? '<span class="why">Takes off ' + M(-x.share) + "</span>" : '<span class="why">Not started</span>';
+    var inner = '<span class="grow"><span class="what">' + esc(x.name || "Item") + "</span>" + (det ? '<span class="why">' + det + "</span>" : "") + st + "</span>" + num(M(x.share));
+    return act ? '<button type="button" class="li" data-a="' + act + '" data-v="' + esc(x.id) + '">' + inner + chev() + "</button>" : '<div class="li" style="padding:8px 0">' + inner + "</div>";
+  }
+  // an IOU as a card (Debts and Between you two): who owes whom, how much is left, what it's made of, what's next
+  function loanCard(l, full) {
+    var d = db(), p = me(), now = todayIso(), qp = person(l.lender === p ? l.borrower : l.lender), bw = {mine: l.borrower === p, name: shortName(person(l.borrower).name)};
+    var who = l.lender === p ? esc(qp.name) + " owes you" : "You owe " + esc(qp.name), next = l.plan[0];
+    var parts = l.items.length ? [] : l.notes.split(/\s*[;\n]\s*/).filter(Boolean);
+    return '<button type="button" class="card li" style="display:block;text-align:left;padding:16px" data-a="edit" data-v="loans:' + esc(l.id) + '"><div class="row"><span style="font-weight:700">' + esc(l.name) + "</span>" + num(M(l.left)) + '</div><div class="small muted">' +
+      (full ? who + " · " + M(l.paid) + " paid so far" : (l.lender === p ? esc(qp.name) + " pays you" : "You pay " + esc(qp.name)) + (next ? " " + M(next.amount) + " on " + esc(B.nice(next.date)) : "")) + "</div>" +
+      (parts.length ? '<div class="tiny muted" style="margin-top:4px">' + parts.map(esc).join("<br>") + "</div>" : "") + '<div style="margin:8px 0">' + bar(l.pct) + "</div>" +
+      (l.items.length ? '<div class="list">' + l.items.map(function (x) { return itemRow(x, bw); }).join("") + '</div><div class="row small" style="padding-top:8px;border-top:1px solid var(--line2);font-weight:700"><span>Total ' + M(l.amount) + '</span><span class="muted" style="font-weight:600">' + M(l.paid) + " of " + M(l.amount) + " paid back</span></div>" : "") +
+      (full ? l.plan.slice(0, 4).map(function (r) { return '<div class="row small" style="padding:4px 0"><span>' + esc(B.nice(r.date)) + "</span>" + num(M(r.amount)) + "</div>"; }).join("") : "") + "</button>";
+  }
+  // add, change or take off one item of the IOU being edited (kept in the draft until the IOU is saved)
+  function itemSheet(id, draft) {
+    var x = draft || null, bw = iouBorrower(EDIT.row.direction), its = EDIT.items;
+    if (!x) {
+      var old = id ? its.filter(function (i) { return i.id === id; })[0] : null;
+      if (old) x = {id: old.id, name: old.name, date: old.date || "", cost: old.cost === "" ? "" : String(old.cost), share: String(old.share), note: old.note || "", mode: B.itemStates([old], 0)[0].how};
+      // the first item of an IOU that has an amount already: it starts as that amount, under the IOU's name
+      else x = {id: "", name: its.length ? "" : EDIT.row.name || "", date: "", cost: "", share: !its.length && +EDIT.row.amount > 0 ? String(EDIT.row.amount) : "", note: "", mode: "custom"};
+    }
+    S.ui.item = x;
+    var cost = +String(x.cost).replace(/[£,\s]/g, "") || 0, shown = x.mode === "half" ? B.round(cost / 2) : x.mode === "all" ? B.round(cost) : null;
+    var owes = bw.mine ? "What you owe for it" : "What " + esc(bw.name) + " owes for it", seg = function (m, t) { return '<button type="button" data-a="itemmode" data-v="' + m + '" aria-pressed="' + (x.mode === m) + '">' + t + "</button>"; };
+    openSheet("<h2>" + (id || x.id ? "Change item" : "Add an item") + '</h2><label class="f">What it was<input type="text" id="liName" value="' + esc(x.name) + '"></label>' +
+      '<div class="two"><label class="f">Date (optional)<input type="date" id="liDate" value="' + esc(x.date) + '"></label><label class="f">Full cost (optional)<input type="text" inputmode="decimal" id="liCost" placeholder="£" value="' + esc(x.cost) + '"></label></div>' +
+      '<div class="seg fit" style="margin-top:14px" role="group" aria-label="How it is shared">' + seg("half", "Split half") + seg("all", bw.mine ? "All mine" : "All theirs") + seg("custom", "Custom") + "</div>" +
+      (shown === null ? '<label class="f">' + owes + '<input type="text" inputmode="decimal" id="liShare" placeholder="£, or -£ if it takes off" value="' + esc(x.share) + '"></label>' : '<div class="row" style="margin-top:12px"><span class="small muted">' + owes + '</span><span class="num" id="liPrev">' + M(shown) + "</span></div>") +
+      '<label class="f">Note (optional)<input type="text" id="liNote" value="' + esc(x.note) + '"></label>' +
+      '<button type="button" class="btn wide" style="margin-top:14px" data-a="itemsave">Save item</button>' + (id || x.id ? '<button type="button" class="btn danger wide" style="margin-top:10px" data-a="itemdel">Remove item</button>' : ""));
+  }
+  function itemRead() {
+    var x = S.ui.item || {}, g = function (i) { var el = $("#" + i); return el ? el.value : null; };
+    ["Name", "Date", "Cost", "Share", "Note"].forEach(function (k) { var v = g("li" + k); if (v !== null) x[k.toLowerCase()] = v; });
+    return x;
+  }
+  function loanItemsSave(loanId) {
+    EDIT.items.forEach(function (x) {
+      var was = EDIT.itemsOrig.filter(function (o) { return o.id === x.id; })[0];
+      if (!was || JSON.stringify(was) !== JSON.stringify(x)) put("loanItems", {id: x.id, loan: loanId, name: x.name, date: x.date || "", cost: x.cost === "" ? "" : x.cost, share: x.share, note: x.note || ""}, true);
+    });
+    EDIT.removed.forEach(function (id) { del("loanItems", id, true); });
+  }
   SCREENS.list = function (p) {
     var L = LISTS[p.table], rows = (db()[p.table] || []).filter(L.filter);
     S.view.p.title = L.title.replace("pots", potWord(true));
@@ -1388,7 +1430,7 @@
     goals: {title: "Goal", fields: function () { return [{k: "name", t: "text", l: "Name"}, {k: "target", t: "money", l: "Target"}, {k: "due", t: "date", l: "Target date (optional)"}, {k: "kind", t: "select", l: "Kind", o: [["savings", "Saving for something"], ["house", "House deposit"], ["emergency", "Emergency fund"], ["car", "Car"], ["holiday", "Holiday"], ["other", "Other"]]}, {k: "accounts", t: "accounts", l: "Which accounts count towards it"}, {k: "extra", t: "money", l: "Plus money kept elsewhere (optional)"}, {k: "owners", t: "owners", l: "Whose goal"}, {k: "price", t: "money", l: "House price you're aiming for (house goals)"}, {k: "notes", t: "text", l: "Notes"}]; }, owner: "owners"},
     splits: {title: "Split", fields: function () { return [{k: "name", t: "text", l: "Name (for example Flat bills)"}, {k: "shares", t: "shares", l: "How it's shared"}]; }, owner: null},
     transfers: {title: "Regular payment", fields: function () { return [{k: "name", t: "text", l: "Name (for example Rent share)"}, {k: "amount", t: "money", l: "Amount"}].concat(SCHED()).concat([{k: "fromAccount", t: "account", l: "From your"}, {k: "toAccount", t: "account", l: "Into their", owner: partner()}, {k: "notes", t: "text", l: "Notes"}]); }, owner: "from"},
-    loans: {title: "Money owed", fields: function () { return [{k: "name", t: "text", l: "What for"}, {k: "amount", t: "money", l: "Total"}, {k: "direction", t: "select", l: "Who owes who", o: [["in", shortName(person(partner()).name) + " owes me"], ["out", "I owe " + shortName(person(partner()).name)]]}, {k: "date", t: "date", l: "Date"}, {k: "account", t: "account", l: "Paid from (optional)", optional: true}, {k: "repay", t: "money", l: "Paid back each month"}, {k: "repayFrom", t: "date", l: "First repayment"}, {k: "repayDay", t: "number", l: "Day of the month"}, {k: "notes", t: "text", l: "Notes"}]; }, owner: "loan"},
+    loans: {title: "Money owed", fields: function () { return [{k: "name", t: "text", l: "What for"}, {k: "amount", t: "loanitems", l: "Total"}, {k: "direction", t: "select", l: "Who owes who", o: [["in", shortName(person(partner()).name) + " owes me"], ["out", "I owe " + shortName(person(partner()).name)]]}, {k: "date", t: "date", l: "Date"}, {k: "account", t: "account", l: "Paid from (optional)", optional: true}, {k: "repay", t: "money", l: "Paid back each month"}, {k: "repayFrom", t: "date", l: "First repayment"}, {k: "repayDay", t: "number", l: "Day of the month"}, {k: "notes", t: "text", l: "Notes"}]; }, owner: "loan"},
     gifts: {title: "Gift", fields: function () { return [{k: "name", t: "text", l: "Who for"}, {k: "idea", t: "text", l: "Idea"}, {k: "occasion", t: "text", l: "Occasion (for example Christmas)"}, {k: "date", t: "date", l: "When"}, {k: "limit", t: "money", l: "Spend up to"}, {k: "bought", t: "check", l: "Bought"}, {k: "cost", t: "money", l: "What it cost"}, {k: "notes", t: "text", l: "Notes"}]; }, owner: "person"}
   };
   var EDIT = {};
@@ -1401,10 +1443,17 @@
     if (table === "splits" && id) row.shares = B.sharesAt(db(), id, todayIso());
     if (id && !canEditRow(table, row)) { toast("That belongs to " + (person(row.person || row.from || row.owner).name || "your partner") + ", so only they can change it"); return; }
     if (table === "loans" && row.id) row.direction = row.lender === me() ? "in" : "out";
+    // what an IOU is made of is edited as a draft and saved with it
+    var iou = table === "loans" && id ? B.loans(db(), me(), todayIso()).filter(function (l) { return l.id === id; })[0] : null;
+    if (iou) row.amount = iou.amount;
     // show what it costs today, which may come from a dated price change rather than the first amount
     var nowAmt = null;
     if (id && DATED.test(table) && row.amount !== "" && row.amount !== undefined) { var live = db().byId[id]; nowAmt = live ? B.amountAt(db(), live, todayIso()) : +row.amount; row.amount = nowAmt; }
     EDIT = {table: table, id: id, row: row, orig: JSON.parse(JSON.stringify(row)), nowAmt: nowAmt}; S.ui.onTouched = false;
+    if (table === "loans") {
+      EDIT.items = iou ? iou.items.map(function (x) { return {id: x.id, name: x.name, date: x.date, cost: x.cost === null ? "" : x.cost, share: x.share, note: x.note}; }) : [];
+      EDIT.itemsOrig = JSON.parse(JSON.stringify(EDIT.items)); EDIT.paid = iou ? iou.paid : 0; EDIT.removed = [];
+    }
     go("edit", {title: (id ? "Change " : "New ") + FORMS[table].title.toLowerCase()});
   }
   SCREENS.edit = function () {
@@ -1423,6 +1472,11 @@
       case "number": return input("number", ' inputmode="numeric"');
       case "money": return input("text", ' inputmode="decimal" placeholder="£"');
       case "date": return input("date");
+      case "loanitems":
+        var its = EDIT.items || [], sts = B.itemStates(its, EDIT.paid || 0), bw = iouBorrower(r.direction), tot = B.round(its.reduce(function (t, x) { return t + (+x.share || 0); }, 0));
+        return (sts.length ? '<div class="f" style="font-size:13px;font-weight:600;color:var(--muted);margin-top:12px">What it\'s made of</div><div class="list">' + sts.map(function (x) { return itemRow(x, bw, "itemedit"); }).join("") + "</div>" : "") +
+          (sts.length ? '<div class="row" style="margin-top:8px;padding-top:10px;border-top:1px solid var(--line2);font-weight:800"><span>Total</span><span class="num" id="iouTotal">' + M(tot) + "</span></div>" : input("text", ' inputmode="decimal" placeholder="£"')) +
+          '<button type="button" class="btn dash" data-a="itemnew">Add an item</button>';
       case "pool":
         // an estimate the real bills count against (the flat bills): settled up each bills month, which starts on the day
         // chosen. Turned on (or the day changed), it counts from the bills month going now: never back over months paid
@@ -1515,6 +1569,7 @@
     if (F.owner === "owner") r.owner = r.owner || me();
     if (F.owner === "owners") r.owners = r.owners || me();
     if (F.owner === "from" && !EDIT.id) { r.from = me(); r.to = partner(); }
+    if (t === "loans" && EDIT.items.length) r.amount = B.round(EDIT.items.reduce(function (a, x) { return a + (+x.share || 0); }, 0));
     if (t === "loans") { if (r.direction === "out") { r.lender = partner(); r.borrower = me(); } else { r.lender = me(); r.borrower = partner(); } delete r.direction; if (r.account && (db().byId[r.account] || {}).owner !== r.lender) r.account = ""; }
     if (/bills|income|transfers/.test(t) && !r.start) r.start = now;
     if (/bills|income|transfers/.test(t) && r.unit === "month" && (!r.on || (!EDIT.id && !S.ui.onTouched))) r.on = String(+r.start.slice(8, 10));
@@ -1534,7 +1589,7 @@
         else if (current) put("amounts", Object.assign({}, current, {amount: newAmt}), true);
         else r.amount = newAmt;
       }
-      put(t, r, true); markChecked(r.id); toast("Saved" + (fromToday ? ": the new amount counts from today" : "")); leave();
+      put(t, r, true); if (t === "loans") loanItemsSave(r.id); markChecked(r.id); toast("Saved" + (fromToday ? ": the new amount counts from today" : "")); leave();
     };
     if (amountChanged) {
       openSheet('<h2>From when?</h2><p class="muted">You changed it from ' + M(was) + " to " + M(r.amount) + ". From today, earlier months keep " + M(was) + ". If " + M(was) + " was a mistake, it\'s corrected " + (current ? "from " + esc(B.nice(current.start)) : "for every month") + '.</p><button type="button" class="btn wide" data-a="amtwhen" data-v="today">From today</button><button type="button" class="btn ghost wide" style="margin-top:10px" data-a="amtwhen" data-v="always">It was a mistake</button>');
@@ -1738,6 +1793,26 @@
     lisapaidsave: function () { var raw = ($("#lisaPaid") || {}).value || "", a = +String(raw).replace(/[£,\s]/g, ""); if (raw === "" || isNaN(a)) return; setting("lisa.paidBefore." + S.ui.lisaAcc, B.round(a)); markChecked("lisapaid-" + S.ui.lisaAcc); closeSheet(); toast("Saved"); render(); },
     edit: function (v) { var k = v.split(":"); openEditor(k[0], k[1]); }, "new": function (v) { openEditor(v, null); },
     editsave: function () { saveEditor(); },
+    itemnew: function () { itemSheet(""); }, itemedit: function (v) { itemSheet(v); },
+    itemmode: function (v) { var x = itemRead(); x.mode = v; itemSheet(x.id, x); },
+    itemsave: function () {
+      var x = itemRead(), num2 = function (v) { var n = +String(v).replace(/[£,\s]/g, ""); return isNaN(n) ? NaN : n; };
+      if (!String(x.name || "").trim()) { toast("Say what it was first"); return; }
+      var cost = String(x.cost).trim() === "" ? "" : num2(x.cost); if (cost !== "" && (isNaN(cost) || cost < 0)) { toast("Check the full cost"); return; }
+      var share;
+      if (x.mode === "half" || x.mode === "all") { if (cost === "" || !(cost > 0)) { toast("Type the full cost first"); return; } share = x.mode === "half" ? B.round(cost / 2) : B.round(cost); }
+      else { share = String(x.share).trim() === "" ? NaN : num2(x.share); if (isNaN(share)) { toast("Type what is owed for it"); return; } share = B.round(share); }
+      var row = {id: x.id || newId("li"), name: String(x.name).trim(), date: B.isIso(x.date) ? x.date : "", cost: cost === "" ? "" : B.round(cost), share: share, note: String(x.note || "").trim()}, at = EDIT.items.findIndex(function (i) { return i.id === row.id; });
+      if (at >= 0) EDIT.items[at] = row; else EDIT.items.push(row);
+      closeSheet(); render();
+    },
+    itemdel: function () {
+      var x = S.ui.item || {}, at = EDIT.items.findIndex(function (i) { return i.id === x.id; }); if (at < 0) { closeSheet(); return; }
+      // the last one taken off leaves the IOU as the total it was, to type over
+      if (EDIT.items.length === 1) EDIT.row.amount = B.round(+EDIT.items[0].share || 0);
+      if (EDIT.itemsOrig.some(function (o) { return o.id === x.id; })) EDIT.removed.push(x.id);
+      EDIT.items.splice(at, 1); closeSheet(); render();
+    },
     amtwhen: function (v) { if (S.ui.amtFinish) S.ui.amtFinish(v === "today"); },
     editstop: function () {
       var stored = (tables()[EDIT.table] || []).filter(function (x) { return x.id === EDIT.id; })[0] || EDIT.orig, end = todayIso();
@@ -1931,6 +2006,7 @@
   // the "how often" control re-draws the form so the right questions show
   document.addEventListener("input", function (e) {
     var c = e.target.dataset && e.target.dataset.c;
+    if (e.target.id === "liCost" && S.ui.item && /^(half|all)$/.test(S.ui.item.mode) && $("#liPrev")) { var cc = +String(e.target.value).replace(/[£,\s]/g, "") || 0; $("#liPrev").textContent = M(S.ui.item.mode === "half" ? B.round(cc / 2) : B.round(cc)); }
     if (c === "addnote") S.ui.add.note = e.target.value;
     if (c === "addamt") { var v = e.target.value.replace(/[^\d.]/g, "").replace(/(\..*)\./g, "$1").replace(/^(\d*\.\d{0,2}).*$/, "$1").slice(0, 9); if (v !== e.target.value) e.target.value = v; S.ui.keys = v; }
   });

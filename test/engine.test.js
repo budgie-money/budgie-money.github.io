@@ -1548,5 +1548,46 @@ const tickPay11 = (t, p, d) => { const L0 = B.load(t, d), per = B.periodAt(L0, p
   near("IOU items: a share typed as £1,234.50 is a number", B.loans(db(t => { t.loanItems = [{id: "i6", loan: "sofa", name: "x", share: "£1,234.50"}]; }), "ethan", "2026-11-01")[0].amount, 1234.5);
 }
 
+// --- itemised IOUs: what each item has paid off (derived from the repayments, oldest item first)
+{
+  const mk = (extra, pay, mut) => db(t => { t.loanItems = [
+    {id: "a", loan: "sofa", name: "Sofa", date: "2026-10-20", cost: 230, share: 115},
+    {id: "b", loan: "sofa", name: "Dress", date: "2026-10-22", cost: 18.4, share: 18.4},
+    {id: "c", loan: "sofa", name: "Takeaway", date: "2026-10-25", cost: 40, share: -20}].concat(extra || []);
+    if (pay) t.settlements.push({id: "p1", date: "2026-11-02", from: "sophie", to: "ethan", amount: pay, loan: "sofa", key: "loan:sofa:2026-11-02"}); if (mut) mut(t); });
+  const st = (L, d) => B.loans(L, "ethan", d || "2026-11-03")[0];
+  const sum = (x) => x.items.map(i => i.name + ":" + i.state + ":" + i.left).join(" ");
+  eq("IOU paid: how each is shared is told from the cost and the share", st(mk()).items.map(i => i.how), ["half", "all", "custom"]);
+  near("IOU paid: total £113.40", st(mk()).amount, 113.4);
+  eq("IOU paid: nothing paid back: the £20 the lender owes back already takes off the oldest, and says credit", sum(st(mk())), "Sofa:part:95 Dress:none:18.4 Takeaway:credit:0");
+  eq("IOU paid: with no negative item nothing is started", sum(st(mk(null, 0, t => { t.loanItems.pop(); }))), "Sofa:none:115 Dress:none:18.4");
+  // £100 paid back, plus the £20 the lender owes back, used up oldest first
+  eq("IOU paid: a part payment pays the oldest first and part of the next", sum(st(mk(null, 100))), "Sofa:paid:0 Dress:part:13.4 Takeaway:credit:0");
+  near("IOU paid: what's left on the items adds up to what's left on the IOU", st(mk(null, 100)).items.reduce((t, i) => t + i.left, 0), st(mk(null, 100)).left);
+  near("IOU paid: and the IOU still says £100 paid and £13.40 left", st(mk(null, 100)).paid + st(mk(null, 100)).left, 113.4);
+  eq("IOU paid: paid back in full: everything paid", sum(st(mk(null, 113.4))), "Sofa:paid:0 Dress:paid:0 Takeaway:credit:0");
+  eq("IOU paid: a small payment leaves the first part-paid", sum(st(mk(null, 50))), "Sofa:part:45 Dress:none:18.4 Takeaway:credit:0");
+  // the allocation is the same for both of them
+  eq("IOU paid: Sophie sees the same", sum(B.loans(mk(null, 100), "sophie", "2026-11-03")[0]), sum(st(mk(null, 100))));
+  // an item dated earlier is paid first, whatever order they were added in
+  eq("IOU paid: dated earlier means paid first", B.loans(db(t => { t.loanItems = [{id: "x", loan: "sofa", name: "Later", date: "2026-10-30", share: 100}, {id: "y", loan: "sofa", name: "Earlier", date: "2026-10-01", share: 100}]; t.settlements.push({id: "p", date: "2026-11-02", from: "sophie", to: "ethan", amount: 100, loan: "sofa"}); }), "ethan", "2026-11-03")[0].items.map(i => i.name + ":" + i.state).join(" "), "Earlier:paid Later:none");
+  eq("IOU paid: no date: after dated ones, in the order added", B.loans(db(t => { t.loanItems = [{id: "x", loan: "sofa", name: "First", share: 10}, {id: "y", loan: "sofa", name: "Second", share: 10}, {id: "z", loan: "sofa", name: "Dated", date: "2026-10-01", share: 10}]; }), "ethan", "2026-11-03")[0].items.map(i => i.name).join(" "), "Dated First Second");
+  // editing an item after payments works it out again
+  const edited = mk(null, 100, t => { t.loanItems.find(i => i.id === "a").share = 150; });
+  eq("IOU paid: raising an item's share after payments re-works it", sum(st(edited)), "Sofa:part:30 Dress:none:18.4 Takeaway:credit:0");
+  near("IOU paid: and the IOU is £48.40 left", st(edited).left, 48.4);
+  const gone = mk(null, 100, t => { t.loanItems.find(i => i.id === "a").deleted = true; });
+  eq("IOU paid: taking an item off works it out again too", sum(st(gone)), "Dress:paid:0 Takeaway:credit:0");
+  // a repayment as of an earlier date only counts what had been paid by then
+  eq("IOU paid: as it was before the payment (only the £20 the lender owes back has been used)", sum(st(mk(null, 100), "2026-11-01")), "Sofa:part:95 Dress:none:18.4 Takeaway:credit:0");
+  // an odd penny: half of £18.41 is £9.21, and says half
+  eq("IOU paid: half of an odd penny rounds up and still says half", B.loans(db(t => { t.loanItems = [{id: "x", loan: "sofa", name: "Odd", cost: 18.41, share: 9.21}]; }), "ethan", "2026-11-03")[0].items[0].how, "half");
+  eq("IOU paid: an item with no cost is custom", B.loans(db(t => { t.loanItems = [{id: "x", loan: "sofa", name: "Odd", share: 9.21}]; }), "ethan", "2026-11-03")[0].items[0].how, "custom");
+  // overpaid: nothing goes below paid
+  eq("IOU paid: more than it comes to leaves everything paid", sum(st(mk(null, 500))), "Sofa:paid:0 Dress:paid:0 Takeaway:credit:0");
+  // a loan with no items is untouched
+  eq("IOU paid: no items, no states", B.loans(db(), "ethan", "2026-11-03")[0].items, []);
+}
+
 console.log(fails ? fails + " failed, " + passes + " passed" : "All " + passes + " passed");
 process.exit(fails ? 1 : 0);

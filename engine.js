@@ -2009,10 +2009,28 @@
     });
     return {own: round(own), owe: round(owe), total: round(own - owe), rows: rows};
   }
+  // What each item of a loan has paid off, worked out from what has been paid back so far (nothing is stored, so editing an
+  // item or a repayment works it all out again). Items are in order: oldest first (by date, then as they were added). What was
+  // paid back, and anything a negative item takes off (something the lender owes back), is used up on the others in that order:
+  // paid (all of it), part (some left) or none (not started). A negative item is "credit": it reduces the total, it isn't paid.
+  // how: half (the share is half the cost), all (the whole cost) or custom
+  function loanItemStates(l, paid) {
+    var its = (Array.isArray(l) ? l : l.items || []).map(function (x, i) { return {x: x, i: i}; }).sort(function (a, b) { var d = a.x.date || "9999", e = b.x.date || "9999"; return d < e ? -1 : d > e ? 1 : a.i - b.i; }).map(function (o) { return o.x; }), credit = Math.max(0, +paid || 0);
+    its.forEach(function (x) { if ((+x.share || 0) < 0) credit += -(+x.share); });
+    return its.map(function (x) {
+      var share = round(+x.share || 0), cost = x.cost === "" || x.cost === undefined || x.cost === null ? null : +x.cost, out = {id: x.id, name: String(x.name || ""), date: x.date || "", cost: cost, share: share, note: String(x.note || "")};
+      out.how = cost !== null && cost > 0 && share === round(cost / 2) ? "half" : cost !== null && cost > 0 && share === round(cost) ? "all" : "custom";
+      if (share < 0) { out.state = "credit"; out.paid = 0; out.left = 0; return out; }
+      var use = Math.min(credit, share); credit = round(credit - use);
+      out.paid = round(use); out.left = round(share - use);
+      out.state = out.left < 0.005 ? "paid" : use > 0.004 ? "part" : "none";
+      return out;
+    });
+  }
   function loans(db, p, date) {
     return db.loans.filter(function (l) { return l.lender === p || l.borrower === p; }).map(function (l) {
       var paid = loanPaid(db, l, date), left = round((+l.amount || 0) - paid);
-      var items = (l.items || []).map(function (x) { return {id: x.id, name: String(x.name || ""), date: x.date || "", cost: x.cost === "" || x.cost === undefined ? null : +x.cost, share: +x.share || 0, note: String(x.note || "")}; });
+      var items = loanItemStates(l, paid);
       return {id: l.id, name: l.name, lender: l.lender, borrower: l.borrower, amount: +l.amount || 0, notes: String(l.notes || ""), items: items, paid: paid, left: left, pct: l.amount ? Math.round(paid / l.amount * 100) : 0, plan: loanPlan(db, l).filter(function (r) { return !r.paid; }).map(function (r) { return Object.assign({}, r, {amount: r.left}); })};
     });
   }
@@ -2055,7 +2073,7 @@
     budgetState: budgetState, balances: balances, flows: flows, todo: todo, between: between, today: today, coming: coming,
     calendar: calendar, pots: pots, monthView: monthView, year: year, kindOf: kindOf, newMoney: newMoney, kinds: kinds,
     spendWeek: spendWeek, noSpend: noSpend, savingRates: savingRates, forecast: forecast, goals: goals, lisa: lisa, checks: checks, netWorth: netWorth, loans: loans,
-    yearly: yearly, yearReview: yearReview, taxYearStart: taxYearStart,
+    itemStates: loanItemStates, yearly: yearly, yearReview: yearReview, taxYearStart: taxYearStart,
     summary: summary, shareOf: shareOf, myShare: myShare, owedAt: owedAt, amountAt: amountAt, setting: setting, partnerOf: partnerOf, mainOf: mainOf, fallbackOf: fallbackOf,
     accountsOf: accountsOf, accName: accName, ticked: ticked, person: person, startOf: startOf, moveDate: moveDate, budgetsOf: budgetsOf, budgetsIn: budgetsOf, reimbursements: reimbursements, startBalances: startBalances,
     poolDate: poolDate, poolSegs: poolSegs, poolChange: poolChange, poolStart: poolStart, poolNext: poolNext, poolLate: poolLate, poolMonth: poolMonth, poolMonths: poolMonths, poolMonthAt: poolMonthAt, pooledOn: pooledOn, poolOn: poolOn, poolCounts: poolCounts, poolOffer: poolOffer, poolRecord: poolRecord, poolToFreeze: poolToFreeze, pools: pools, isPoolTx: isPoolTx, sharesAt: sharesAt, dayRange: dayRange,
