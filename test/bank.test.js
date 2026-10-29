@@ -77,7 +77,10 @@ function monzoRoute(method, url, params) {
   if (u.pathname === "/balance") return q.get("account_id") === "acc_00009main" ? send(200, monzo.balance) : send(404, {});
   if (u.pathname === "/pots") return send(200, {pots: monzo.pots});
   if (u.pathname === "/transactions") {
-    let list = monzo.txns.slice().sort((a, b) => a.created < b.created ? -1 : 1);
+    // (each payment is in one account's feed: the current account's, unless it names another, like a pot's own ledger)
+    const accId = q.get("account_id");
+    if (accId !== "acc_00009main" && !(monzo.ledgers || {})[accId]) return send(403, {code: "forbidden.insufficient_permissions"});
+    let list = monzo.txns.filter(t => (t.account_id || "acc_00009main") === accId).sort((a, b) => a.created < b.created ? -1 : 1);
     const since = q.get("since"), limit = Math.min(100, +q.get("limit") || 30);
     if (since && /^tx_/.test(since)) { const i = list.findIndex(t => t.id === since); list = list.slice(i + 1); }
     else if (since) list = list.filter(t => t.created > since);
@@ -2038,6 +2041,65 @@ const found = [].concat(leaks("responses", responses.join("\n")), leaks("logs", 
 ok("no token, refresh token, client secret or code in any response, log, the sheet or the status", found.length === 0, found);
 ok("no secret anywhere in Script Properties (editors can see those)", Object.keys(F.env.props).every(k => !secrets.some(x => F.env.props[k].indexOf(x) >= 0)));
 ok("secrets only under BANK_TOKEN_ / BANK_CLIENT_ / BANK_OAUTH_ in the owner's User Properties", Object.keys(F.env.userProps).every(k => /^BANK_(TOKEN|TOKEN_NEXT|CLIENT|OAUTH)_/.test(k)));
+{
+  // Y1: money in that nothing planned (selling something) is kept as a payment of less than nothing, for no budget, so it
+  // shows in Recent and in its account: once, however often it's read, and not if it's one the plan already has
+  freshMonzo(); NOW = RealDate.parse("2026-11-17T12:00:00Z");
+  monzo.txns = monzoData(planned).concat([
+    mtx("tx_y1_sale", "2026-11-16", 4000, {counterparty: {name: "A BUYER"}, category: "general", time: "10:00:00"}),
+    mtx("tx_y1_rent", "2026-11-13", 50000, {counterparty: {name: "RENT SHARE"}, category: "transfers", time: "10:00:00"})
+  ]);
+  const G = bankEnv(); connectMonzo(G, {acc_00009main: "e-main"});
+  const inRows = () => grow(G, "transactions").filter(r => /tx_y1_/.test(r.id));
+  ok("Y1: money in that isn't planned is kept, for no budget, in the account it went into", inRows().length === 1 && inRows()[0].id === "bk-monzo-tx_y1_sale" && +inRows()[0].amount === -40 && !inRows()[0].budget && inRows()[0].account === "e-main" && inRows()[0].note === "A BUYER" && String(inRows()[0].review) !== "true", inRows());
+  ok("Y1: a regular payment to you (Sophie's rent share) is not, as the plan has it", !inRows().some(r => /rent/.test(r.id)), inRows());
+  NOW += 30 * 60000; G.c.bankPoll(); G.c.bankPoll();
+  ok("Y1: reading again doesn't add it twice", inRows().length === 1, inRows());
+  const dB = B.load(G.c.allTables_(), "2026-11-17"), cashIn = B.balances(dB, "2026-11-17");
+  ok("Y1: the engine counts it as money in to the account, and as no spending", B.flows(dB, "2026-11-15", "2026-11-17").some(f => f.account === "e-main" && f.amount === 40) && B.todo(dB, "ethan", "2026-11-17").every(x => !/A BUYER/.test(x.what + x.why)), B.flows(dB, "2026-11-15", "2026-11-17"));
+  // dismissed on a phone: it stays dismissed
+  G.call({key: G.kE, ops: [{op: "delete", table: "transactions", id: "bk-monzo-tx_y1_sale"}]});
+  NOW += 30 * 60000; G.c.bankPoll();
+  ok("Y1: one dismissed on the phone stays dismissed", grow(G, "transactions").find(r => r.id === "bk-monzo-tx_y1_sale").deleted === true);
+}
+{
+  // PC: a pot with virtual cards (the Bills pot) pays by card from its own ledger account, so those payments are only in
+  // the pot's own feed (seen in Ethan's real feed: a Klarna payment on the Bills pot's card, nothing in the account's).
+  // Budgie finds the ledger from the pot's moves in the account's feed, reads the pot's feed too, and takes only its card
+  // payments: a planned bill paid by the pot's card is the bill, anything else is a payment from the pot. The pot's own
+  // copy of a move isn't a second move, and the ledger is remembered for a read with no move in it.
+  freshMonzo(); NOW = RealDate.parse("2026-11-07T20:00:00Z");
+  const pots0 = monzo.pots; monzo.pots = pots0.map(x => x.id === "pot_bills" ? Object.assign({}, x, {has_virtual_cards: true, available_for_bills: true}) : x);
+  monzo.ledgers = {acc_00009potbills: true};
+  const led = {account_id: "acc_00009potbills"};
+  monzo.txns = monzoData(planned).concat(
+    billsWd("tx_pc_wd", "2026-11-02", 1900, "monzo-paid", "06:00:00"), monzoPaid("tx_pc_max", "2026-11-02", 1900, "Max", "06:00:00"),
+    mtx("tx_pc_mirror", "2026-11-02", 1900, Object.assign({scheme: "uk_retail_pot", category: "transfers", description: "pot_bills", time: "06:00:00", metadata: {pot_withdrawal_id: "potwd_tx_pc_wd"}}, led)),
+    mtx("tx_pc_klarna", "2026-11-06", -4666, Object.assign({scheme: "mastercard", category: "general", merchant: merchant("vonhaus.com", "general"), description: "KLARNA*VONHAUS.COM", time: "23:33:11", metadata: {eligible_for_pot_cover: "true"}}, led)),
+    mtx("tx_pc_voxi", "2026-11-05", -1500, Object.assign({scheme: "mastercard", category: "bills", merchant: merchant("VOXI", "bills"), description: "VOXI", time: "08:00:00"}, led)));
+  const G = bankEnv(t => { t.meta.push({key: "pot.pairFromAt", value: "1"}); t.bills.push({id: "e-voxi", person: "ethan", name: "VOXI phone", amount: 15, account: "e-bills", unit: "month", on: "5", start: "2026-10-05"}); });
+  connectMonzo(G, {acc_00009main: "e-main", pot_bills: "e-bills", pot_food: "e-food"});
+  const tx = () => grow(G, "transactions"), live = (r) => !!r && r.deleted !== true;
+  const kl = tx().find(r => r.id === "bk-monzo-tx_pc_klarna");
+  ok("PC: a payment on the Bills pot's card comes in, from the Bills pot", live(kl) && kl.account === "e-bills" && kl.amount === 46.66, kl);
+  ok("PC: a planned bill paid by the pot's card is the bill (no payment row)", !live(tx().find(r => r.id === "bk-monzo-tx_pc_voxi")), tx().find(r => r.id === "bk-monzo-tx_pc_voxi"));
+  ok("PC: the pot's own copy of a move isn't brought in", !grow(G, "moves").some(m => /tx_pc_mirror/.test(m.id) && m.deleted !== true) && !live(tx().find(r => /tx_pc_mirror/.test(r.id))));
+  const st = JSON.parse(G.env.props.BANK_STATUS_ethan);
+  ok("PC: the pot's ledger is remembered", st.potLedgers && st.potLedgers.pot_bills === "acc_00009potbills", st.potLedgers);
+  // a later card payment, with no pot move in the account's feed in the last 35 days: still found
+  NOW = RealDate.parse("2026-12-20T20:00:00Z");
+  monzo.txns.push(mtx("tx_pc_later", "2026-12-20", -999, Object.assign({scheme: "mastercard", category: "general", merchant: merchant("Garden Centre", "shopping"), time: "18:00:00"}, led)));
+  G.c.bankPoll();
+  const later = tx().find(r => r.id === "bk-monzo-tx_pc_later");
+  ok("PC: a later pot card payment is found from the remembered ledger", live(later) && later.account === "e-bills" && later.amount === 9.99, later);
+  // a pot feed Monzo won't share: skipped, and the rest of the read still counts
+  delete monzo.ledgers.acc_00009potbills;
+  NOW += 20 * 60000; monzo.txns.push(mtx("tx_pc_main2", "2026-12-20", -500, {merchant: merchant("Corner Shop", "groceries"), category: "groceries", time: "19:30:00"}));
+  G.c.bankPoll();
+  const st2 = JSON.parse(G.env.props.BANK_STATUS_ethan);
+  ok("PC: a pot feed that can't be read doesn't stop the read", live(tx().find(r => r.id === "bk-monzo-tx_pc_main2")) && !st2.needsReconnect && Array.isArray(st2.potErrors), st2);
+  monzo.pots = pots0; monzo.ledgers = {};
+}
 // an error from the bank is shown without anything secret in it
 ok("errors are scrubbed", c.bankScrub_("sophie", "failed Bearer " + SECRET.starling + " token=" + SECRET.starling).indexOf(SECRET.starling) < 0);
 

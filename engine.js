@@ -6,7 +6,7 @@
   else root.Budgie = factory();
 })(this, function () {
   "use strict";
-  var VERSION = "1.4.19";
+  var VERSION = "1.4.20";
 
   // ---------- dates ----------
   function D(s) { var p = String(s).split("-"); return new Date(Date.UTC(+p[0], +p[1] - 1, +p[2])); }
@@ -1093,7 +1093,13 @@
     });
     // 2. paid from the wrong place, or over budget (all periods since tracking started)
     var qName = person(db, partnerOf(db, p)).name || "your partner";
-    var backWhy = function (names, to, theirs, mine) { return theirs ? "Your share of " + names + " " + qName + " paid for is settled up from " + to + (mine ? ", and you paid for some from there too." : ".") : "You paid for " + names + " from " + to + "."; };
+    // (paid from somewhere else than the budget's own pot: the pot puts it back. Paid on a credit account like Flex: the pot pays that off)
+    var backWhy = function (names, toId, theirs, mine, fromId) {
+      var to = accName(db, toId), toAcc = db.byId[toId] || {};
+      if (theirs) return "Your share of " + names + " " + qName + " paid for is settled up from " + to + (mine ? ", and you paid for some from there too." : ".");
+      if (toAcc.kind === "credit") return "You paid for " + names + " on " + to + ", which is credit. This pays it off.";
+      return "You paid for " + names + " from " + to + (fromId ? ", not " + accName(db, fromId) : "") + ". This puts the money back.";
+    };
     // (when the main account can't spare it, the fallback pot puts the share back until you settle up)
     var lentWhy = function (names, to, from) { return qName + "'s share of " + names + " you paid from " + to + " comes back into " + accName(db, main) + " when you settle up." + (from === accName(db, fb) && from !== accName(db, main) ? " Until then it comes from " + from + ", and your next pay tops the " + from + " back up." : ""); };
     // what the budgets kept in the main account still have to spend before payday isn't spare, and nor is what its
@@ -1104,7 +1110,7 @@
     mainKeep = round(mainKeep); mainOut = round(Math.max(0, -mainOut));
     periods(db, p, st, addDays(today, 1)).forEach(function (pk) {
       reimbursements(db, p, pk, today).forEach(function (g) {
-        if (g.kind === "back") plan(g.key, g.from, g.to, g.amount, "", backWhy(g.name, accName(db, g.to), g.theirs, g.mine), {partial: true, names: [g.name], theirs: !!g.theirs, mine: !!g.mine});
+        if (g.kind === "back") plan(g.key, g.from, g.to, g.amount, "", backWhy(g.name, g.to, g.theirs, g.mine, g.from), {partial: true, names: [g.name], theirs: !!g.theirs, mine: !!g.mine});
         else if (g.kind === "lent") {
           // your partner's share of what a pot paid goes back into the pot from the main account, as long as the main account
           // can spare it (beyond what its own budgets and bills still need); else from the fallback pot, if it has it
@@ -1129,7 +1135,7 @@
       x.why = x.over ? "You went over your " + joinNames(x.names) + " budget" + (x.names.length > 1 ? "s" : "") + (x.to === main ? "" : " paying from " + x.toName) + ". Your next pay tops the " + x.fromName + " back up."
         : x.refund ? "Refunds for " + joinNames(x.names) + " came into " + x.fromName + "."
         : x.lent ? lentWhy(joinNames(x.names), x.toName, x.fromName)
-        : backWhy(joinNames(x.names), x.toName, x.theirs, x.mine);
+        : backWhy(joinNames(x.names), x.to, x.theirs, x.mine, x.from);
     });
     items = grouped;
     // 3. a pot that will run short before payday
