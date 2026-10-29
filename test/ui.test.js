@@ -1078,6 +1078,40 @@ const fails = [], check = (name, cond, extra) => { if (cond) console.log("ok", n
     await page.context().close();
   }
 
+
+  // ===== goals: progress, the date it's on course for, where this pay period's money comes from, and straight-away money
+  {
+    page = await newPage("2026-11-02");
+    const ex = (key, ops) => page.request.post("http://localhost:" + PORT + "/exec", {data: JSON.stringify({key, ops})});
+    const dump = async t => (await (await page.request.get("http://localhost:" + PORT + "/dump?" + t)).json());
+    await ex(kE12, [{op: "put", table: "goals", row: {id: "g-rainy", owners: "ethan", name: "Rainy day", target: 5000, due: "2027-12-31", accounts: "e-isa", kind: "savings"}}]);
+    await page.goto(links.ethan); await hiE(page);
+    await page.evaluate(() => { document.querySelector("#sheets").innerHTML = ""; window.BudgieApp.go("goals"); }); await page.waitForTimeout(100);
+    const gc = await page.innerText('[data-v="goals:g-rainy"]');
+    check("a goal card says how far it's got, the date it's on course for and what goes in this pay period", /Rainy day/.test(gc) && /£0 of £5,000/.test(gc) && /On course for \w{3} 20\d\d at £[\d,]+ a month/.test(gc) && /This pay period\s*£[\d,]+ in/.test(gc) && /What's left on payday/.test(gc), gc);
+    await shot(page, "goal-1-card", true);
+    await page.click('[data-v="goals:g-rainy"]'); await page.waitForTimeout(100);
+    check("the goal's own page shows the same, and the straight-away choice (off)", /On course for/.test(await page.textContent("main")) && (await page.isChecked('[data-f="directOn"]')) === false && /Send one-off money and repayments here straight away/.test(await page.textContent("main")));
+    await page.check('[data-f="directOn"]'); await page.click('[data-a="editsave"]'); await page.waitForTimeout(500);
+    const st = (await dump("settings")).find(r => r.key === "goal.direct.g-rainy" && r.person === "ethan");
+    check("turning it on is saved as the person's setting, from today", st && st.value === "2026-11-02", st);
+    // one-off money in: To do suggests moving it into the goal's first account
+    await ex(kE12, [{op: "put", table: "transactions", row: {id: "t-in1", date: "2026-11-02", person: "ethan", amount: -75, budget: "", account: "e-main", note: "Sold a bike"}}]);
+    await page.evaluate(() => window.BudgieApp.sync(true)); await page.waitForTimeout(700);
+    await page.evaluate(() => window.BudgieApp.go("today")); await page.waitForTimeout(100);
+    const td = T(await page.textContent("main"));
+    check("To do suggests moving the one-off money into the goal's account", /Move £75\.00 from Main account to Cash ISA/.test(td) && /Rainy day/.test(td), td.slice(0, 500));
+    await page.evaluate(() => window.BudgieApp.go("goals")); await page.waitForTimeout(80);
+    const gc2 = (await page.innerText('[data-v="goals:g-rainy"]')).replace(/\s+/g, " ");
+    check("and the goal says it was sent straight there, still to move", /One-off money in, sent straight here · to move/.test(gc2), gc2);
+    await page.evaluate(() => window.BudgieApp.go("today")); await page.waitForTimeout(80);
+    await page.click('[data-a="tick"], input[data-c="tick"]'); await page.waitForTimeout(1200);
+    check("ticking it moves the money and To do stops asking", !/Move £75\.00 from Main account to Cash ISA/.test(T(await page.textContent("main"))));
+    const mvd = (await dump("moves")).find(r => /^goal:g-rainy:/.test(r.key));
+    check("as a move into the goal's account", mvd && mvd.to === "e-isa" && mvd.from === "e-main" && +mvd.amount === 75, mvd);
+    await page.context().close();
+  }
+
   // ===== polish 2026-10-27 (1.4.15): on every screen and sheet, at 320, 384 and 412px, with Larger text and with the
   // phone's text at 130%, no button's text runs past its edge, no one-line button wraps, no row of buttons is ragged
   // (all on one line, even lines, or one under another) and nothing is wider than the screen. Long names, big amounts.
@@ -1140,7 +1174,7 @@ const fails = [], check = (name, cond, extra) => { if (cond) console.log("ok", n
     const screens = ["today", "money", "add", "partner", "more", "payday", "pots", "bills", "goals", "lisa", "house", "networth", "debts", "insights", "gifts", "settings", "themes", "bank", "review", "linked", "emailset", "sharing", "sync", "importcsv", "list:income", "list:budgets", "list:accounts", "list:splits"];
     // [screen, what to tap for a sheet or form] (each tap is a data-a, and data-v if given)
     const taps = [["add", "adddatepick"], ["add", "addsplit2"], ["add", "addmode:bill"], ["today", "who"], ["payday", "payedit"], ["pots", "potcheck"], ["partner", "settle"], ["lisa", "lisapaid"], ["bank", "bankoff"], ["review", "revmore"], ["linked", "applink:peckish"],
-      ["list:budgets", "edit"], ["list:income", "new:income"], ["bills", "new:bills"], ["bills", "edit"], ["list:accounts", "new:accounts"], ["list:splits", "new:splits"], ["list:transfers", "new:transfers"], ["debts", "new:loans"], ["debts", "new:loans>itemnew"], ["debts", "edit>itemedit"], ["debts", "edit>itemedit>itemmode:custom"], ["goals", "new:goals"], ["gifts", "new:gifts"], ["list:budgets", "new:budgets"], ["money", "outsort:pot"], ["money", "outrow"]];
+      ["list:budgets", "edit"], ["list:income", "new:income"], ["bills", "new:bills"], ["bills", "edit"], ["list:accounts", "new:accounts"], ["list:splits", "new:splits"], ["list:transfers", "new:transfers"], ["debts", "new:loans"], ["debts", "new:loans>itemnew"], ["debts", "edit>itemedit"], ["debts", "edit>itemedit>itemmode:custom"], ["goals", "new:goals"], ["goals", "edit"], ["gifts", "new:gifts"], ["list:budgets", "new:budgets"], ["money", "outsort:pot"], ["money", "outrow"]];
     const found = {};
     for (const [w, size, z] of [[320, "normal", 1], [320, "larger", 1], [384, "normal", 1], [384, "larger", 1], [412, "normal", 1], [412, "larger", 1], [384, "normal", 1.3], [412, "normal", 1.3], [295, "normal", 1]]) {
       const tag = w + "px " + size + (z !== 1 ? " text " + z * 100 + "%" : "");

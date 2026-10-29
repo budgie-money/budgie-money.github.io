@@ -912,10 +912,25 @@
   var isPoolBill = function (id) { var b = db().byId[id]; return !!b && db().bills.indexOf(b) >= 0 && B.poolOn(db(), b); };
 
   // ----- Goals
-  function goalCard(g) {
-    var extra = "";
+  // a goal: how far it's got, the date it's on course for at the current pace, and where this pay period's money for it comes from
+  function monthsWord(days) { var m = Math.round(Math.abs(days) / 30.44); return m < 1 ? "a few weeks" : m === 1 ? "1 month" : m < 24 ? m + " months" : Math.round(m / 12 * 10) / 10 + " years"; }
+  function goalBody(g) {
+    var d = db(), p = me(), now = todayIso(), pr = B.goalProgress(d, p, g.id, now), fl = B.goalFlow(d, p, g.id, now), extra = "";
     if (g.kind === "emergency") { var ess = essentials(); if (ess) extra = '<div class="small muted">Three months of essentials would be about ' + M0(ess * 3) + ".</div>"; }
-    return '<button type="button" class="card li" style="display:block;text-align:left;padding:16px" data-a="edit" data-v="goals:' + esc(g.id) + '"><div class="row"><span style="font-weight:700">' + esc(g.name) + "</span>" + num(g.pct + "%") + '</div><div style="margin:8px 0 6px">' + bar(g.pct, null, "var(--k-save)") + '</div><div class="row small"><span class="num" style="font-weight:600">' + M0(g.saved) + " of " + M0(g.target) + '</span><span class="muted">' + (g.due ? "by " + esc(new Date(String(g.due).slice(0, 10) + "T12:00:00").toLocaleDateString("en-GB", {month: "short", year: "numeric"})) : "") + "</span></div>" + extra + "</button>";
+    var course = "";
+    if (pr) {
+      if (pr.reached) course = '<span class="good" style="font-weight:600">Reached</span>';
+      else if (pr.eta) course = "On course for " + esc(monthYear(pr.eta)) + " at " + M0(pr.perMonth) + " a month" + (pr.dueGap !== null ? (pr.dueGap <= 0 ? ", in time" : ", " + monthsWord(pr.dueGap) + " after your date") : "");
+      else if (g.target > 0) course = "No date yet: nothing is going in at the moment";
+      if (pr.needed !== null && pr.dueGap !== null && pr.dueGap > 0) course += '<br><span class="muted">Needs ' + M0(pr.needed) + " a month to be there by " + esc(monthYear(g.due)) + "</span>";
+    }
+    var joint = fl && String((d.byId[g.id] || {}).owners || "").split(/[,\s]+/).filter(Boolean).length > 1;
+    var flow = fl && fl.lines.length ? '<div class="row small" style="margin-top:10px;font-weight:600"><span>' + (joint ? "Your part this pay period" : "This pay period") + "</span>" + num(M0(fl.total) + " in") + "</div>" + fl.lines.map(function (l) { return '<div class="row tiny muted" style="padding-top:2px"><span>' + esc(l.label) + (l.names && l.names.length ? " (" + esc(l.names.join(", ")) + ")" : "") + (l.kind === "direct-repaid" || l.kind === "direct-oneoff" ? (l.done ? "" : " · to move") : "") + "</span><span>" + M(l.amount) + "</span></div>"; }).join("") : "";
+    return '<div class="row"><span style="font-weight:700">' + esc(g.name) + "</span>" + num(g.pct + "%") + '</div><div style="margin:8px 0 6px">' + bar(g.pct, null, "var(--k-save)") + '</div><div class="row small"><span class="num" style="font-weight:600">' + M0(g.saved) + " of " + M0(g.target) + '</span><span class="muted">' + (g.due ? "by " + esc(monthYear(String(g.due).slice(0, 10))) : "") + "</span></div>" +
+      (course ? '<div class="small" style="margin-top:6px">' + course + "</div>" : "") + extra + flow;
+  }
+  function goalCard(g) {
+    return '<button type="button" class="card li" style="display:block;text-align:left;padding:16px" data-a="edit" data-v="goals:' + esc(g.id) + '">' + goalBody(g) + "</button>";
   }
   function essentials() {
     var d = db(), p = me(), per = B.periodAt(d, p, todayIso()), pl = B.planFor(d, p, per), t = 0;
@@ -1444,7 +1459,7 @@
     income: {title: "Money coming in", fields: function () { return [{k: "name", t: "text", l: "Name"}, {k: "amount", t: "money", l: "Amount (after tax)"}].concat(SCHED()).concat([{k: "account", t: "account", l: "Goes into"}, {k: "isPay", t: "check", l: "This is my pay (it sets my pay periods)"}, {k: "notes", t: "text", l: "Notes"}]); }, owner: "person"},
     budgets: {title: "Budget", fields: function () { return [{k: "name", t: "text", l: "Name"}, {k: "amount", t: "money", l: "Amount each pay period (leave empty for whatever is left)"}, {k: "mode", t: "select", l: "How it works", info: "modes", o: [["daily", "Day to day"], ["weekly", "Weekly (food shops)"], ["oneoff", "One-offs"], ["saving", "Saving on payday"], ["remainder", "Whatever is left"]]}, {k: "account", t: "account", l: "Kept in", all: true}, {k: "carry", t: "unspent"}, {k: "start", t: "date", l: "Starts (optional)"}, {k: "end", t: "date", l: "Ends (optional)"}]; }, owner: "person"},
     accounts: {title: "Account", fields: function () { return [{k: "name", t: "text", l: "Name"}, {k: "kind", t: "select", l: "Kind", o: [["main", "Main account"], ["pot", "Pot or Space"], ["saving", "Savings pot"], ["isa", "ISA"], ["lisa", "Lifetime ISA"], ["pension", "Pension"], ["credit", "Credit or overdraft"]]}, {k: "purpose", t: "text", l: "What it's for"}, {k: "fallback", t: "check", l: "Covers going over budget (only one should)"}, {k: "order", t: "number", l: "Order on screen"}]; }, owner: "owner"},
-    goals: {title: "Goal", fields: function () { return [{k: "name", t: "text", l: "Name"}, {k: "target", t: "money", l: "Target"}, {k: "due", t: "date", l: "Target date (optional)"}, {k: "kind", t: "select", l: "Kind", o: [["savings", "Saving for something"], ["house", "House deposit"], ["emergency", "Emergency fund"], ["car", "Car"], ["holiday", "Holiday"], ["other", "Other"]]}, {k: "accounts", t: "accounts", l: "Which accounts count towards it"}, {k: "extra", t: "money", l: "Plus money kept elsewhere (optional)"}, {k: "owners", t: "owners", l: "Whose goal"}, {k: "price", t: "money", l: "House price you're aiming for (house goals)"}, {k: "notes", t: "text", l: "Notes"}]; }, owner: "owners"},
+    goals: {title: "Goal", fields: function () { return [{k: "name", t: "text", l: "Name"}, {k: "target", t: "money", l: "Target"}, {k: "due", t: "date", l: "Target date (optional)"}, {k: "kind", t: "select", l: "Kind", o: [["savings", "Saving for something"], ["house", "House deposit"], ["emergency", "Emergency fund"], ["car", "Car"], ["holiday", "Holiday"], ["other", "Other"]]}, {k: "accounts", t: "accounts", l: "Which accounts count towards it"}, {k: "extra", t: "money", l: "Plus money kept elsewhere (optional)"}, {k: "owners", t: "owners", l: "Whose goal"}, {k: "price", t: "money", l: "House price you're aiming for (house goals)"}, {k: "directOn", t: "directgoal"}, {k: "notes", t: "text", l: "Notes"}]; }, owner: "owners"},
     splits: {title: "Split", fields: function () { return [{k: "name", t: "text", l: "Name (for example Flat bills)"}, {k: "shares", t: "shares", l: "How it's shared"}]; }, owner: null},
     transfers: {title: "Regular payment", fields: function () { return [{k: "name", t: "text", l: "Name (for example Rent share)"}, {k: "amount", t: "money", l: "Amount"}].concat(SCHED()).concat([{k: "fromAccount", t: "account", l: "From your"}, {k: "toAccount", t: "account", l: "Into their", owner: partner()}, {k: "notes", t: "text", l: "Notes"}]); }, owner: "from"},
     loans: {title: "Money owed", fields: function () { return [{k: "name", t: "text", l: "What for"}, {k: "amount", t: "loanitems", l: "Total"}, {k: "direction", t: "select", l: "Who owes who", o: [["in", shortName(person(partner()).name) + " owes me"], ["out", "I owe " + shortName(person(partner()).name)]]}, {k: "date", t: "date", l: "Date"}, {k: "account", t: "account", l: "Paid from (optional)", optional: true}, {k: "repay", t: "money", l: "Paid back each month"}, {k: "repayFrom", t: "date", l: "First repayment"}, {k: "repayDay", t: "number", l: "Day of the month"}, {k: "notes", t: "text", l: "Notes"}]; }, owner: "loan"},
@@ -1463,6 +1478,7 @@
     // what an IOU is made of is edited as a draft and saved with it
     var iou = table === "loans" && id ? B.loans(db(), me(), todayIso()).filter(function (l) { return l.id === id; })[0] : null;
     if (iou) row.amount = iou.amount;
+    if (table === "goals" && id) row.directOn = !!B.parseDate(getSetting("goal.direct." + id, ""));
     // show what it costs today, which may come from a dated price change rather than the first amount
     var nowAmt = null;
     if (id && DATED.test(table) && row.amount !== "" && row.amount !== undefined) { var live = db().byId[id]; nowAmt = live ? B.amountAt(db(), live, todayIso()) : +row.amount; row.amount = nowAmt; }
@@ -1475,6 +1491,7 @@
   }
   SCREENS.edit = function () {
     var F = FORMS[EDIT.table], r = EDIT.row, html = "";
+    if (EDIT.table === "goals" && EDIT.id) { var gg = B.goals(db(), me(), todayIso()).filter(function (x) { return x.id === EDIT.id; })[0]; if (gg) html += '<div style="padding-bottom:6px;border-bottom:1px solid var(--line2);margin-bottom:4px">' + goalBody(gg) + "</div>"; }
     F.fields().forEach(function (f) { html += field(f, r); if (f.k === "amount" && EDIT.id && DATED.test(EDIT.table) && !(EDIT.table === "budgets" && r.mode === "remainder")) html += changesBlock(); });
     var canStop = EDIT.id && /bills|income|transfers|budgets/.test(EDIT.table);
     html += '<button type="button" class="btn wide" style="margin-top:18px" data-a="editsave">Save</button>';
@@ -1489,6 +1506,11 @@
       case "number": return input("number", ' inputmode="numeric"');
       case "money": return input("text", ' inputmode="decimal" placeholder="£"');
       case "date": return input("date");
+      case "directgoal":
+        // only when one of the goal's accounts is yours and isn't your main account (that's where it would be sent)
+        var mineAcc = String(r.accounts || "").split(/[,\s]+/).some(function (id) { var a = db().byId[id]; return a && a.owner === me() && a.kind !== "main" && a.kind !== "credit"; });
+        if (!mineAcc) return "";
+        return '<label class="check"><input type="checkbox" data-f="directOn"' + (v === true ? " checked" : "") + ">Send one-off money and repayments here straight away" + "</label>" + '<div style="margin:-6px 0 0 36px">' + infoBtn("direct") + "</div>";
       case "unspent":
         // only for budgets that can have something left: day to day and weekly. Where it goes is the "whatever is left" budget
         if (!/^(daily|weekly)$/.test(r.mode || "daily")) return "";
@@ -1587,6 +1609,11 @@
       };
       openSheet('<h2>From when?</h2><p class="muted">From today, earlier months keep the split they had. If it was a mistake, it\'s corrected ' + (curS ? "from " + esc(B.nice(curS.start)) : "for every month") + '.</p><button type="button" class="btn wide" data-a="amtwhen" data-v="today">From today</button><button type="button" class="btn ghost wide" style="margin-top:10px" data-a="amtwhen" data-v="always">It was a mistake</button>');
       return;
+    }
+    if (t === "goals") {
+      var dKey = "goal.direct." + r.id, dNow = !!B.parseDate(getSetting(dKey, ""));
+      if (r.directOn && !dNow) setting(dKey, now); else if (!r.directOn && dNow) setting(dKey, "off");
+      delete r.directOn;
     }
     if (F.owner === "person") r.person = r.person || me();
     if (F.owner === "owner") r.owner = r.owner || me();
@@ -2001,6 +2028,7 @@
   document.addEventListener("change", function (e) {
     var el = e.target, c = el.dataset && el.dataset.c;
     // the editor's fields (data-f): picking a day yourself, and the questions that follow "How often"
+    if (!c && el.dataset && el.dataset.fm === "accounts" && EDIT.table === "goals") { render(); return; }
     if (!c && el.dataset && el.dataset.f) {
       if (el.dataset.f === "on") S.ui.onTouched = true;
       // a new bill's day follows its start date until you pick a day yourself
