@@ -6,7 +6,7 @@
   else root.Budgie = factory();
 })(this, function () {
   "use strict";
-  var VERSION = "1.5.1";
+  var VERSION = "1.5.2";
 
   // ---------- dates ----------
   function D(s) { var p = String(s).split("-"); return new Date(Date.UTC(+p[0], +p[1] - 1, +p[2])); }
@@ -2271,7 +2271,7 @@
     if (share("totals", true) || share("cats", true)) out.status = t.status;
     // saving as the Money tab counts it: money put by for a yearly bill is bills money, not saved
     if (share("totals", true)) { out.safe = t.safe; out.saved = kinds(t.plan.lines).save; }
-    if (share("cats", true)) out.tiles = t.tiles.map(function (x) { return {name: x.name, spent: x.spent, amount: x.amount, pct: x.pct, paceMark: x.paceMark, mode: x.mode}; });
+    if (share("cats", true)) out.tiles = t.tiles.map(function (x) { return {name: x.name, spent: x.spent, amount: x.amount, left: x.left, pct: x.pct, paceMark: x.paceMark, mode: x.mode}; });
     // only how far each goal has got: not the balance of each account in it, or its notes
     if (share("goals", true)) out.goals = goals(db, p, date).filter(function (g) { return String((db.byId[g.id] || {}).owners || "").split(/[,\s]+/).length < 2; })
       .map(function (g) { return {id: g.id, name: g.name, kind: g.kind, target: g.target, saved: g.saved, pct: g.pct, due: g.due}; });

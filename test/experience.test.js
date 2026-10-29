@@ -211,4 +211,5 @@ function record(name, details){out.push({name,...details});}
   const t=household();t.moves=[{id:'partial-1',person:'alex',date:day,from:'a-fun',to:'a-main',amount:3,key:'back:budget:'+day+':a-main',batch:'one'}, {id:'partial-2',person:'alex',date:day,from:'a-fun',to:'a-main',amount:6,key:'back:budget:'+day+':a-main',batch:'two'}, {id:'bk-seen-1',person:'alex',date:day,from:'a-fun',to:'a-main',amount:3,key:'bank:seen1'}, {id:'bk-seen-2',person:'alex',date:day,from:'a-fun',to:'a-main',amount:6,key:'bank:seen2'}];
   const d=B.load(t,day);assert(d.moves.filter(x=>x.dup).length===2,'separate partial reimbursements each reconcile once');
 }
-console.log('All 14 experience regression scenarios passed');
+{ const summary=B.summary(B.load(household(),day),'alex',day);assert(summary.tiles[0].left===200,'partner summary carries the actual amount left'); }
+console.log('All 15 experience regression scenarios passed');
