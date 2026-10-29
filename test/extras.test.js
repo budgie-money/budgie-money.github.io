@@ -196,8 +196,10 @@ const all = (m) => m.htmlBody + "\n" + m.body + "\n" + m.subject;
   ok("BACKUP: not into a folder shared with someone", c.backupNow() === null && made() === 0 && env.logs.some(l => /backup folder is shared \(sophie@example\.com\)/.test(l)), env.logs.slice(-1));
   env.drive.addFolder("link1", {access: "ANYONE_WITH_LINK"}); env.props.BACKUP_FOLDER_ID = "link1";
   ok("BACKUP: nor one anyone with the link can open", c.backupNow() === null && made() === 0 && env.logs.some(l => /anyone with the link/.test(l)));
+  ok("BACKUP: failure is visible without private folder or email details", !!env.props.BACKUP_LAST_ATTEMPT && /shared access/.test(env.props.BACKUP_LAST_ERROR) && !/@|shared1|link1/.test(env.props.BACKUP_LAST_ERROR));
   env.drive.addFolder("mine1", {editors: ["owner@example.com"]}); env.props.BACKUP_FOLDER_ID = "mine1";
   ok("BACKUP: a folder only you can open is fine", !!c.backupNow() && made() === 1);
+  ok("BACKUP: successful recovery clears the error", env.props.BACKUP_LAST_ERROR === "" && +env.props.BACKUP_LAST_OK > 0);
   // the folder in your other Google account, shared only with the account the script runs as: still only you
   c.Session = {getEffectiveUser: () => ({getEmail: () => "owner@example.com"})};   // the script runs as owner@
   env.drive.addFolder("mine2", {owner: "main@example.com", editors: ["owner@example.com"]}); env.props.BACKUP_FOLDER_ID = "mine2";

@@ -955,7 +955,7 @@
               )
             : "") +
           card(
-            '<details><summary>Advanced</summary><label class="f">When to suggest a move<select id="exWhen"><option value="soon"' +
+            '<details><summary>Advanced</summary><label class="f">Use these saving rules from<input type="date" id="exReplaceFrom" value="' + E(cfg.replaceFrom || B.periodAt(d,p,now()).next) + '"></label><label class="f">When to suggest a move<select id="exWhen"><option value="soon"' +
               (cfg.when === "soon" ? " selected" : "") +
               '>As soon as it is spare</option><option value="payday"' +
               (cfg.when === "payday" ? " selected" : "") +
