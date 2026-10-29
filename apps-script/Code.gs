@@ -487,7 +487,7 @@ function applyOne_(me, op, now, by, opts) {
   // the bank feed): when To do no longer asks for anything under its key, it's kept but marked as a copy, as for a
   // payday move, so neither the balances nor To do change. (A key To do still asks for, say more to move back after
   // another shop, is a new tick.)
-  if (!existing && !sys && t === "moves" && /^(back|cover|fill|lent|late|refund):/.test(String(row.key || "")) && !toBoolCell_(row.deleted) && Budgie.isIso(String(row.date || ""))) {
+  if (!existing && !sys && t === "moves" && /^(back|cover|fill|lent|late|refund|goal):/.test(String(row.key || "")) && !toBoolCell_(row.deleted) && Budgie.isIso(String(row.date || ""))) {
     var before = tab.rows.filter(function (r) { return String(r.key) === String(row.key) && r.person === row.person && !toBoolCell_(r.deleted); })[0];
     if (before) {
       var mdb = Budgie.load(allTables_(), String(row.date));

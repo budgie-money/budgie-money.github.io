@@ -996,5 +996,20 @@ const phone = (F, k) => { const P = {T: {}, since: 0}; P.sync = (ops) => { const
   ok("IOU items: a column an older tab lacks is added", cols2.indexOf("price") >= 0, cols2);
 }
 
+// ================= goals: straight-away money =================
+{
+  const F = fresh(t => { t.goals.push({id: "g-isa", owners: "ethan", name: "Rainy day", target: 5000, accounts: "e-isa"}); t.settlements.push({id: "s1", date: "2026-10-27", from: "sophie", to: "ethan", amount: 200, loan: "sofa", key: "loan:sofa:2026-10-27"}); });
+  let r = F.call({key: F.kE, ops: [{op: "put", table: "settings", row: {id: "ethan:goal.direct.g-isa", person: "ethan", key: "goal.direct.g-isa", value: "2026-10-26"}}]});
+  ok("goal straight away: the setting saves", r.applied.length === 1 && !r.rejected.length, r);
+  ok("goal straight away: and is only ever the person's own", !F.call({key: F.kS, full: true}).rows.settings.some(x => /goal\.direct/.test(x.key)));
+  r = F.call({key: F.kS, ops: [{op: "put", table: "settings", row: {id: "ethan:goal.direct.g-isa", person: "ethan", key: "goal.direct.g-isa", value: "off"}}]});
+  ok("goal straight away: the other one can't change it", r.rejected.length === 1 && !r.applied.length, r);
+  // the same tick twice (two phones) is kept once
+  const tick = (id) => F.call({key: F.kE, ops: [{op: "put", table: "moves", row: {id, date: "2026-10-28", person: "ethan", from: "e-main", to: "e-isa", amount: 200, key: "goal:g-isa:s1"}}]});
+  tick("mv-g1"); const second = tick("mv-g2"); F.c.CACHE_ = {};
+  const mv = F.c.readTable_("moves").rows.filter(x => x.key === "goal:g-isa:s1");
+  ok("goal straight away: ticking the same one twice counts once (the second is kept as a copy)", second.applied.length === 1 && mv.length === 2 && mv.filter(x => x.deleted === true || x.deleted === "TRUE").length === 1, mv);
+}
+
 console.log(fails ? fails + " failed, " + passes + " passed" : "All " + passes + " passed");
 process.exit(fails ? 1 : 0);

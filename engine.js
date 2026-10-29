@@ -229,7 +229,7 @@
   // in the app later: the same money twice. A loose bank move that is the same as one ticked in the app (the same two
   // accounts, the same amount to the penny, in the same pay period, one for one) is the tick itself, so it counts once:
   // the tick stays (it carries the key) and the loose bank move is set aside as a duplicate.
-  var TODO_TICK = /^(back|cover|fill|lent|late|refund):|^pay:\d{4}-\d{2}-\d{2}:cover$/;
+  var TODO_TICK = /^(back|cover|fill|lent|late|refund|goal):|^pay:\d{4}-\d{2}-\d{2}:cover$/;
   function tickPeriod(db, m) {
     var k = String(m.key || "").match(/^(?:back|cover|lent|refund):.*:(\d{4}-\d{2}-\d{2}):[^:]*$/);
     return k ? k[1] : periodAt(db, m.person, m.date).start;
@@ -786,13 +786,15 @@
     });
     // (a pooled estimate counts here as it always did: its real payments aren't in the plan)
     db.bills.filter(function (b) { return b.person === p; }).forEach(function (b) { var on = poolOn(db, b); occurrences(db, b, from, to).forEach(function (o) { if (live(o.date)) lines.push({kind: "bill", name: b.name, amount: o.amount, account: b.account || main, date: o.date, id: b.id, occ: o.key, category: b.category, split: b.split, pool: on && pooledOn(db, b, o.sched), sched: o.sched}); }); });
+    var directGoals = goalDirect(db, p), directSince = directGoals.reduce(function (m, x) { return x.since < m ? x.since : m; }, "9999-12-31");
     db.loans.forEach(function (l) {
       loanDue(db, l, from, to).forEach(function (r) {
         if (!live(r.date)) return;
         if (l.borrower === p) lines.push({kind: "bill", name: "Pay " + person(db, l.lender).name + " back: " + l.name, amount: r.amount, account: main, date: r.date, id: l.id, loan: true});
         // a repayment lands in the lender's main account, as the payment logged for it does (whichever account the loan
         // was paid from), so payday still moves what the other pots need
-        if (l.lender === p) lines.push({kind: "in", name: person(db, l.borrower).name + " pays back: " + l.name, amount: r.amount, account: main, date: r.date, id: l.id, loan: true});
+        // (with a goal set to take repayments straight away, what is paid back goes to the goal once it's in, so it isn't in the plan)
+        if (l.lender === p && !(directGoals.length && r.date >= directSince)) lines.push({kind: "in", name: person(db, l.borrower).name + " pays back: " + l.name, amount: r.amount, account: main, date: r.date, id: l.id, loan: true});
       });
     });
     if (per.opening) {
@@ -867,6 +869,11 @@
           pdk.later.forEach(function (m) { var left = round(m.amount - tickedBefore(db, p, m.key, from)); if (left > 0.004 && !takeLoose(db, p, tkn, m.from, m.to, left, pk.start, dayBefore)) pendMove(m.from, m.to, left, m.date); });
         }
         rbk.forEach(function (g) { var left = round(g.amount - tickedBefore(db, p, g.key, from) - (g.bank || 0)); if (left > 0.004) pendMove(g.from, g.to, left, g.date || pk.start); });
+        // money sent straight to a goal that isn't moved yet is as good as moved: it isn't counted again as left over
+        directItems(db, p, dayBefore).forEach(function (it) {
+          if (it.date < pk.start || it.date >= pk.next) return;
+          var left = round(it.amount - tickedBefore(db, p, it.key, from)); if (left > 0.004 && !takeLoose(db, p, tkn, it.from, it.to, left, pk.start, dayBefore)) pendMove(it.from, it.to, left, it.date);
+        });
       });
     }
     // yearly costs (sinking funds). Each pay period puts by (next amount - set aside so far) / pay periods left until
@@ -1207,6 +1214,12 @@
         if (takeLoose(db, p, bankTaken, m.from, m.to, m.amount - ticked(db, p, m.key), pk.start, today)) return;
         plan(m.key, m.from, m.to, m.amount, "", m.names.join(" and ") + (m.date > pk.start ? " came in after payday" : " came in") + ", so its part of what's left goes to " + accName(db, m.to) + " now.", {partial: true, later: true});
       });
+    });
+    // 1c. one-off money in and repayments paid back to you, for a goal set to take them straight away: moved on once they've landed
+    directItems(db, p, today).forEach(function (it) {
+      var left = round(it.amount - ticked(db, p, it.key)); if (!(left > 0.004)) return;
+      if (takeLoose(db, p, bankTaken, it.from, it.to, left, periodAt(db, p, it.date).start, today)) return;
+      plan(it.key, it.from, it.to, it.amount, "", (it.kind === "repay" ? it.name + " (" + nice(it.date) + ")" : money(it.amount) + " came in" + (it.name ? " (" + it.name + ")" : "") + " on " + nice(it.date)) + ", so it goes to " + it.goalName + " now, as you asked.", {partial: true, goal: it.goal, direct: true});
     });
     // 2. paid from the wrong place, or over budget (all periods since tracking started)
     var qName = person(db, partnerOf(db, p)).name || "your partner";
@@ -1768,6 +1781,105 @@
   }
 
   // ---------- goals, LISA, net worth ----------
+  // ---------- goals: where the money comes from ----------
+  function goalAccIds(g) { return String(g.accounts || "").split(/[,\s]+/).filter(Boolean); }
+  // "Send one-off money and repayments here straight away": a setting of each person for each goal (goal.direct.<goal id>)
+  // holding the day it was turned on (blank or "off": off). The goal's first account of theirs (not the main account) gets it.
+  function goalDirect(db, p) {
+    return memo(db, "gd|" + p, function () {
+      var out = [];
+      db.goals.forEach(function (g) {
+        if (String(g.owners || p).split(/[,\s]+/).indexOf(p) < 0) return;
+        var since = parseDate(setting(db, p, "goal.direct." + g.id, "")); if (!since) return;
+        var acc = goalAccIds(g).filter(function (id) { var a = db.byId[id]; return a && a.owner === p && a.kind !== "main" && a.kind !== "credit"; })[0];
+        if (acc) out.push({goal: g, since: since, account: acc});
+      });
+      return out;
+    });
+  }
+  // what has landed since a goal was set to take it straight away and is still for it: one-off money in (a payment of less than
+  // nothing with no budget, as the bank feed keeps it, not one still to check) and repayments paid to you. Each is one item
+  // (key goal:<goal>:<its id>) that To do moves from where it landed to the goal's account.
+  function directItems(db, p, upTo) {
+    var gd = goalDirect(db, p); if (!gd.length) return [];
+    return memo(db, "di|" + p + "|" + upTo, function () {
+      var out = [], main = mainOf(db, p), st = startOf(db, p);
+      var pick = function (date) { for (var i = 0; i < gd.length; i++) if (date >= gd[i].since) return gd[i]; return null; };
+      var add = function (g, kind, id, from, amount, date, name) { if (from && from !== g.account && amount > 0.004) out.push({key: "goal:" + g.goal.id + ":" + id, goal: g.goal.id, goalName: g.goal.name, kind: kind, from: from, to: g.account, amount: round(amount), date: date, name: name}); };
+      db.transactions.forEach(function (x) {
+        if (x.person !== p || !(+x.amount < 0) || x.budget || x.review || x.date > upTo || x.date < st) return;
+        var g = pick(x.date); if (g) add(g, "oneoff", x.id, x.account || main, -x.amount, x.date, x.note || "");
+      });
+      db.settlements.forEach(function (s) {
+        if (!s.loan || s.to !== p || !(+s.amount > 0) || s.date > upTo || s.date < st) return;
+        var l = db.byId[s.loan], g = l && l.lender === p ? pick(s.date) : null; if (g) add(g, "repay", s.id, s.toAccount || main, +s.amount, s.date, person(db, s.from).name + " paid back " + l.name);
+      });
+      return out.sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : a.key < b.key ? -1 : 1; });
+    });
+  }
+  // Where this pay period's money for a goal comes from, as far as the plan can tell, for the accounts of the goal that are
+  // yours: saving budgets into them, what's left on payday (when what's left goes into one of them) and what that is made of
+  // (paid back to you, one-off money in, left over from last month, bills that ended), and what was sent there straight away.
+  function goalFlow(db, p, goalId, date) {
+    var g = db.byId[goalId]; if (!g || db.goals.indexOf(g) < 0) return null;
+    var per = periodAt(db, p, date), pl = planFor(db, p, per), st = startOf(db, p);
+    var accs = goalAccIds(g).filter(function (id) { return (db.byId[id] || {}).owner === p; }), mine = function (a) { return accs.indexOf(a) >= 0; };
+    var lines = [], dg = goalDirect(db, p).filter(function (x) { return x.goal.id === goalId; })[0] || null;
+    pl.lines.forEach(function (l) {
+      if (l.kind !== "save" || l.setAside || l.remainder || !mine(l.account)) return;
+      var b = db.byId[l.id]; lines.push({kind: l.direct ? "income" : "saving", label: l.direct ? l.name : (b && db.budgets.indexOf(b) >= 0 ? b.name : l.name), amount: round(l.amount)});
+    });
+    var rb = pl.remainderBudget;
+    if (rb && mine(rb.account || mainOf(db, p)) && pl.remainder > 0.004) {
+      var R = pl.remainder, used = 0, part = function (kind, label, amt, extra) { amt = round(Math.min(amt, R - used)); if (!(amt > 0.004)) return; used = round(used + amt); lines.push(Object.assign({kind: kind, label: label, amount: amt}, extra || {})); };
+      var repaid = 0; pl.lines.forEach(function (l) { if (l.kind === "in" && l.loan) repaid += l.amount; });
+      part("repaid", "Paid back to you", repaid);
+      var lo = pl.lines.filter(function (l) { return l.leftover; })[0], loAmt = lo ? lo.amount : 0, prev = prevPeriod(db, p, per), oneoff = 0;
+      if (prev && prev.start < per.start) db.transactions.forEach(function (x) {
+        if (x.person !== p || !(+x.amount < 0) || x.budget || x.review || x.date < maxS(prev.start, st) || x.date >= per.start || (x.account || mainOf(db, p)) !== mainOf(db, p)) return;
+        if (goalDirect(db, p).some(function (y) { return x.date >= y.since; })) return;   // (taken straight to a goal: not left over)
+        oneoff += -x.amount;
+      });
+      oneoff = Math.min(oneoff, loAmt);
+      part("oneoff", "One-off money in", oneoff);
+      part("leftover", "Left over from last month", loAmt - oneoff);
+      var freed = 0, names = [];
+      if (prev && prev.start < per.start) db.bills.forEach(function (b) {
+        if (b.person !== p || !b.end || b.end >= per.next || String(b.unit || "month") === "once" || poolOn(db, b)) return;
+        var before = occurrences(db, b, prev.start, per.start), now = occurrences(db, b, per.start, per.next);
+        if (before.length && !now.length) { freed += before[before.length - 1].amount; names.push(b.name); }
+      });
+      part("freed", "Bills that ended", freed, {names: names});
+      part("left", "What's left on payday", R - used);
+    }
+    var to = addDays(per.next, -1);
+    directItems(db, p, to).forEach(function (it) {
+      if (it.goal !== goalId || it.date < per.start || it.date >= per.next) return;
+      var done = ticked(db, p, it.key) >= it.amount - 0.004;
+      lines.push({kind: it.kind === "repay" ? "direct-repaid" : "direct-oneoff", label: it.kind === "repay" ? "Paid back to you, sent straight here" : "One-off money in, sent straight here", amount: it.amount, done: done, date: it.date, name: it.name});
+    });
+    var total = 0; lines.forEach(function (l) { total += l.amount; });
+    return {period: per, lines: lines, total: round(total), direct: dg ? {since: dg.since, account: dg.account} : null, eligible: goalAccIds(g).some(function (id) { var a = db.byId[id]; return a && a.owner === p && a.kind !== "main" && a.kind !== "credit"; }), accounts: accs};
+  }
+  // Progress to a goal's target and the date it is on course for at the current pace. The pace is how much the goal's accounts
+  // grew a month over the last (up to three) whole pay periods; with less than four weeks of history it is what this pay period
+  // plans to put in. basis says which. No pace means no date.
+  function goalProgress(db, p, goalId, date) {
+    var g = db.byId[goalId], gs = g ? goals(db, p, date).filter(function (x) { return x.id === goalId; })[0] : null; if (!gs) return null;
+    var accs = goalAccIds(g), st = startOf(db, p), bal = function (d) { var b = balances(db, d), t = 0; accs.forEach(function (a) { t += b[a] || 0; }); return t; };
+    var done = trackedBefore(db, p, date).filter(function (pk) { return pk.next <= date && !pk.opening; }).slice(-3), perMonth = 0, basis = "none";
+    if (done.length) {
+      var f = maxS(addDays(done[0].start, -1), st), t = addDays(done[done.length - 1].next, -1), days = diff(f, t);
+      if (days >= 28) { perMonth = (bal(t) - bal(f)) / days * 30.44; basis = "history"; }
+    }
+    if (basis === "none") { var fl = goalFlow(db, p, goalId, date); if (fl && fl.total > 0.004) { perMonth = fl.total; basis = "plan"; } }
+    perMonth = round(perMonth);
+    var left = gs.target - gs.saved, out = {saved: gs.saved, target: gs.target, pct: gs.pct, due: gs.due, perMonth: perMonth, basis: basis, reached: gs.target > 0 && left <= 0.004, eta: "", dueGap: null, needed: null};
+    if (!out.reached && gs.target > 0 && perMonth > 0.5) { var d2 = Math.ceil(left / perMonth * 30.44); if (d2 < 36500) out.eta = addDays(date, d2); }
+    if (!out.reached && gs.due && gs.due > date && gs.target > 0) out.needed = round(left / (diff(date, gs.due) / 30.44));
+    if (out.eta && gs.due) out.dueGap = diff(gs.due, out.eta);
+    return out;
+  }
   function accountValue(db, accId, date) { return round(balances(db, date)[accId] || 0); }
   function goals(db, p, date) {
     var bal = balances(db, date);
@@ -2072,6 +2184,7 @@
     periods: periods, periodAt: periodAt, prevPeriod: prevPeriod, nextPeriod: nextPeriod, planFor: planFor, payday: payday,
     budgetState: budgetState, balances: balances, flows: flows, todo: todo, between: between, today: today, coming: coming,
     calendar: calendar, pots: pots, monthView: monthView, year: year, kindOf: kindOf, newMoney: newMoney, kinds: kinds,
+    goalFlow: goalFlow, goalProgress: goalProgress, goalDirect: goalDirect, directItems: directItems,
     spendWeek: spendWeek, noSpend: noSpend, savingRates: savingRates, forecast: forecast, goals: goals, lisa: lisa, checks: checks, netWorth: netWorth, loans: loans,
     itemStates: loanItemStates, yearly: yearly, yearReview: yearReview, taxYearStart: taxYearStart,
     summary: summary, shareOf: shareOf, myShare: myShare, owedAt: owedAt, amountAt: amountAt, setting: setting, partnerOf: partnerOf, mainOf: mainOf, fallbackOf: fallbackOf,
