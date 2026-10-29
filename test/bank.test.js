@@ -2056,7 +2056,7 @@ ok("secrets only under BANK_TOKEN_ / BANK_CLIENT_ / BANK_OAUTH_ in the owner's U
   ]);
   const G = bankEnv(); connectMonzo(G, {acc_00009main: "e-main"});
   const inRows = () => grow(G, "transactions").filter(r => /tx_y1_/.test(r.id));
-  ok("Y1: money in that isn't planned is kept, for no budget, in the account it went into", inRows().length === 1 && inRows()[0].id === "bk-monzo-tx_y1_sale" && +inRows()[0].amount === -40 && !inRows()[0].budget && inRows()[0].account === "e-main" && inRows()[0].note === "A BUYER" && String(inRows()[0].review) !== "true", inRows());
+  ok("Y1: unplanned money in is kept for review before treating it as spare", inRows().length === 1 && inRows()[0].id === "bk-monzo-tx_y1_sale" && +inRows()[0].amount === -40 && !inRows()[0].budget && inRows()[0].account === "e-main" && inRows()[0].note === "A BUYER" && String(inRows()[0].review) === "true", inRows());
   ok("Y1: a regular payment to you (Sophie's rent share) is not, as the plan has it", !inRows().some(r => /rent/.test(r.id)), inRows());
   NOW += 30 * 60000; G.c.bankPoll(); G.c.bankPoll();
   ok("Y1: reading again doesn't add it twice", inRows().length === 1, inRows());

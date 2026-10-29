@@ -6,7 +6,7 @@
   else root.Budgie = factory();
 })(this, function () {
   "use strict";
-  var VERSION = "1.4.23";
+  var VERSION = "1.5.0";
 
   // ---------- dates ----------
   function D(s) { var p = String(s).split("-"); return new Date(Date.UTC(+p[0], +p[1] - 1, +p[2])); }
@@ -161,9 +161,9 @@
   }
 
   // ---------- loading ----------
-  var NUM = ["amount", "every", "order", "target", "repay", "newAmount", "extra", "price", "limit", "cost", "share"];
+  var NUM = ["amount", "every", "order", "target", "repay", "newAmount", "extra", "price", "limit", "cost", "share", "purchaseTotal", "iouShare"];
   var DATE = ["start", "end", "date", "newDate", "due", "repayFrom"];
-  var BOOL = ["deleted", "isPay", "fallback", "carry", "variable", "bought"];
+  var BOOL = ["deleted", "isPay", "fallback", "carry", "variable", "bought", "review"];
   function toBool(v) { return v === true || /^(true|yes|y|1)$/i.test(String(v || "").trim()); }
   function clean(row) {
     var r = {};
@@ -188,8 +188,28 @@
     // worth what their shares add up to, so repayments, Between you two and net worth all keep working from one number
     db.itemsByLoan = dict();
     db.loanItems.forEach(function (x, i) { x.seq = i; if (x.loan) (db.itemsByLoan[x.loan] = db.itemsByLoan[x.loan] || []).push(x); });
+    // A refund remains a cash fact on its own date. Its budget and IOU effects belong to the purchase.
+    var txById = dict(); db.transactions.forEach(function (x) { txById[x.id] = x; });
+    db.transactions.forEach(function (x) { x.isBillPayment = !!x.billId && isIso(x.billDate) && db.bills.some(function (b) { return b.id === x.billId && b.person === x.person; }); });
+    db.transactions.forEach(function (x) {
+      var original = txById[x.refundOf];
+      if (!(+x.amount < 0) || !original || !(+original.amount > 0) || x.person !== original.person) { delete x.refundOf; return; }
+      x.budget = original.budget || ""; x.split = original.split || "";
+      if (original.loanItem) { x.iouShare = round((-x.amount) * Math.max(0, +original.iouShare || 0) / original.amount); }
+      x.refundDate = original.date;
+    });
+    db.transactions.forEach(function (x) { var original = txById[x.refundOf] || x; x.iouActive = db.loanItems.some(function (item) { return item.id === original.loanItem && db.loans.some(function (loan) { return loan.id === item.loan && loan.lender === original.person; }); }); });
+    db.loanItems.forEach(function (item) {
+      var baseShare = +item.share || 0; item.originalShare = baseShare;
+      item.share = round(baseShare - (+item.refundCredit || 0));
+      var original = db.transactions.filter(function (x) { return x.loanItem === item.id && +x.amount > 0; })[0];
+      if (!original) { if ((tables.transactions || []).some(function (x) { return x.loanItem === item.id && x.deleted && x.bankId && x.by === "bank"; })) item.share = 0; return; }
+      var refunded = 0; db.transactions.forEach(function (x) { if (x.refundOf === original.id && (!today || x.date <= today)) refunded += -x.amount; });
+      item.share = round(baseShare * Math.max(0, 1 - refunded / Math.max(+original.purchaseTotal || +original.amount, 0.01)));
+    });
     db.loans.forEach(function (l) {
-      var its = db.itemsByLoan[l.id]; if (!its || !its.length) return;
+      var its = db.itemsByLoan[l.id];
+      if (!its || !its.length) { if ((tables.loanItems || []).some(function (x) { return x.loan === l.id; })) l.amount = 0; return; }
       its.sort(function (a, b) { var x = a.date || "9999", y = b.date || "9999"; return x < y ? -1 : x > y ? 1 : a.seq - b.seq; });
       var sum = 0; its.forEach(function (x) { sum += +x.share || 0; });
       l.items = its; l.ownAmount = +l.amount || 0; l.amount = round(sum);
@@ -229,7 +249,7 @@
   // in the app later: the same money twice. A loose bank move that is the same as one ticked in the app (the same two
   // accounts, the same amount to the penny, in the same pay period, one for one) is the tick itself, so it counts once:
   // the tick stays (it carries the key) and the loose bank move is set aside as a duplicate.
-  var TODO_TICK = /^(back|cover|fill|lent|late|refund|goal):|^pay:\d{4}-\d{2}-\d{2}:cover$/;
+  var TODO_TICK = /^(back|cover|fill|lent|late|refund|goal|sweep):|^pay:\d{4}-\d{2}-\d{2}:cover$/;
   function tickPeriod(db, m) {
     var k = String(m.key || "").match(/^(?:back|cover|lent|refund):.*:(\d{4}-\d{2}-\d{2}):[^:]*$/);
     return k ? k[1] : periodAt(db, m.person, m.date).start;
@@ -399,7 +419,8 @@
   function midOf(per) { return addDays(per.start, Math.floor(Math.max(0, diff(per.start, per.next)) / 2)); }
   function activeIn(b, per) { var mid = midOf(per); return (!b.start || b.start <= mid) && (!b.end || b.end >= mid); }
   function budgetsOf(db, p, per) {
-    return db.budgets.filter(function (b) { return b.person === p && activeIn(b, per); });
+    var rules = spareRules(db, p, per.start);
+    return db.budgets.filter(function (b) { return b.person === p && activeIn(b, per) && !(rules && per.start >= (rules.replaceFrom || rules.since) && b.mode === "remainder" && savingKind(db, b.account)); });
   }
   function sameBudget(db, b, txn) {
     if (txn.budget === b.id) return true;
@@ -410,6 +431,7 @@
   // rounded, and the one who paid has the rest (so the two shares add up to what was paid, and to what's settled)
   function myShare(db, p, txn) {
     var amt = +txn.amount || 0;
+    if (txn.iouActive) return txn.person === p ? round(amt - (amt < 0 ? -1 : 1) * Math.min(Math.abs(amt), Math.abs(+txn.iouShare || 0))) : 0;
     if (!txn.split) return txn.person === p ? amt : 0;
     if (txn.person !== p) return round(shareOf(db, txn.split, p, amt, txn.person, txn.date));
     var rest = amt; db.people.forEach(function (x) { if (x.id !== p) rest -= round(shareOf(db, txn.split, x.id, amt, p, txn.date)); });
@@ -418,7 +440,7 @@
   // running totals per budget, so adding up a month is two lookups however many years of payments there are
   function spendIndex(db, p, b) {
     return memo(db, "si|" + p + "|" + b.id, function () {
-      var list = db.transactions.filter(function (x) { return sameBudget(db, b, x); }).map(function (x) { return [x.date, myShare(db, p, x)]; }).filter(function (x) { return x[1]; }).sort(function (a, c) { return a[0] < c[0] ? -1 : a[0] > c[0] ? 1 : 0; });
+      var list = db.transactions.filter(function (x) { return !x.isBillPayment && sameBudget(db, b, x) && (!db.today || x.date <= db.today || !x.refundOf); }).map(function (x) { return [x.refundDate || x.date, myShare(db, p, x)]; }).filter(function (x) { return x[1]; }).sort(function (a, c) { return a[0] < c[0] ? -1 : a[0] > c[0] ? 1 : 0; });
       var dates = [], cum = [0]; list.forEach(function (x, i) { dates.push(x[0]); cum.push(cum[i] + x[1]); });
       return {dates: dates, cum: cum};
     });
@@ -794,7 +816,7 @@
         // a repayment lands in the lender's main account, as the payment logged for it does (whichever account the loan
         // was paid from), so payday still moves what the other pots need
         // (with a goal set to take repayments straight away, what is paid back goes to the goal once it's in, so it isn't in the plan)
-        if (l.lender === p && !(directGoals.length && r.date >= directSince)) lines.push({kind: "in", name: person(db, l.borrower).name + " pays back: " + l.name, amount: r.amount, account: main, date: r.date, id: l.id, loan: true});
+        if (l.lender === p && !(directGoals.length && r.date >= directSince && !spareRules(db, p, r.date))) lines.push({kind: "in", name: person(db, l.borrower).name + " pays back: " + l.name, amount: r.amount, account: main, date: r.date, id: l.id, loan: true});
       });
     });
     if (per.opening) {
@@ -950,7 +972,7 @@
 
   // ---------- loans ----------
   function loanPaid(db, l, upTo) {
-    var t = 0; db.settlements.forEach(function (s) { if (s.loan === l.id && (!upTo || s.date <= upTo)) t += +s.amount || 0; }); return round(t);
+    var t = 0; db.settlements.forEach(function (s) { if (s.loan === l.id && (!upTo || s.date <= upTo)) t += (s.from === l.lender && s.to === l.borrower ? -1 : 1) * (+s.amount || 0); }); return round(t);
   }
   // planned repayments: repay amount on repayDay each month from repayFrom until cleared; settled ones marked.
   // A payment ticked for one repayment (its key names the loan and that date) pays that one; anything else (paid
@@ -1000,11 +1022,11 @@
     db.bills.forEach(function (b) {
       // a pooled estimate: only what's not been paid yet (the real payments are the money that goes out)
       var on = poolOn(db, b), acc = b.account || mainOf(db, b.person);
-      occurrences(db, b, from, to).forEach(function (o) { if (o.date >= startOf(db, b.person) && !(on && pooledOn(db, b, o.sched))) push(o.date, acc, -o.amount, b.name, o.key); });
+      occurrences(db, b, from, to).forEach(function (o) { if (o.date >= startOf(db, b.person) && !(on && pooledOn(db, b, o.sched))) { var receipt = db.transactions.filter(function (x) { return x.isBillPayment && x.billId === b.id && x.billDate === o.orig && x.person === b.person; })[0]; push(o.date, receipt ? receipt.account || mainOf(db, b.person) : acc, -o.amount, b.name, o.key, receipt && receipt.updated, !!(receipt && receipt.bankId)); var credit = db.byId[b.creditAccount]; if (credit && credit.owner === b.person && credit.kind === "credit") push(o.date, credit.id, o.amount, b.name, o.key); } });
       if (on) poolFlows(db, b, from, to).forEach(function (f) { push(f.date, acc, -f.amount, b.name, f.key); });
     });
     db.transfers.forEach(function (t) { occurrences(db, t, from, to).forEach(function (o) { if (o.date >= startOf(db, t.from)) { push(o.date, t.fromAccount || mainOf(db, t.from), -o.amount, t.name, o.key); push(o.date, t.toAccount || mainOf(db, t.to), o.amount, t.name, o.key); } }); });
-    db.transactions.forEach(function (x) { push(x.date, x.account || mainOf(db, x.person), -(+x.amount || 0), x.note || x.budget, x.id, x.updated, !!x.bankId || /^bk-/.test(String(x.id))); });
+    db.transactions.forEach(function (x) { if (!x.isBillPayment) push(x.date, x.account || mainOf(db, x.person), -(+x.amount || 0), x.note || x.budget, x.id, x.updated, !!x.bankId || /^bk-/.test(String(x.id))); });
     db.moves.forEach(function (m) { if (m.dup) return; var bk = /^bk-/.test(String(m.id)); if (m.from) push(m.date, m.from, -(+m.amount || 0), "move", m.id, m.updated, bk); if (m.to) push(m.date, m.to, +m.amount || 0, "move", m.id, m.updated, bk); });
     db.settlements.forEach(function (s) { push(s.date, s.fromAccount || mainOf(db, s.from), -(+s.amount || 0), s.note || "payment", s.id, s.updated); push(s.date, s.toAccount || mainOf(db, s.to), +s.amount || 0, s.note || "payment", s.id, s.updated); });
     db.loans.forEach(function (l) { if (l.account) push(l.date, l.account, -(+l.amount || 0), l.name, l.id); });
@@ -1054,7 +1076,7 @@
       budgetsOf(db, p, pk).forEach(function (b) {
         if (!isSpend(db, b)) return;
         var home = b.account || main, amt = b.mode === "remainder" ? planFor(db, p, pk).remainder : budgetAmount(db, b, pk);
-        var mineB = memo(db, "txb|" + b.id, function () { return db.transactions.filter(function (x) { return x.budget === b.id; }).sort(function (a, c) { return a.date < c.date ? -1 : a.date > c.date ? 1 : 0; }); });
+        var mineB = memo(db, "txb|" + b.id, function () { return db.transactions.filter(function (x) { return !x.isBillPayment && x.budget === b.id; }).sort(function (a, c) { return a.date < c.date ? -1 : a.date > c.date ? 1 : 0; }); });
         var from0 = maxS(pk.start, st), inPeriod = function (x) { return x.date >= from0 && x.date < pk.next && x.date <= today; };
         var lo = lowerBound(mineB.map(function (x) { return x.date; }), from0);
         var list = []; for (var i = lo; i < mineB.length && mineB[i].date < pk.next && mineB[i].date <= today; i++) if (mineB[i].person === p) list.push(mineB[i]);
@@ -1092,6 +1114,11 @@
         var giveMain = 0;
         payers.forEach(function (payer) {
           var a = round(byPayer[payer]); if (!(a > 0.004)) return;
+          // A funded statement already covers this card. Otherwise reserve the budget's share in its repayment pot.
+          if ((db.byId[payer] || {}).kind === "credit") {
+            var statement = db.bills.filter(function (bill) { return bill.person === p && bill.creditAccount === payer; }).map(function (bill) { var o = nextOcc(db, bill, today); return o ? {bill: bill, occ: o} : null; }).filter(Boolean).sort(function (x, y) { return x.occ.date < y.occ.date ? -1 : 1; })[0];
+            if (statement) { var target = statement.bill.account || main, funded = balances(db, today)[target] || 0; if (funded >= statement.occ.amount - 0.004) return; if (target !== home) bump("back:" + b.id + ":" + pk.start + ":" + target, home, target, Math.min(a, left, Math.max(0, statement.occ.amount - funded)), "back", payerDate[payer]); left = Math.max(0, left - a); return; }
+          }
           var give = Math.min(a, left); left -= give;
           if (payer === main && home !== main) giveMain = give;
           else bump("back:" + b.id + ":" + pk.start + ":" + payer, home, payer, give, "back", payerDate[payer], via[payer]);
@@ -1109,6 +1136,13 @@
         lentTo.forEach(function (acc) { if (acc !== home) bump("lent:" + b.id + ":" + pk.start + ":" + acc, main, acc, lent[acc], "lent", lentDate[acc]); });
         Object.keys(agg).forEach(function (k) { agg[k].amount = round(agg[k].amount); out.push(agg[k]); });
       });
+      var billBack = dict();
+      db.transactions.forEach(function (x) {
+        if (!x.isBillPayment || x.person !== p || x.date < maxS(pk.start, st) || x.date >= pk.next || x.date > today) return;
+        var bill = db.byId[x.billId], home = bill && (bill.account || main), paidFrom = x.account || main;
+        if (home && home !== paidFrom && !poolOn(db, bill)) { var key = "back:" + bill.id + ":" + pk.start + ":" + paidFrom; if (billBack[key]) { billBack[key].amount = round(billBack[key].amount + (+x.amount || 0)); billBack[key].date = maxS(billBack[key].date, x.date); } else billBack[key] = {key: "back:" + bill.id + ":" + pk.start + ":" + paidFrom, from: home, to: paidFrom, amount: round(+x.amount || 0), kind: "back", name: String(bill.name).toLowerCase(), date: x.date, mine: true}; }
+      });
+      Object.keys(billBack).forEach(function (key) { out.push(billBack[key]); });
       // a pooled bill's real bill paid from somewhere else (the water bill by card from the main account): the money for
       // it is in the bill's pot, so it goes back where it was paid from (a refund there goes the other way)
       db.bills.forEach(function (b) {
@@ -1331,6 +1365,8 @@
     // 4. loan repayments due
     db.loans.forEach(function (l) {
       if (l.lender !== p && l.borrower !== p) return;
+      var overpaid = round(loanPaid(db, l, today) - (+l.amount || 0));
+      if (overpaid > 0.004) items.push({key: "loanreturn:" + l.id, type: "loan", loan: l.id, amount: overpaid, date: today, lender: l.borrower, borrower: l.lender, what: l.lender === p ? "Return " + money(overpaid) + " to " + person(db, l.borrower).name : person(db, l.lender).name + " returns " + money(overpaid) + " to you", why: "A refund or correction left " + l.name + " overpaid. Tick only when the money has been returned."});
       loanPlan(db, l).forEach(function (r) {
         // (one partly paid under its own key, as when the monthly amount went up after it was ticked, still asks for the rest)
         if (r.paid || r.date > today) return;
@@ -1415,7 +1451,7 @@
     // what each payment or bill owes is to the penny (half of £20.15 is the £10.08 that's settled), so settling up
     // leaves nothing over to drift into the next amount owed
     db.transactions.forEach(function (x) {
-      if (!x.split || x.date > today || x.date < st) return;
+      if (!x.split || x.isBillPayment || x.date > today || x.date < st) return;
       if (x.person === p) owed += round(shareOf(db, x.split, q, +x.amount, x.person, x.date));
       if (x.person === q) owed -= round(shareOf(db, x.split, p, +x.amount, x.person, x.date));
     });
@@ -1532,19 +1568,28 @@
     var cash = 0, main = mainOf(db, p);
     // cap by money actually there (spending accounts minus what's still due before payday)
     var spendAccs = dict(); tiles.forEach(function (t) { var b = db.byId[t.id]; if (t.day !== null) spendAccs[b.account || main] = true; });
-    var committed = 0; flows(db, date, addDays(per.next, -1)).forEach(function (f) { if (spendAccs[f.account]) committed += f.amount; });
+    var committed = 0; flows(db, date, addDays(per.next, -1)).forEach(function (f) { if (spendAccs[f.account] && f.amount < 0) committed += f.amount; });
+    unseenBills(db, p, date).forEach(function (r) { if (spendAccs[r.account]) committed -= r.amount; });
+    if (spendAccs[main]) db.loans.forEach(function (l) { if (l.lender === p) committed -= Math.max(0, loanPaid(db, l, date) - (+l.amount || 0)); });
     Object.keys(spendAccs).forEach(function (a) { cash += bal[a] || 0; });
     // money set aside for a yearly cost that isn't due before payday isn't spare
     Object.keys(plan.setAside || {}).forEach(function (id) { var b = db.byId[id], acc = b ? b.account || main : ""; if (spendAccs[acc]) committed -= Math.min(plan.setAside[id], Math.max(0, bal[acc] || 0)); });
     var cashFree = round(Math.max(0, cash + committed));
-    var cap = round(cashFree / daysLeft), budgetDay = round(safe);
+    // Rebase only when money changes, not merely when the calendar advances.
+    var anchor = maxS(per.start, startOf(db, p));
+    db.transactions.forEach(function (x) { if (x.date <= date && x.date >= anchor && ((x.person === p && (spendAccs[x.account || main] || x.budget)) || (x.person !== p && x.split && myShare(db, p, x)))) anchor = x.date; });
+    db.moves.forEach(function (x) { if (!x.dup && x.person === p && x.date <= date && x.date > anchor && (spendAccs[x.from] || spendAccs[x.to])) anchor = x.date; });
+    var vprev = dict(); db.valuations.slice().sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : (+a.updated || 0) - (+b.updated || 0); }).forEach(function (v) { if (!spendAccs[v.account] || v.date > date) return; var prev = vprev[v.account]; if ((!prev || round(prev.amount) !== round(v.amount)) && v.date > anchor) anchor = v.date; vprev[v.account] = v; });
+    var allowanceDays = Math.max(1, diff(anchor, per.next));
+    safe = 0; tiles.forEach(function (tile) { if (tile.day !== null) safe += Math.max(0, tile.left) / allowanceDays; });
+    var cap = round(cashFree / allowanceDays), budgetDay = round(safe);
     if (safe > cap) { safe = cap; status = cashFree <= 0 ? "No spare cash" : status; }
     var nxt = payDates(db, p, addDays(date, 1), addDays(date, 70))[0] || per.next, nplan = planFor(db, p, periodAt(db, p, nxt));
     // what's spare in the main account now (beyond what its budgets and bills still need) goes where whatever's left
     // goes on payday: said when that's somewhere else, a Cash ISA say
     var lo = nplan.lines.filter(function (l) { return l.leftover; })[0], rl = nplan.lines.filter(function (l) { return l.remainder; })[0], spare = null;
     if (lo && rl && rl.account !== main && rl.amount > 0.004) spare = {amount: round(Math.min(lo.amount, rl.amount)), to: rl.account, toName: accName(db, rl.account), date: nxt};
-    return {date: date, period: per, plan: plan, daysLeft: daysLeft, safe: round(safe), cash: round(cash), needed: round(Math.max(0, -committed)), cashDay: cap, budgetDay: budgetDay, status: status, overs: overs, tiles: tiles, cashFree: cashFree, nextPay: nxt,
+    return {date: date, period: per, plan: plan, daysLeft: daysLeft, allowanceDays: allowanceDays, allowanceFrom: anchor, safe: round(safe), cash: round(cash), needed: round(Math.max(0, -committed)), cashDay: cap, budgetDay: budgetDay, status: status, overs: overs, tiles: tiles, cashFree: cashFree, nextPay: nxt,
       nextPayAmount: (nplan.lines.filter(function (l) { return l.isPay; })[0] || {}).amount || 0, spare: spare,
       todo: todo(db, p, date), coming: coming(db, p, date, 14)};
   }
@@ -1629,12 +1674,55 @@
       });
     });
     db.transactions.forEach(function (x) {
-      if (x.person !== p || !(+x.amount > 0) || x.date < from || x.date >= to || isPoolTx(db, x)) return;
+      if (x.person !== p || !(+x.amount > 0) || x.isBillPayment || x.date < from || x.date >= to || isPoolTx(db, x)) return;
       var b = db.byId[x.budget], bank = !!x.bankId || /^bk-/.test(String(x.id));
       out.push({kind: "payment", id: x.id, key: x.id, orig: x.date, item: x.id, table: "transactions", name: x.note || (b ? b.name : "Payment"), date: x.date, amount: round(+x.amount), account: x.account || main, category: b ? b.name : "", split: x.split || "",
         changed: false, skipId: "", paidId: "", via: bank ? "bank" : "logged", pool: null, status: "paid", note: x.note || "", budget: x.budget || "", review: x.review === true || /^true$/i.test(String(x.review)), bank: bank});
     });
     return out.sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : a.name < b.name ? -1 : a.name > b.name ? 1 : 0; });
+  }
+
+  // Ordered spare-money rules. All suggestions are read-only; money moves only in the bank.
+  function spareRules(db, p, date) {
+    var raw = setting(db, p, "spare.rules", ""), cfg;
+    try { cfg = JSON.parse(raw); } catch (e) { return null; }
+    if (!cfg || cfg.version !== 1 || !isIso(cfg.since) || (date && date < cfg.since)) return null;
+    return cfg;
+  }
+  function spareMoney(db, p, date) {
+    var cfg = spareRules(db, p, date), main = mainOf(db, p), per = periodAt(db, p, date), bal = balances(db, date), out = {configured: !!cfg, available: 0, reserve: 0, buffer: 0, moves: [], held: 0};
+    if (!cfg) return out;
+    var pl = planFor(db, p, per), state = budgetState(db, p, per), reserve = 0, held = 0;
+    Object.keys(state).forEach(function (id) { var s = state[id]; if ((s.budget.account || main) === main) reserve += Math.max(0, s.left); });
+    // Use outgoings alone: uncertain future income cannot make today's cash spare.
+    flows(db, date, addDays(per.next, -1)).forEach(function (f) { if (f.account === main && f.amount < 0) reserve -= f.amount; });
+    unseenBills(db, p, date).forEach(function (r) { if (r.account === main) reserve += r.amount; });
+    Object.keys(pl.setAside || {}).forEach(function (id) { var b = db.byId[id]; if (b && (b.account || main) === main) reserve += pl.setAside[id]; });
+    var bt = between(db, p, date); reserve += Math.max(0, bt.iOwe || 0);
+    db.loans.forEach(function (l) { if (l.lender === p) reserve += Math.max(0, loanPaid(db, l, date) - (+l.amount || 0)); });
+    db.loans.forEach(function (l) { if (l.borrower === p) loanPlan(db, l).forEach(function (r) { if (!r.paid && r.date < per.next) reserve += r.left; }); });
+    db.transactions.forEach(function (x) { if (x.person !== p || x.amount >= 0 || (x.account || main) !== main || x.date < cfg.since || x.date > date || x.refundOf || x.budget) return; if (x.review || !cfg.oneoff) held -= x.amount; });
+    if (!cfg.repayments) db.settlements.forEach(function (s) { if (s.to === p && s.loan && s.date >= cfg.since && s.date <= date && (s.toAccount || main) === main) held += +s.amount || 0; });
+    var prev = prevPeriod(db, p, per);
+    if (!cfg.unspent && prev && prev.start >= cfg.since) { var old = budgetState(db, p, prev); Object.keys(old).forEach(function (id) { var s = old[id]; if (!s.budget.carry && (s.budget.account || main) === main) held += Math.max(0, s.left); }); }
+    if (!cfg.ended && prev) { var current = {}; pl.lines.forEach(function (l) { if (l.kind === "bill") current[l.id] = true; }); planFor(db, p, prev).lines.forEach(function (l) { var bill = db.byId[l.id]; if (l.kind === "bill" && !l.catchup && !current[l.id] && bill && db.bills.indexOf(bill) >= 0 && bill.end && bill.end < per.start) held += l.amount; }); }
+    out.reserve = round(reserve); out.buffer = round(Math.max(0, +cfg.buffer || 0)); held = Math.min(held, Math.max(0, (bal[main] || 0) - reserve - out.buffer)); out.held = round(held);
+    var free = round(Math.max(0, (bal[main] || 0) - reserve - out.buffer - held)); out.available = free;
+    if (payPending(db, p, per, date) || (cfg.when === "payday" && (date !== per.start || !per.pay))) return out;
+    // Finish essential funding before suggesting saving, including pots that need their payday allocation.
+    if (todo(db, p, date).some(function (it) { return it.type === "warn" || it.short || (it.type === "move" && !it.direct); })) return out;
+    var targets = [];
+    if (cfg.emergency && +cfg.target > 0) targets.push({id: cfg.emergency, need: Math.max(0, +cfg.target - (bal[cfg.emergency] || 0)), name: "Build your emergency fund"});
+    if (cfg.savings) targets.push({id: cfg.savings, need: Infinity, name: "Save what's spare"});
+    var used = dict(); targets.forEach(function (t) { var a = db.byId[t.id]; if (used[t.id] || !a || a.owner !== p || a.id === main || !/^(pot|saving|isa)$/.test(a.kind)) return; used[t.id] = true; var amount = round(Math.min(free, t.need)); if (!(amount > 0.004)) return; free = round(free - amount); var key = "sweep:" + date + ":" + a.id; out.moves.push({key: key, keys: [{key: key, amount: amount}], type: "move", from: main, to: a.id, fromName: accName(db, main), toName: a.name, amount: amount, what: "Move " + money(amount) + " to " + a.name, why: t.name + ". Your bills, daily challenge, spending and " + money(out.buffer) + " Main buffer are kept first.", sweep: true}); });
+    return out;
+  }
+
+  function unseenBills(db, p, date) {
+    if (!bankFed(db, p)) return [];
+    var latest = dict(); db.valuations.forEach(function (v) { if (/^bk-/.test(String(v.id)) && v.date <= date && v.date > (latest[v.account] || "")) latest[v.account] = v.date; });
+    var per = {start: maxS(startOf(db, p), addDays(date, -35)), next: addDays(date, 1)};
+    return outgoings(db, p, per, date).filter(function (r) { return (r.status === "late" || r.status === "due" && r.date === date) && !r.pool && r.kind !== "payment" && r.kind !== "loan" && latest[r.account] >= r.date; });
   }
 
   // ---------- months and the year ----------
@@ -1807,11 +1895,11 @@
       var pick = function (date) { for (var i = 0; i < gd.length; i++) if (date >= gd[i].since) return gd[i]; return null; };
       var add = function (g, kind, id, from, amount, date, name) { if (from && from !== g.account && amount > 0.004) out.push({key: "goal:" + g.goal.id + ":" + id, goal: g.goal.id, goalName: g.goal.name, kind: kind, from: from, to: g.account, amount: round(amount), date: date, name: name}); };
       db.transactions.forEach(function (x) {
-        if (x.person !== p || !(+x.amount < 0) || x.budget || x.review || x.date > upTo || x.date < st) return;
+        if (x.person !== p || !(+x.amount < 0) || x.budget || x.refundOf || x.review || x.date > upTo || x.date < st || spareRules(db, p, x.date)) return;
         var g = pick(x.date); if (g) add(g, "oneoff", x.id, x.account || main, -x.amount, x.date, x.note || "");
       });
       db.settlements.forEach(function (s) {
-        if (!s.loan || s.to !== p || !(+s.amount > 0) || s.date > upTo || s.date < st) return;
+        if (!s.loan || s.to !== p || !(+s.amount > 0) || s.date > upTo || s.date < st || spareRules(db, p, s.date)) return;
         var l = db.byId[s.loan], g = l && l.lender === p ? pick(s.date) : null; if (g) add(g, "repay", s.id, s.toAccount || main, +s.amount, s.date, person(db, s.from).name + " paid back " + l.name);
       });
       return out.sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : a.key < b.key ? -1 : 1; });
@@ -1858,6 +1946,7 @@
       var done = ticked(db, p, it.key) >= it.amount - 0.004;
       lines.push({kind: it.kind === "repay" ? "direct-repaid" : "direct-oneoff", label: it.kind === "repay" ? "Paid back to you, sent straight here" : "One-off money in, sent straight here", amount: it.amount, done: done, date: it.date, name: it.name});
     });
+    db.moves.forEach(function (m) { if (!m.dup && m.person === p && /^sweep:/.test(String(m.key || "")) && mine(m.to) && m.date >= per.start && m.date <= minS(date, to)) lines.push({kind: "spare", label: "Spare money saved by your priorities", amount: round(+m.amount || 0), done: true, date: m.date}); });
     var total = 0; lines.forEach(function (l) { total += l.amount; });
     return {period: per, lines: lines, total: round(total), direct: dg ? {since: dg.since, account: dg.account} : null, eligible: goalAccIds(g).some(function (id) { var a = db.byId[id]; return a && a.owner === p && a.kind !== "main" && a.kind !== "credit"; }), accounts: accs};
   }
@@ -2115,7 +2204,8 @@
     var bal = balances(db, date), own = 0, owe = 0, rows = [];
     accountsOf(db, p).forEach(function (a) { var v = round(bal[a.id] || 0); if (a.kind === "credit") { owe += -v; rows.push({name: a.name, amount: v, owe: true}); } else { own += v; rows.push({name: a.name, amount: v}); } });
     db.loans.forEach(function (l) {
-      var left = round((+l.amount || 0) - loanPaid(db, l, date)); if (left <= 0) return;
+      var left = round((+l.amount || 0) - loanPaid(db, l, date)); if (left === 0) return;
+      if (left < 0) { if (l.lender === p) { owe -= left; rows.push({name: "Return to " + person(db, l.borrower).name + ": " + l.name, amount: left, owe: true}); } else if (l.borrower === p) { own -= left; rows.push({name: person(db, l.lender).name + " returns: " + l.name, amount: -left}); } return; }
       if (l.lender === p) { own += left; rows.push({name: person(db, l.borrower).name + " owes you: " + l.name, amount: left}); }
       if (l.borrower === p) { owe += left; rows.push({name: "You owe " + person(db, l.lender).name + ": " + l.name, amount: -left, owe: true}); }
     });
@@ -2130,7 +2220,7 @@
     var its = (Array.isArray(l) ? l : l.items || []).map(function (x, i) { return {x: x, i: i}; }).sort(function (a, b) { var d = a.x.date || "9999", e = b.x.date || "9999"; return d < e ? -1 : d > e ? 1 : a.i - b.i; }).map(function (o) { return o.x; }), credit = Math.max(0, +paid || 0);
     its.forEach(function (x) { if ((+x.share || 0) < 0) credit += -(+x.share); });
     return its.map(function (x) {
-      var share = round(+x.share || 0), cost = x.cost === "" || x.cost === undefined || x.cost === null ? null : +x.cost, out = {id: x.id, name: String(x.name || ""), date: x.date || "", cost: cost, share: share, note: String(x.note || "")};
+      var share = round(+x.share || 0), cost = x.cost === "" || x.cost === undefined || x.cost === null ? null : +x.cost, out = {id: x.id, name: String(x.name || ""), date: x.date || "", cost: cost, share: share, originalShare: x.originalShare, note: String(x.note || "")};
       out.how = cost !== null && cost > 0 && share === round(cost / 2) ? "half" : cost !== null && cost > 0 && share === round(cost) ? "all" : "custom";
       if (share < 0) { out.state = "credit"; out.paid = 0; out.left = 0; return out; }
       var use = Math.min(credit, share); credit = round(credit - use);
@@ -2184,9 +2274,9 @@
     periods: periods, periodAt: periodAt, prevPeriod: prevPeriod, nextPeriod: nextPeriod, planFor: planFor, payday: payday,
     budgetState: budgetState, balances: balances, flows: flows, todo: todo, between: between, today: today, coming: coming,
     calendar: calendar, pots: pots, monthView: monthView, year: year, kindOf: kindOf, newMoney: newMoney, kinds: kinds,
-    goalFlow: goalFlow, goalProgress: goalProgress, goalDirect: goalDirect, directItems: directItems,
+    goalFlow: goalFlow, goalProgress: goalProgress, goalDirect: goalDirect, directItems: directItems, spareRules: spareRules, spareMoney: spareMoney,
     spendWeek: spendWeek, noSpend: noSpend, savingRates: savingRates, forecast: forecast, goals: goals, lisa: lisa, checks: checks, netWorth: netWorth, loans: loans,
-    itemStates: loanItemStates, yearly: yearly, yearReview: yearReview, taxYearStart: taxYearStart,
+    itemStates: loanItemStates, loanPaid: loanPaid, yearly: yearly, yearReview: yearReview, taxYearStart: taxYearStart,
     summary: summary, shareOf: shareOf, myShare: myShare, owedAt: owedAt, amountAt: amountAt, setting: setting, partnerOf: partnerOf, mainOf: mainOf, fallbackOf: fallbackOf,
     accountsOf: accountsOf, accName: accName, ticked: ticked, person: person, startOf: startOf, moveDate: moveDate, budgetsOf: budgetsOf, budgetsIn: budgetsOf, reimbursements: reimbursements, startBalances: startBalances,
     poolDate: poolDate, poolSegs: poolSegs, poolChange: poolChange, poolStart: poolStart, poolNext: poolNext, poolLate: poolLate, poolMonth: poolMonth, poolMonths: poolMonths, poolMonthAt: poolMonthAt, pooledOn: pooledOn, poolOn: poolOn, poolCounts: poolCounts, poolOffer: poolOffer, poolRecord: poolRecord, poolToFreeze: poolToFreeze, pools: pools, isPoolTx: isPoolTx, sharesAt: sharesAt, dayRange: dayRange,
