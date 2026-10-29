@@ -535,7 +535,7 @@ const phone = (F, k) => { const P = {T: {}, since: 0}; P.sync = (ops) => { const
     if (p === "sophie") ok("T1 sophie: her membership is set aside for", setAside.includes("Set aside for Membership"), col0);
     const top = col0.filter(x => /^Top up /.test(x));
     ok("T1 " + p + ": a top-up is in what's saved", top.every(x => at("What's saved") > 0 && at(x) > at("What's saved") && at(x) < at("Left over")), {top, col0});
-    if (p === "ethan") ok("T1 ethan: the Emergency pot's top-up (he went over Fun in November) is saved", top.includes("Top up Emergency pot"), col0);
+    if (p === "ethan") ok("T1 ethan: unperformed emergency moves do not create top-ups", !top.includes("Top up Emergency pot"), col0);
   });
 }
 
@@ -711,7 +711,10 @@ const phone = (F, k) => { const P = {T: {}, since: 0}; P.sync = (ops) => { const
   F.env.props.VIEWS_AT = "0"; F.c.refreshBudgetTabs = () => { n++; throw new Error("tab name too long"); };
   const w = i => F.call({key: F.kE, ops: [{op: "put", table: "transactions", row: {id: "t-r2-" + i, date: "2026-10-27", person: "ethan", amount: 1, budget: "e-fun", account: "e-main"}}]});
   const a = w(1), b2 = w(2), c3 = w(3);
-  ok("R2: a failing refresh is tried once in a minute, and the changes still save", n === 1 && a.applied.length === 1 && b2.applied.length === 1 && c3.applied.length === 1 && /tab name too long/.test(a.viewError || ""), {n, a: a.viewError});
+  ok("R2: saves do not wait for a sheet-view rebuild", n === 0 && a.applied.length === 1 && b2.applied.length === 1 && c3.applied.length === 1, {n});
+  ok("R2: repeated saves coalesce one background rebuild", F.env.triggers.filter(t=>t.getHandlerFunction()==="refreshBudgetViewsPending").length===1);
+  try { F.c.refreshBudgetViewsPending(); } catch(e) {}
+  ok("R2: failed background rebuild is throttled and leaves no stale trigger",n===1&&!F.env.triggers.some(t=>t.getHandlerFunction()==="refreshBudgetViewsPending"));
   F.c.refreshBudgetTabs = real;
 }
 

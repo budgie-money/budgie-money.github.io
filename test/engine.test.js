@@ -84,9 +84,9 @@ const flexItem = B.todo(mf, "ethan", "2026-11-02").find(x => /^back:e-fun:/.test
 eq("paid on a credit account: the money goes there", flexItem && [flexItem.from, flexItem.to, flexItem.amount], ["e-main", "e-flex", 31.98]);
 eq("and the reason says it's credit", flexItem && flexItem.why, "You paid for fun on Flex pot, which is credit. This pays it off.");
 const cover = td.find(x => x.over);
-eq("Emergency pot covers going over fun", [cover.from, cover.to, cover.amount], ["e-emergency", "e-main", 230 - 150]);
+eq("A budget overspend does not move emergency cash into funded Main", !!cover, false);
 const dec = B.planFor(m, "ethan", B.periodAt(m, "ethan", "2026-12-01"));
-near("December pay tops the Emergency pot back up", (dec.lines.find(l => l.kind === "topup") || {}).amount, 80);
+near("Unperformed emergency moves are not topped up on December payday", (dec.lines.find(l => l.kind === "topup") || {}).amount || 0, 0);
 
 // --- a ticked move disappears
 const m2 = db(t => { t.transactions.push({id: "t2", date: "2026-10-30", person: "ethan", amount: 35, budget: "e-fuel", account: "e-main"}); t.moves.push({id: "mv1", date: "2026-10-30", person: "ethan", from: "e-car", to: "e-main", amount: 35, key: "back:e-fuel:2026-10-29:e-main"}); });
@@ -490,7 +490,7 @@ const savedUp = (pl, id) => lineAmt(pl, l => l.setAside && l.bill === id && l.ki
   const bs = B.budgetState(c, me, per);
   eq("compat: budgetState(db, me, per)", ["amount", "spent", "left", "avail", "carryIn", "carryOut", "over"].every(k => k in bs["e-fun"]) && bs["e-fun"].period.start === per.start, true);
   eq("compat: still exported", ["load", "coming", "periodAt", "planFor", "budgetState", "today", "checks", "lisa", "yearly", "yearReview"].every(k => typeof B[k] === "function"), true);
-  eq("compat: version", B.VERSION, "1.5.3");
+  eq("compat: version", B.VERSION, "1.5.4");
 })();
 
 // C3: a payday move ticked in the app and by the bank feed counts once (the latest)
@@ -560,6 +560,7 @@ const savedUp = (pl, id) => lineAmt(pl, l => l.setAside && l.bill === id && l.ki
 (() => {
   const t = fixture(); t.loans[0].account = "e-emergency";
   t.transactions.push({id: "t-over", date: "2026-12-10", person: "ethan", amount: 400, budget: "e-fun", account: "e-main"});
+  t.moves.push({id:"a2-confirmed-cover",person:"ethan",date:"2026-12-11",from:"e-emergency",to:"e-main",amount:100,key:"cover:e-fun:2026-11-26:e-main"});
   t.settlements.push({id: "s-rep", date: "2026-12-28", from: "sophie", to: "ethan", amount: 200, loan: "sofa", key: "loan:sofa:2026-12-28"});
   const L = B.load(t, "2026-12-31"), per = B.periodAt(L, "ethan", "2026-12-24");
   eq("A2: the repayment is planned into the main account", B.planFor(L, "ethan", per).lines.filter(l => l.loan).map(l => l.account), ["e-main"]);
@@ -758,7 +759,7 @@ const tickPay11 = (t, p, d) => { const L0 = B.load(t, d), per = B.periodAt(L0, p
   const u = fixture(); tickPay11(u, "ethan", "2026-10-29");
   u.budgets = u.budgets.filter(b => b.id !== "s-fun").concat([{id: "s-fun2", person: "sophie", name: "Fun", amount: 100, mode: "daily", account: "s-main"}]);
   u.transactions.push({id: "t-p2h", date: "2026-11-02", person: "sophie", amount: 400, budget: "s-fun2", account: "s-main", split: "half"});
-  eq("P2: going over Fun with your share of Sophie's is covered from the Emergency pot", B.todo(B.load(u, d), "ethan", d).filter(x => x.over).map(x => [x.from, x.to, x.amount]), [["e-emergency", "e-main", B.round(200 - (150 + 150 * 3 / 28))]]);
+  eq("P2: an overspent budget with funded Main does not call on Emergency", B.todo(B.load(u, d), "ethan", d).filter(x => x.over).map(x => [x.from, x.to, x.amount]), []);
 }
 // P3: a pot that will run short before a payment is filled from the main account only with money its budgets don't
 // still need; otherwise the fallback pot fills it (and the next pay tops that back up)
@@ -863,8 +864,8 @@ const tickPay11 = (t, p, d) => { const L0 = B.load(t, d), per = B.periodAt(L0, p
   t.transactions.push({id: "t-q4a", date: "2026-11-05", person: "ethan", amount: fun, budget: "e-fun", account: "e-main"});
   t.transactions.push({id: "t-q4b", date: d, person: "ethan", amount: 40, budget: "e-fun", account: "e-main", split: "half"});
   const L = B.load(t, d), mv = B.todo(L, "ethan", d).filter(x => x.type === "move");
-  eq("Q4: his £20 over Fun and Sophie's £20 until she settles both come from the Emergency pot", mv.map(x => [x.from, x.to, x.amount, x.over ? "over" : x.fill ? "fill" : ""]), [["e-emergency", "e-main", 20, "over"], ["e-emergency", "e-main", 20, "fill"]]);
-  eq("Q4: and says why", (mv[1] || {}).why, "Main account is £20.00 under. Your next pay tops the Emergency pot back up.");
+  eq("Q4: his £20 over Fun and Sophie's £20 until she settles both come from the Emergency pot", mv.map(x => [x.from, x.to, x.amount, x.over ? "over" : x.fill ? "fill" : ""]), [["e-emergency", "e-main", 40, "fill"]]);
+  eq("Q4: and says why", (mv[0] || {}).why, "Main account is £40.00 under. Your next pay tops the Emergency pot back up.");
   mv.forEach((x, j) => x.keys.forEach((k, i) => t.moves.push({id: "m-q4" + j + i, date: d, person: "ethan", from: x.from, to: x.to, amount: k.amount, key: k.key})));
   const L2 = B.load(t, d);
   eq("Q4: once they're ticked Main is back to nothing, and nothing more is asked", [B.balances(L2, d)["e-main"], B.todo(L2, "ethan", d).filter(x => x.type === "move").length], [0, 0]);
@@ -874,7 +875,7 @@ const tickPay11 = (t, p, d) => { const L0 = B.load(t, d), per = B.periodAt(L0, p
   const w = fixture(); w.valuations.push({id: "v-q4w", account: "e-emergency", date: "2026-11-02", amount: 0});
   w.transactions.push({id: "t-q4w", date: "2026-11-02", person: "ethan", amount: 400, budget: "e-fun", account: "e-main", split: "half"});
   const ww = B.todo(B.load(w, "2026-11-02"), "ethan", "2026-11-02").filter(x => x.type === "warn");
-  eq("Q4: with the Emergency pot empty, it warns instead", ww.map(x => [x.what, x.why]), [["Main account is £200.00 under", "There isn't enough in your Emergency pot to cover it yet."]]);
+  eq("Q4: with the Emergency pot empty, it warns instead", ww.map(x => [x.what, x.why]), [["Main account is £233.93 under", "There isn't enough in your Emergency pot to cover it yet."]]);
   w.moves.push({id: "m-q4w", date: "2026-11-02", person: "ethan", amount: 0, key: ww[0].key, note: "dismissed"});
   eq("Q4: and Got it puts it away", B.todo(B.load(w, "2026-11-02"), "ethan", "2026-11-02").filter(x => x.type === "warn").length, 0);
   // a payday cover not yet ticked counts as on its way: nothing more is asked for the main account
@@ -892,23 +893,14 @@ const tickPay11 = (t, p, d) => { const L0 = B.load(t, d), per = B.periodAt(L0, p
   const v4 = fixture(); v4.budgets.push(u.budgets[u.budgets.length - 1]);
   eq("Q4: before payday's moves are ticked, the cover is only on the payday screen", B.todo(B.load(v4, "2026-10-29"), "ethan", "2026-10-29").filter(x => x.type === "move" && !x.payday && x.to === "e-main").length, 0);
 }
-// Q5: spending from before a payday that's logged after that payday's moves were ticked: its cover from the fallback
-// pot is asked for, and the next payday tops the fallback pot up by it (that payday's own top-up was already done), so
-// the fallback pot gets back to where it was rather than staying short for good
+// Q5: a late expense can reduce free Main cash without manufacturing an emergency transfer or top-up.
 {
-  const t = fixture(); tickPay11(t, "ethan", "2026-10-29");
-  t.transactions.push({id: "t-q5a", date: "2026-11-18", person: "ethan", amount: 200, budget: "e-fun", account: "e-main"});
-  const it = B.todo(B.load(t, "2026-11-20"), "ethan", "2026-11-20").filter(x => x.over)[0];
-  it.keys.forEach((k, i) => t.moves.push({id: "m-q5a" + i, date: "2026-11-20", person: "ethan", from: it.from, to: it.to, amount: k.amount, key: k.key}));
-  tickPay11(t, "ethan", "2026-11-26");
-  t.transactions.push({id: "t-q5b", date: "2026-11-24", person: "ethan", amount: 40, budget: "e-fun", account: "e-main"});
-  const it2 = B.todo(B.load(t, "2026-11-30"), "ethan", "2026-11-30").filter(x => x.over);
-  eq("Q5: the £40 logged late is covered from the Emergency pot", it2.map(x => [x.from, x.to, x.amount]), [["e-emergency", "e-main", 40]]);
-  it2.forEach(x => x.keys.forEach((k, i) => t.moves.push({id: "m-q5b" + i, date: "2026-11-30", person: "ethan", from: x.from, to: x.to, amount: k.amount, key: k.key})));
-  const L2 = B.load(t, "2026-12-24");
-  eq("Q5: the next payday tops it up by that £40", B.planFor(L2, "ethan", B.periodAt(L2, "ethan", "2026-12-24")).lines.filter(l => l.kind === "topup").map(l => l.amount), [40]);
-  tickPay11(t, "ethan", "2026-12-24");
-  eq("Q5: so the Emergency pot is back at £400", B.balances(B.load(t, "2026-12-24"), "2026-12-24")["e-emergency"], 400);
+ const t=fixture();tickPay11(t,"ethan","2026-10-29");
+ t.transactions.push({id:"t-q5-late",date:"2026-11-18",person:"ethan",amount:200,budget:"e-fun",account:"e-main"});
+ const L=B.load(t,"2026-11-20");
+ eq("Q5: overspending stays visible",B.today(L,"ethan","2026-11-20").overs.some(x=>x.id==="e-fun"),true);
+ eq("Q5: a budget overspend does not request an automatic emergency reimbursement",B.todo(L,"ethan","2026-11-20").some(x=>x.over&&x.to==="e-main"),false);
+ eq("Q5: no top-up without an actual fallback move",B.planFor(L,"ethan",B.periodAt(L,"ethan","2026-11-26")).lines.filter(x=>x.kind==="topup").length,0);
 }
 // Q6: what you owe your partner when payday comes stays in the main account (where settling up happens) rather than
 // counting as left over for the Cash ISA, so settling up after payday doesn't take it out of this month's budgets

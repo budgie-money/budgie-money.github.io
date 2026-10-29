@@ -1,7 +1,7 @@
 /* Budgie app: screens, syncing and offline queue. The maths lives in engine.js. */
 (function () {
   "use strict";
-  var B = window.Budgie, TH = window.BudgieThemes, APP_VERSION = "1.5.3";
+  var B = window.Budgie, TH = window.BudgieThemes, APP_VERSION = "1.5.4";
   var $ = function (s) { return document.querySelector(s); };
   var esc = function (s) { return String(s === undefined || s === null ? "" : s).replace(/[&<>"']/g, function (c) { return {"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]; }); };
   // wiped: Budgie's copy at the old address has been wiped (it's moving across), so nothing is saved here again
@@ -125,7 +125,7 @@
     // one at a time: a full one asked for meanwhile (Full refresh, a new link) runs as soon as this one is done
     // (changes made meanwhile go up straight after a sync anyway)
     if (S.syncing) { if (full) S.syncAgain = true; return; }
-    S.syncing = true; renderTop();
+    S.syncing = true; var syncStarted = Date.now(); renderTop();
     var cfgAt = S.cfg, dataAt = S.data;
     // a request that never answers (a phone signal that drops mid-way) mustn't leave Budgie "Syncing…" for good;
     // anything it carried is sent again next time, and the sheet only ever saves a change once
@@ -150,9 +150,9 @@
       S.newVersion = j.engine && newer(j.engine, B.VERSION) ? j.engine : null; // only when the sheet is ahead of this phone
       // when the sheet's code is updated, fetch everything once: it may now send things it didn't before (new tabs, say)
       var upgraded = !!(j.engine && S.data.serverEngine !== j.engine && !j.full); if (j.engine) S.data.serverEngine = j.engine;
-      persist(); dirty(); S.lastSync = Date.now(); S.lastError = again.length ? "Your sheet couldn't save " + again.length + " change" + (again.length === 1 ? "" : "s") + " yet. They are kept on this phone and will be tried again." : "";
+      persist(); dirty(); S.lastSync = Date.now(); S.lastSyncMs = S.lastSync - syncStarted; S.lastError = again.length ? "Your sheet couldn't save " + again.length + " change" + (again.length === 1 ? "" : "s") + " yet. They are kept on this phone and will be tried again." : "";
       applyPersonPrefs();
-      if (!S.bank && !S.bankAsked) { S.bankAsked = true; setTimeout(bankRefresh, 300); }
+      if (!S.bankAsked || (S.bank && Date.now() - (+S.bank.at || 0) >= 300000)) { S.bankAsked = true; setTimeout(bankRefresh, 300); }
       // (what's waiting to be tried again waits for the next sync, a minute or the next change, rather than straight away)
       if (S.data.queue.length > again.length || ((rej.length || upgraded) && !j.full)) setTimeout(function () { sync((rej.length || upgraded) && !j.full); }, 60); // a full refresh puts back the sheet's copy of anything turned down
     } catch (e) { S.lastError = navigator.onLine === false ? "Offline: changes will sync when you're back online" : e && e.name === "AbortError" ? "Your sheet took too long to answer. Budgie will try again." : String(e && e.message || e); }
@@ -314,7 +314,7 @@
     house: function () { return ["House", "Deposit and mortgage"]; }, networth: function () { return ["Net worth", "Own minus owe"]; }, debts: function () { return ["Debts and IOUs", "Who owes what"]; },
     insights: function () { return ["Insights", "How your spending is going"]; }, gifts: function () { return ["Gifts", "Ideas and what you've bought"]; }, settings: function () { return ["Settings", person().name]; },
     checks: function () { return ["Things to check", fromTitle()]; },
-    edit: function () { return [S.view.p.title || "Edit", fromTitle()]; }, list: function () { return [S.view.p.title || "", fromTitle()]; }, themes: function () { return ["Themes", "How Budgie looks"]; },
+    edit: function () { return [S.view.p.title || "Edit", fromTitle()]; }, list: function () { return [S.view.p.title || ({budgets:"Budgets",accounts:"Accounts",income:"Money coming in",splits:"Splits",transfers:"Regular payments"})[S.view.p.table] || "Rules", fromTitle()]; }, themes: function () { return ["Themes", "How Budgie looks"]; },
     pool: function () { return ["Bills month", fromTitle()]; },
     payments: function () { var d = db(), pp = S.view.p, b = pp.budget ? d.byId[pp.budget] : null, per = B.periodAt(d, me(), pp.start || todayIso()); return ["Payments", (b ? b.name.replace(/ \(what's left\)/, "") + " · " : "") + per.name]; },
     emailset: function () { return ["Sunday email", "Settings"]; }, linked: function () { return ["Linked apps", "Settings"]; },
@@ -765,7 +765,7 @@
     var shared = d.bills.filter(function (b) { return b.split; });
     if (shared.length) html += card('<h2>Shared bills</h2><div class="list" style="margin-top:6px">' + shared.map(function (b) {
       // (an estimate the real bills count against: how far this bills month has got, and how the last one settled)
-      var pmNow = B.poolOn(d, b) ? B.poolMonthAt(d, b, now) : null; if (pmNow) return poolRow(pmNow);
+      var pmNow = B.poolOn(d, b) ? B.poolMonthAt(d, b, now) : null; if (pmNow) return '<div class="c-shared-row">' + poolRow(pmNow) + '<p class="small muted" style="margin:0 0 10px">' + esc(qp.name) + "’s share: " + M(B.shareOf(d, b.split, q, pmNow.estimate, b.person, pmNow.start)) + " of the estimate</p></div>";
       var amt = B.amountAt(d, b, now), parts = d.people.map(function (x) { return esc(x.name) + " " + M(B.shareOf(d, b.split, x.id, amt, b.person, now)); }).join(" · ");
       return li(esc(b.name), parts, num(M(amt)));
     }).join("") + "</div>");
@@ -1318,7 +1318,7 @@
     var j = await askSheet(Object.assign({key: S.cfg.k, action: action}, extra || {})); if (!j.ok) throw new Error(sheetSaid(j));
     return j;
   }
-  function bankRefresh() { return bankCall("bank.status").then(function (j) { S.bank = j.bank || {}; S.bank.at = Date.now(); render(true); return S.bank; }, function (e) { S.bank = Object.assign(S.bank || {}, {err: e.message}); render(true); }); }
+  function bankRefresh() { if (S.bankRefreshing) return S.bankRefreshing; S.bankRefreshing = bankCall("bank.status").then(function (j) { S.bank = j.bank || {}; S.bank.at = Date.now(); render(true); return S.bank; }, function (e) { S.bank = Object.assign(S.bank || {}, {err: e.message}); render(true); }).finally(function () { S.bankRefreshing = null; }); return S.bankRefreshing; }
   function bankName() { var b = (S.bank && S.bank.provider) || (/starling/i.test(person().bank || "") ? "starling" : "monzo"); return b === "starling" ? "Starling" : "Monzo"; }
   function bankLabel() { var b = S.bank; if (demoOn()) return "Not used in Show and tell"; if (!b || !b.provider) return "Payments and balances from " + (person().bank || "your bank") + ", read-only"; if (b.needsReconnect) return bankName() + ": needs reconnecting"; return bankName() + (b.connected ? ": connected" + (b.lastSync ? ", checked " + ago(b.lastSync) : "") : ": not finished setting up"); }
   function reviewRows() { var p = me(); return (tables().transactions || []).filter(function (x) { return x.person === p && !x.deleted && (x.review === true || /^true$/i.test(String(x.review))); }).sort(function (a, b) { return a.date < b.date ? 1 : -1; }); }
@@ -1430,9 +1430,9 @@
   SCREENS.sync = function () {
     if (demoOn()) return card("<p>Show and tell is on, so nothing is synced. Turn it off in Settings to go back to your own data.</p>");
     var c = S.cfg || {};
-    return card('<div class="list">' + li("Status", esc(syncLabel()), "") + li("Waiting to sync", S.data.queue.length + " change" + (S.data.queue.length === 1 ? "" : "s"), "") + li("Signed in as", esc(person().name || "?"), "") + "</div>" +
+    return card('<div class="list">' + li("Status", esc(syncLabel()), "") + li("Waiting to sync", S.data.queue.length + " change" + (S.data.queue.length === 1 ? "" : "s"), "") + li("Signed in as", esc(person().name || "?"), "") + (S.lastSyncMs ? li("Last sync", (S.lastSyncMs / 1000).toFixed(1) + " seconds", "") : "") + "</div>" +
       '<div class="two fit" style="margin-top:10px"><button type="button" class="btn" data-a="syncnow">Sync now</button><button type="button" class="btn ghost" data-a="syncfull">Full refresh</button></div>') +
-      '<div class="banner small">Your data lives in the <b>Budgie data</b> Google Sheet. Each tab is a table you can read, sort or back up. Your budget tab fills itself in. This phone keeps a copy so the app works offline.</div>' +
+      '<div class="banner small">Your data lives in the <b>Budgie data</b> Google Sheet. Each tab is a table you can read, sort or back up. The formatted budget tabs refresh in the background. This phone keeps a copy so the app works offline. Bank imports run separately every 15 minutes; Sync now fetches the latest saved data.</div>' +
       card('<h2>Move to another phone</h2><p class="small muted">Open your connect link on the new phone. Keep it private: it lets anyone with it see your budget.</p><button type="button" class="btn danger sm" data-a="disconnect">Disconnect this phone</button>');
   };
 

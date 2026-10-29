@@ -6,7 +6,7 @@
   else root.Budgie = factory();
 })(this, function () {
   "use strict";
-  var VERSION = "1.5.3";
+  var VERSION = "1.5.4";
 
   // ---------- dates ----------
   function D(s) { var p = String(s).split("-"); return new Date(Date.UTC(+p[0], +p[1] - 1, +p[2])); }
@@ -861,7 +861,7 @@
       // puts back what the fallback pot really paid out last period: covers for going over, and a ticked payday cover
       var fb = fallbackOf(db, p), pvT = fb ? prevPeriod(db, p, per) : null, top = 0;
       if (pvT && pvT.start < from && pvT.next > st) {
-        reimbursements(db, p, pvT, addDays(pvT.next, -1)).forEach(function (g) { if (g.kind === "over" && g.from === fb) top += g.amount; });
+        reimbursements(db, p, pvT, addDays(pvT.next, -1)).forEach(function (g) { if (g.kind === "over" && g.from === fb) top += Math.min(g.amount, ticked(db, p, g.key) + (g.bank || 0)); });
         // (by person: you can both be paid on the same day, and the key doesn't say whose pay it was)
         if (pvT.pay && !pvT.opening) top += db.moveKeysBy[p + "|pay:" + pvT.start + ":cover"] || 0;
         // and what it really put into a pot that would have run short before a payment (a ticked move to fill it), or
@@ -1311,7 +1311,9 @@
           plan(g.key, src, g.to, g.amount, "", lentWhy(g.name, accName(db, g.to), accName(db, src)), {partial: true, lent: true, names: [g.name]});
         }
         else if (g.kind === "refund") plan(g.key, g.from, g.to, g.amount, "", "A " + g.name + " refund came into " + accName(db, g.from) + ".", {partial: true, refund: true, names: [g.name]});
-        else plan(g.key, g.from, g.to, g.amount, "", "You went over your " + g.name + " budget" + (g.to === main ? "" : " paying from " + accName(db, g.to)) + ". Your next pay tops the " + accName(db, g.from) + " back up.", {partial: true, over: true, names: [g.name]});
+        // Overspending is a budget fact. It only needs emergency cash in Main if Main itself will run short
+        // (checked below). Moving emergency money merely to undo an expense would inflate available cash.
+        else if (g.to !== main) plan(g.key, g.from, g.to, g.amount, "", "You went over your " + g.name + " budget paying from " + accName(db, g.to) + ". Your next pay tops the " + accName(db, g.from) + " back up.", {partial: true, over: true, names: [g.name]});
       });
     });
     // the same move from older months or other budgets becomes one item (ticking it saves each part)
@@ -2270,8 +2272,14 @@
     // "on track" or "over budget" says how the money's going, so it's only there when some of it is shared
     if (share("totals", true) || share("cats", true)) out.status = t.status;
     // saving as the Money tab counts it: money put by for a yearly bill is bills money, not saved
-    if (share("totals", true)) { out.safe = t.safe; out.saved = kinds(t.plan.lines).save; }
+    if (share("totals", true)) { out.safe = t.safe; out.saved = kinds(t.plan.lines).save; out.bills = kinds(t.plan.lines).bill; }
     if (share("cats", true)) out.tiles = t.tiles.map(function (x) { return {name: x.name, spent: x.spent, amount: x.amount, left: x.left, pct: x.pct, paceMark: x.paceMark, mode: x.mode}; });
+    // Account observations are only shared with the existing full payment/balance permission.
+    // A budget remainder is not evidence of that much money in the bank.
+    if (share("payments", false)) {
+      var main = mainOf(db, p), v = db.valuations.filter(function (x) { return x.account === main && x.date <= date; }).sort(function (a, b) { return a.date < b.date ? 1 : a.date > b.date ? -1 : (+b.updated || 0) - (+a.updated || 0); })[0];
+      if (v) out.mainBalance = {amount: round(v.amount), date: v.date};
+    }
     // only how far each goal has got: not the balance of each account in it, or its notes
     if (share("goals", true)) out.goals = goals(db, p, date).filter(function (g) { return String((db.byId[g.id] || {}).owners || "").split(/[,\s]+/).length < 2; })
       .map(function (g) { return {id: g.id, name: g.name, kind: g.kind, target: g.target, saved: g.saved, pct: g.pct, due: g.due}; });

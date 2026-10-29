@@ -161,3 +161,11 @@ of that person's apps.
 - Partner summaries include each category's actual `left` value (1.5.2). The category table also derives it from amount and spending for older cached summaries.
 
 - Credit repayment flows are forecasts while future-dated. On or before today, a paid/matched occurrence is required before the liability is reduced (1.5.3); an elapsed due date alone does not clear the debt.
+
+## Polish and cash clarity (1.5.4)
+
+- Overspending does not by itself ask for emergency cash in Main. The cash-shortfall check still funds an actual deficit. Next payday restores only observed or confirmed fallback moves; an unperformed reimbursement never creates a top-up.
+- Partner category remainders are explicitly allowances. A separate dated Main balance is included only with the existing full payment/balance-sharing permission. Planned bill and saving totals use the existing totals permission. Shared pooled bills display the partner's share of the estimate.
+- Saving and payment actions have shared spacing rules. Budget figures align on the first numeric line; over captions have a reserved line. The daily guide uses each theme's hero text colour. The tour targets actual cards and keeps its history transition together.
+- Saving a row acknowledges the data before rebuilding formatted budget sheets. One coalesced time trigger refreshes those views in the background; the hourly refresh remains the fallback. Read snapshots and write validation still use the script lock, and both bank feeds keep their existing read-only polling schedule.
+- Theme tests cover foreground/hero/action/status contrast for all 20 light, dark and special looks. Browser polish checks cover four phone/tablet widths, larger text, the tour and separate payment actions. Private live data never goes into fixtures or the source repository.
