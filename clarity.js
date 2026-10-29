@@ -624,7 +624,7 @@
                     E(r.name) +
                     '</span><span class="why">' +
                     E(B.accName(db(), r.account)) +
-                    (due && r.date < now() ? " · Not matched" : "") +
+                    (due && r.date < now() ? " · Check payment" : "") +
                     '</span></span><span class="rt">' +
                     A.num((r.incoming ? "+" : "") + M(r.amount)) +
                     "</span></button>",
@@ -677,7 +677,7 @@
               ? '<p class="small muted">Recorded in your activity.</p>'
               : '<p class="small muted">' +
                 (r.date < now()
-                  ? "Not yet matched to a bank payment."
+                  ? "Budgie has not found the bank receipt. Check Activity before recording or matching it."
                   : "Scheduled payment.") +
                 "</p>") +
             (r.table
@@ -1089,9 +1089,9 @@
           {t:"Your payments",s:"Activity starts with the most recent receipts. Money in and Money out are filters; Due next contains scheduled payments. Opening a receipt lets you check its budget, link a refund or match a bill.",m:'<p>Recent · Due next<br>All · Money out · Money in</p>',show:"activity"},
           {t:"Where the money is",s:"Pots show account balances separately from category allowances. A purchase from Main can still reduce Food. Moving money between your own pots does not count as another expense.",m:'<p>Balances and recent pot moves</p>',show:"pots"},
           {t:"Payday",s:"Once your pay is seen, sort it into the pots listed here. Existing money in each pot counts towards what it needs, including bills and yearly costs. Only confirm a move after you have made it.",m:'<p>Pay → commitments → budgets → saving</p>',show:"payday"},
-          {t:"Daily saving and spare money",s:"Daily saving is a scheduled transfer, including its 1p daily increase. It is protected alongside bills. Saving rules keep your Main buffer before suggesting genuinely spare money for the destination you chose.",m:'<p>Daily saving · Main buffer · Savings</p>',show:"spare"},
-          {t:q+"’s overview",s:"Category amounts are budget allowances, not bank balances. A bank balance is shown separately only if shared. Shared bills show each person's share; itemised IOUs keep purchases and repayments together.",m:'<p>Budget · shared bills · IOUs · shared goals</p>',show:"partner"},
-          {t:"Goals and the forecast",s:"A target is an intention. The forecast only counts the accounts and saving routes attached to it. Sales, gifts and extra income are not cash until recorded. Open a goal to check what counts towards it.",m:'<p>Saved so far → saving planned → target date</p>',show:"goals"}
+          {t:"Daily saving and spare money",s:"Daily saving is a scheduled transfer, including its 1p daily increase. It is protected alongside bills. Saving rules keep your Main buffer before suggesting spare money. Enable lower-pay handling there to reduce new saving contributions before emergency cover; earlier pay periods stay unchanged.",m:'<p>Daily saving · Main buffer · Savings</p>',show:"spare"},
+          {t:q+"’s overview",s:"Category amounts are budget allowances, not bank balances. Each person can choose to share just their balance or a bill breakdown in Partner and sharing, independently of payment details. Shared bills show each person's share; itemised IOUs keep purchases and repayments together.",m:'<p>Budget · shared bills · IOUs · shared goals</p>',show:"partner"},
+          {t:"Goals and the forecast",s:"A target is an intention. The forecast only counts the accounts and saving routes attached to it. Sales, gifts and extra income are not cash until recorded. Open Goals for dated forecasts, a preferred date and fallback date. Insights remembers bills you choose to keep; Budget health in Settings flags receipts, missing balances and funding gaps.",m:'<p>Saved so far → saving planned → target date</p>',show:"goals"}
         ];
       });
       ACT.extourShow = function (target) {
@@ -1119,9 +1119,11 @@
         var overview = '<section id="c-partner"><div class="card"><div class="row"><h2>' + E(A.person(q).name) + '</h2></div><p class="small muted">' + E(next) + '</p><div class="list c-partner-overview">';
         overview += sm.mainBalance ? A.li("Current account", "Last balance · " + E(B.nice(sm.mainBalance.date)), A.num(M(sm.mainBalance.amount))) : A.li("Current account", "Bank balance isn’t shared", "");
         if (sm.safe !== undefined) overview += A.li("Daily guide", "Cash-limited budget pace", A.num(M(sm.safe)));
-        if (sm.bills !== undefined) overview += A.li("Bills this pay period", "Planned commitments", A.num(M(sm.bills)));
-        if (sm.saved !== undefined) overview += A.li("Saving this pay period", "Planned contributions", A.num(M(sm.saved)));
+        if (sm.billDetails && sm.billDetails.length) overview += '<details class="trust-details"><summary>Bill breakdown · ' + M(sm.bills || sm.billDetails.reduce(function(n,l){return n+l.amount;},0)) + '</summary><div class="list">' + sm.billDetails.map(function(l){return A.li(E(l.name), E(l.date ? B.nice(l.date) : "Set aside this payday") + (l.estimate ? " · estimate" : ""), A.num(M(l.amount)));}).join("") + '</div></details>';
+        if (sm.saved > 0.004) overview += A.li("Saving this pay period", "Planned contributions", A.num(M(sm.saved)));
         overview += '</div></div></section>';
+        var shared = Array.from(box.children).filter(function(el){return Array.from(el.querySelectorAll("h2")).some(function(h){return h.textContent === "Shared bills";});})[0];
+        if (shared) { shared.remove(); overview += shared.outerHTML; }
         return overview + (
           card(
             "<h2>" +

@@ -149,5 +149,6 @@
       {t:'Goals',s:'See where your saving is taking you, what funds it and what your next step is.',m:btn('See my goals','extourShow','goals','wide'),show:'goals'}];});
     ACT.extourShow=function(s){A.closeSheet();go(s);};
     if(window.BudgieClarity) window.BudgieClarity.install(A,{more:originalMore,sorted:sortedCard});
+    if(window.BudgieTrust) window.BudgieTrust.install(A);
   }};
 })();

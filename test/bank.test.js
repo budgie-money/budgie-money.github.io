@@ -2137,5 +2137,19 @@ const trig = F.env.triggers.map(t => t.getHandlerFunction()).sort();
 ok("bank poll every 15 minutes, kept by installTriggers", trig.filter(n => n === "bankPoll").length === 1 && trig.indexOf("refreshBudgetTabs") >= 0, trig);
 ok("sync without an action is unchanged", call({key: kE}).ok === true && Array.isArray(call({key: kE}).rows.transactions));
 
+// Receipt lookup is private, read-only and explains exactly where a charge was reconciled.
+{
+ const R=bankEnv(t=>{t.exceptions.push({id:'match-example',item:'e-phone',date:'2026-11-05',action:'paid',bankId:'receipt-max'});t.settings.push({person:'ethan',key:'bank.map.acc-example',value:'e-bills'});});
+ R.c.bankSet_(R.c.bankKey_('TOKEN','ethan'),{provider:'monzo',access:SECRET.access1});
+ R.c.bankSet_(R.c.bankKey_('STATUS','ethan'),{accounts:[{extId:'acc-example',name:'Bills',kind:'pot'}]});
+ R.c.monzoRead_=()=>({txns:[{id:'receipt-max',name:'Max',date:'2026-11-05',amount:19,acc:'acc-example',pending:false}],potErrors:[]});
+ let before=JSON.stringify(R.c.allTables_()),r=R.call({key:R.kE,action:'bank.receipts',query:'max'});
+ ok('receipt lookup returns the bank fact and reconciliation',r.ok&&r.receipts.length===1&&r.receipts[0].amount===19&&r.receipts[0].account==='Bills & Rent pot'&&r.receipts[0].matched[0]==='Phone',r);
+ ok('receipt lookup never changes the ledger',JSON.stringify(R.c.allTables_())===before);
+ ok('receipt lookup cannot read the partner bank',R.call({key:R.kS,action:'bank.receipts',query:'max'}).ok===false);
+ ok('receipt lookup requires a bounded search',R.call({key:R.kE,action:'bank.receipts',query:'m'}).ok===false&&R.call({key:R.kE,action:'bank.receipts',query:'x'.repeat(61)}).ok===false);
+ ok('receipt lookup exposes no tokens or external bank IDs',!JSON.stringify(r).includes(SECRET.access1)&&!JSON.stringify(r).includes('acc-example')&&!JSON.stringify(r).includes('receipt-max'));
+}
+
 console.log(fails ? fails + " failed, " + passes + " passed" : "All " + passes + " passed");
 process.exit(fails ? 1 : 0);

@@ -33,7 +33,7 @@ function fakeDrive(env) {
     const Tab = (name) => { const t = {name, cells: []}; t.api = {getName: () => t.name, setName: (x) => { t.name = x; return t.api; },
       getRange: (r, c, nr, nc) => ({setValues: (v) => { v.forEach((row, i) => { t.cells[r - 1 + i] = row.slice(); }); }})}; return t; };
     tabs.push(Tab("Sheet1"));
-    const ss = {getId: () => file.id, getSheets: () => tabs.map(t => t.api), insertSheet: (name, i) => { if (tabs.some(t => t.name === name)) throw new Error("A sheet with the name \"" + name + "\" already exists."); const t = Tab(name); tabs.splice(i, 0, t); return t.api; },
+    const ss = {setSpreadsheetTimeZone: (z) => {tabs.timeZone=z;return ss;}, getId: () => file.id, getSheets: () => tabs.map(t => t.api), insertSheet: (name, i) => { if (tabs.some(t => t.name === name)) throw new Error("A sheet with the name \"" + name + "\" already exists."); const t = Tab(name); tabs.splice(i, 0, t); return t.api; },
       deleteSheet: (api) => { const i = tabs.findIndex(t => t.api === api); tabs.splice(i, 1); }};
     made[file.id] = tabs; return ss;
   };
@@ -204,6 +204,21 @@ const all = (m) => m.htmlBody + "\n" + m.body + "\n" + m.subject;
   ok("BACKUP: your own two accounts don't count as shared", !!c.backupNow() && made() === 2, env.logs.slice(-1));
   env.drive.addFolder("mine3", {owner: "main@example.com", editors: ["owner@example.com", "sophie@example.com"]}); env.props.BACKUP_FOLDER_ID = "mine3";
   ok("BACKUP: but anyone else still does", c.backupNow() === null && made() === 2);
+}
+
+// A backup is a coherent snapshot, and its table values can rebuild the same financial state.
+{
+ const {env,c}=setupEnv(household);env.drive.addFolder('coherent');env.props.BACKUP_FOLDER_ID='coherent';let held=false,captured=0;
+ c.LockService={getScriptLock:()=>({waitLock:()=>{held=true;},releaseLock:()=>{held=false;}})};
+ for(const sh of Object.values(env.sheets)){const read=sh.getDataRange.bind(sh);sh.getDataRange=()=>{const r=read(),values=r.getValues.bind(r);r.getValues=()=>{ok('BACKUP: source tab read under script lock',held);captured++;return values();};return r;};}
+ const create=c.SpreadsheetApp.create.bind(c.SpreadsheetApp);c.SpreadsheetApp.create=name=>{ok('BACKUP: Drive creation happens after releasing data lock',!held);return create(name);};
+ held=true;const before=c.Budgie.load(c.allTables_(),'2026-11-02');held=false;captured=0;const name=c.backupNow(),tabs=Object.values(env.drive.made).slice(-1)[0],restored={};
+ tabs.forEach(t=>{const head=t.cells[0];restored[t.name]=t.cells.slice(1).map(r=>Object.fromEntries(head.map((h,i)=>[h,r[i]])));});
+ const R=setupEnv();tabs.forEach(t=>{var sh=R.env.sheets[t.name]||R.env.ss.insertSheet(t.name);sh.clear();if(t.cells.length&&t.cells[0].length)sh.getRange(1,1,t.cells.length,t.cells[0].length).setValues(t.cells);});R.c.CACHE_={};const after=R.c.Budgie.load(R.c.allTables_(),'2026-11-02');
+ ok('BACKUP: date timezone preserved',tabs.timeZone==='Europe/London');
+ ok('BACKUP: successful snapshot timestamp recorded',!!name&&+env.props.BACKUP_LAST_OK>0&&captured===Object.keys(env.sheets).length);
+ ok('RESTORE: account balances rebuilt exactly',JSON.stringify(c.Budgie.balances(before,'2026-11-02'))===JSON.stringify(c.Budgie.balances(after,'2026-11-02')));
+ ok('RESTORE: loan and net-worth totals rebuilt exactly',JSON.stringify(c.Budgie.netWorth(before,'ethan','2026-11-02'))===JSON.stringify(c.Budgie.netWorth(after,'ethan','2026-11-02')));
 }
 
 // ================= 3. tax-year round-up =================

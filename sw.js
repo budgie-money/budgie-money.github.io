@@ -1,8 +1,8 @@
 // Offline support for Budgie. App files come from the network when it's there (so an update arrives
 // straight away) and from the cache when it isn't. VERSION only names the cache.
-const VERSION = "1.5.5";
+const VERSION = "1.5.6";
 const CACHE = "budgie-" + VERSION;
-const FILES = ["./", "./index.html", "./app.js", "./experience.js", "./clarity.js", "./engine.js", "./demo.js", "./themes.js", "./manifest.webmanifest", "./icon-192.png", "./icon-512.png", "./apple-touch-icon.png", "./maskable-512.png", "./icon.svg"];
+const FILES = ["./", "./index.html", "./app.js", "./experience.js", "./clarity.js", "./trust.js", "./engine.js", "./demo.js", "./themes.js", "./manifest.webmanifest", "./icon-192.png", "./icon-512.png", "./apple-touch-icon.png", "./maskable-512.png", "./icon.svg"];
 self.addEventListener("install", e => { e.waitUntil(caches.open(CACHE).then(c => c.addAll(FILES.map(f => new Request(f, {cache: "reload"})))).then(() => self.skipWaiting())); });
 self.addEventListener("activate", e => { e.waitUntil(caches.keys().then(ks => Promise.all(ks.filter(k => k.startsWith("budgie-") && k !== CACHE).map(k => caches.delete(k)))).then(() => self.clients.claim())); });
 const fresh = (req, ms) => new Promise((res, rej) => {

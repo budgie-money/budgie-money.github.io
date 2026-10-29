@@ -1014,5 +1014,22 @@ const phone = (F, k) => { const P = {T: {}, since: 0}; P.sync = (ops) => { const
   ok("goal straight away: ticking the same one twice counts once (the second is kept as a copy)", second.applied.length === 1 && mv.length === 2 && mv.filter(x => x.deleted === true || x.deleted === "TRUE").length === 1, mv);
 }
 
+// Independent summary permissions never widen raw-row access, and revoke on the next sync.
+{
+ const F=fresh(t=>{t.valuations.push({id:'e-now',account:'e-main',date:'2026-10-27',amount:123.45});t.transactions.push({id:'e-private',person:'ethan',date:'2026-10-27',account:'e-main',amount:5,note:'Private detail',budget:'e-fun'});});
+ const set=(key,value)=>F.call({key:F.kE,ops:[{op:'put',table:'settings',row:{person:'ethan',key:'share.'+key,value}}]});
+ set('balance',true);let r=F.call({key:F.kS,full:true});
+ ok('balance-only summary returns a balance',!!r.partnerSummary.mainBalance);
+ ok('balance-only sharing leaves raw valuations and payments private',!r.rows.valuations.some(x=>x.account==='e-main')&&!r.rows.transactions.some(x=>x.id==='e-private'));
+ ok('balance-only sharing does not include bill details',!r.partnerSummary.billDetails);
+ set('bills',true);r=F.call({key:F.kS,full:true});
+ ok('bill sharing sends sanitized summary details',Array.isArray(r.partnerSummary.billDetails)&&!JSON.stringify(r.partnerSummary.billDetails).includes('Private detail'));
+ ok('bill-detail sharing leaves private bill rows hidden',!r.rows.bills.some(x=>x.id==='e-phone'));
+ let since=r.now;set('balance',false);set('bills',false);r=F.call({key:F.kS,since});
+ ok('revoking either summary permission refreshes the partner snapshot',r.full&&!r.partnerSummary.mainBalance&&!r.partnerSummary.billDetails);
+ const bad=F.call({key:F.kS,ops:[{op:'put',table:'settings',row:{person:'ethan',key:'share.balance',value:true}}]});
+ ok('partner cannot enable balance sharing on someone else’s behalf',bad.rejected.length===1);
+}
+
 console.log(fails ? fails + " failed, " + passes + " passed" : "All " + passes + " passed");
 process.exit(fails ? 1 : 0);
