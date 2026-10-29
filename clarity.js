@@ -33,6 +33,8 @@
         ".c-tabs{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;margin-bottom:18px}.c-tabs button{padding:11px 3px;min-width:0;font-size:14px;white-space:nowrap}.c-tabs [aria-pressed=true]{background:var(--accent);color:var(--accent-ink)}.c-period{display:grid;grid-template-columns:42px 1fr 42px;gap:6px;align-items:center;margin:8px 0 18px;text-align:center}.c-period strong,.c-period small{display:block}.c-period small{font-size:12px;color:var(--muted);margin-top:3px;line-height:1.5}.c-budget-head,.c-budget-row{display:grid;grid-template-columns:minmax(0,1.3fr) minmax(0,1fr) minmax(0,1fr);gap:8px;align-items:center;text-align:right}.c-budget-head{font-size:12px;color:var(--muted);padding:8px 0}.c-budget-head>:first-child,.c-budget-row>:first-child{text-align:left}.c-budget-row{width:100%;background:none;color:inherit;border:0;border-top:1px solid var(--line2);padding:15px 0;font:inherit}.c-budget-row strong{font-size:15px;line-height:1.35;display:block;overflow-wrap:anywhere}.c-budget-row small{display:block;font-size:11px;color:var(--muted);margin-top:4px}.c-budget-row .c-amount{font-size:15px;font-weight:750;font-variant-numeric:tabular-nums;white-space:nowrap}.c-over{color:var(--warn)}.c-guide{display:block;width:100%;border:0;text-align:left;color:var(--accent-ink);padding:20px}.c-guide .big{font-size:38px;line-height:1.2;margin:5px 0 15px}.c-guide-parts{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;border-top:1px solid rgba(255,255,255,.25);padding-top:13px}.c-guide-parts span,.c-guide-parts b{display:block;font-size:12px;line-height:1.5}.c-guide-parts span{opacity:.85;overflow-wrap:anywhere}.c-guide-parts b{font-size:15px}.c-action{border-bottom:1px solid var(--line2);padding:14px 0}.c-action:last-child{border:0}.c-action strong{display:block;font-size:15px;line-height:1.45}.c-action .btn{margin-top:9px}.c-section{margin:20px 2px 10px;font-size:15px;color:var(--muted)}.c-date{margin:18px 0 4px;font-size:13px;font-weight:700;color:var(--muted)}.c-activity .li{align-items:center}.c-activity .what{line-height:1.4}.c-activity .rt{flex-shrink:0;margin-left:6px}.c-guide-sheet .li{align-items:center}.c-actions-empty{margin:0;color:var(--muted);font-size:13px}.c-quick{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:14px}.c-quick button{padding-left:5px;padding-right:5px;font-size:13px;white-space:nowrap}.c-activity-switch{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px}.c-activity-switch button{font-size:13px;padding:9px 4px;white-space:nowrap}";
       document.head.appendChild(style);
       style.textContent += ".c-activity .li,.c-guide-sheet .li{align-items:flex-start}.c-budget-row{align-items:start}.c-budget-row strong,.c-budget-row .c-amount{font-size:1em;line-height:1.4}.c-budget-row .c-amount{display:block;font-size:clamp(14px,4.8vw,1em)}.c-budget-row small{line-height:1.4;min-height:1.4em}.c-guide{color:var(--hero-ink);background:var(--hero);position:relative}.c-guide-top{display:flex;justify-content:space-between;align-items:center;gap:12px}.c-guide-top>span{font-size:13px;font-weight:700}.c-guide-link{border:1px solid color-mix(in srgb,var(--hero-ink) 35%,transparent);border-radius:20px;padding:6px 10px;font-size:11px!important}.c-guide-total{display:flex;align-items:baseline;gap:9px;margin:10px 0 16px}.c-guide-total .big{margin:0;font-size:40px}.c-guide-total .small{font-size:13px;opacity:.9}.c-guide-parts{border-color:color-mix(in srgb,var(--hero-ink) 25%,transparent);align-items:stretch}.c-guide-parts>div{display:flex;flex-direction:column;justify-content:space-between;gap:7px}.c-guide-parts span{opacity:1;min-height:3em}.c-guide-parts b{line-height:1.4}.c-guide-until{font-size:12px;margin-top:10px;opacity:.9}.c-choice-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin:18px 0}.c-choice-grid .btn{min-width:0;font-size:13px;padding:12px 8px;white-space:normal}.c-choice-list{display:grid;gap:10px}.c-partner-overview{display:grid;gap:0}.c-partner-overview .li{align-items:start}.c-partner-overview .num{line-height:1.4}.c-budget-caption{font-size:12px;color:var(--muted);margin:10px 0 0;line-height:1.5}";
+      style.textContent += ".c-guide{padding:18px}.c-guide-top{margin-bottom:14px}.c-guide-link{border:0;padding:0;font-size:12px!important}.c-guide-main{display:flex;align-items:center;justify-content:space-between;gap:14px;margin-bottom:18px}.c-guide-total{display:block;margin:0}.c-guide-total .big{font-size:42px;line-height:1.15;letter-spacing:-1.2px}.c-guide-total .small{display:block;margin-top:4px;font-size:13px;opacity:1}.c-guide-payday{display:grid;grid-template-columns:24px auto;align-items:center;column-gap:8px;text-align:left}.c-guide-payday svg{grid-row:1/4}.c-guide-payday span{display:block;font-size:11px;line-height:1.5}.c-guide-payday strong{display:block;font-size:14px;line-height:1.5}.c-guide-parts{border:0;padding:0;gap:8px}.c-guide-parts>div{display:grid;grid-template-rows:minmax(34px,auto) auto minmax(28px,auto) 4px;align-content:start;justify-content:normal;gap:7px;background:color-mix(in srgb,var(--hero-ink) 4%,var(--hero));border:1px solid color-mix(in srgb,var(--hero-ink) 18%,transparent);border-radius:12px;padding:11px 9px}.c-guide-parts>div.is-active{border-color:color-mix(in srgb,var(--hero-ink) 65%,transparent)}.c-guide-parts>div.is-over{border-style:dashed}.c-guide-parts .c-guide-icon{height:24px;min-height:0;display:flex;align-items:center}.c-guide-parts .c-guide-name{font-size:12px;font-weight:650;line-height:1.4;min-height:0}.c-guide-parts b{font-size:clamp(14px,4.6vw,18px);line-height:1.3;white-space:nowrap;align-self:start}.c-guide-parts .c-guide-state{font-size:10px;line-height:1.4;min-height:0;align-self:start}.c-guide-parts .c-guide-meter{height:4px;min-height:0;border-radius:3px;background:color-mix(in srgb,var(--hero-ink) 14%,transparent);overflow:hidden;align-self:end}.c-guide-meter i{display:block;height:100%;background:currentColor;border-radius:3px}.c-guide-context{display:flex;align-items:center;gap:6px;margin-top:13px;font-size:12px;line-height:1.5}.c-guide-context svg{flex:none}.c-guide-context span{min-width:0}@media(max-width:340px){.c-guide{padding:15px}.c-guide-main{gap:8px}.c-guide-total .big{font-size:36px}.c-guide-payday{column-gap:5px;grid-template-columns:19px auto}.c-guide-payday strong{font-size:12px}.c-guide-parts{gap:6px}.c-guide-parts>div{padding:10px 7px}.c-guide-parts .c-guide-name{font-size:11px}}";
+      style.textContent += ".c-guide-parts .c-guide-category{display:flex;align-items:center;gap:5px;min-height:34px}.c-guide-parts .c-guide-icon{flex:none;width:21px}.c-guide-parts .c-guide-state{min-height:28px}.c-guide-parts .c-guide-name{min-width:0}@supports(grid-template-rows:subgrid){.c-guide-parts>div{grid-row:span 4;grid-template-rows:subgrid}}";
       A.TITLES.money = function () {
         return ["Money", ""];
       };
@@ -135,7 +137,7 @@
               : B.round(total ? (Math.max(0, x.left) / total) * t.safe : 0);
           a = Math.min(a, Math.max(0, B.round(t.safe - used)));
           used = B.round(used + a);
-          return { name: x.name, left: x.left, amount: a };
+          return { name: x.name, left: x.left, amount: a, limit: x.amount };
         });
       }
       ACT.herosheet = function () {
@@ -146,7 +148,7 @@
               .map(function (x) {
                 return A.li(
                   E(x.name),
-                  M(Math.max(0, x.left)) + " left until payday",
+                  x.left < -0.004 ? M(-x.left) + " over budget" : M(Math.max(0, x.left)) + " left until payday",
                   A.num(M(x.amount) + " / day"),
                 );
               })
@@ -330,22 +332,25 @@
             "go",
             "sync",
           );
+        var days = Math.max(0, B.diff(now(), t.nextPay)),
+          paydayWord = days === 0 ? "Today" : days === 1 ? "Tomorrow" : days + " days",
+          shortName = function (name) { return name.replace(/^Fun and spending$/i, "Fun"); },
+          active = parts.filter(function (x) { return x.amount > 0.004; }),
+          context = active.length === 1 ? "Today’s guide comes from " + shortName(active[0].name)
+            : active.length ? "Split across your daily budgets"
+            : t.budgetDay > t.cashDay ? "Available cash is limiting today’s guide" : "Daily budgets used for this pay period";
         html +=
-          '<button type="button" id="c-guide" class="hero card c-guide" data-a="herosheet"><div class="c-guide-top"><span>Daily guide</span><span class="c-guide-link">View breakdown ↗</span></div><div class="c-guide-total"><div class="big">' +
+          '<button type="button" id="c-guide" class="hero card c-guide" data-a="herosheet"><div class="c-guide-top"><span>Daily guide</span><span class="c-guide-link">View breakdown ↗</span></div><div class="c-guide-main"><div class="c-guide-total"><div class="big">' +
           M(t.safe) +
-          '</div><span class="small">per day</span></div><div class="c-guide-parts">' +
-          parts
-            .map(function (x) {
-              return (
-                "<div><span>" +
-                E(x.name) +
-                "</span><b>" +
-                M(x.amount) +
-                "</b></div>"
-              );
-            })
-            .join("") +
-          '</div><div class="c-guide-until">Until payday · ' + E(B.nice(t.nextPay)) + '</div></button>';
+          '</div><span class="small">per day</span></div><div class="c-guide-payday">' + A.icon("cal",22) + '<span>Payday</span><strong>' + E(paydayWord) + '</strong><span>' + E(B.nice(t.nextPay)) + '</span></div></div><div class="c-guide-parts">' +
+          parts.map(function (x) {
+            var over = x.left < -0.004, left = Math.max(0,x.left),
+              fill = left ? Math.min(100, Math.round(x.limit > 0 ? left / x.limit * 100 : 100)) : 0,
+              state = over ? M(-x.left) + " over" : left > 0.004 ? M(left) + " left" : "Budget used",
+              symbol = /food|grocer/i.test(x.name) ? "basket" : /fuel|travel|petrol/i.test(x.name) ? "fuel" : "spark";
+            return '<div class="' + (over ? "is-over" : x.amount > 0.004 ? "is-active" : "") + '"><span class="c-guide-category"><span class="c-guide-icon">' + A.icon(symbol,21) + '</span><span class="c-guide-name">' + E(shortName(x.name)) + '</span></span><b>' + M(x.amount) + '</b><span class="c-guide-state">' + state + '</span><span class="c-guide-meter" aria-hidden="true"><i style="width:' + fill + '%"></i></span></div>';
+          }).join("") +
+          '</div><div class="c-guide-context">' + A.icon("info",14) + '<span>' + E(context) + '</span></div></button>';
         if (t.plan.shortfall > 0.004)
           html += A.li(
             "Budget needs attention",

@@ -1,7 +1,7 @@
 /* Budgie app: screens, syncing and offline queue. The maths lives in engine.js. */
 (function () {
   "use strict";
-  var B = window.Budgie, TH = window.BudgieThemes, APP_VERSION = "1.5.4";
+  var B = window.Budgie, TH = window.BudgieThemes, APP_VERSION = "1.5.5";
   var $ = function (s) { return document.querySelector(s); };
   var esc = function (s) { return String(s === undefined || s === null ? "" : s).replace(/[&<>"']/g, function (c) { return {"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]; }); };
   // wiped: Budgie's copy at the old address has been wiped (it's moving across), so nothing is saved here again
@@ -18,6 +18,7 @@
     cal: '<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/>', target: '<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="4"/><circle cx="12" cy="12" r="1"/>',
     lisa: '<path d="M4 18l5-6 4 3 7-9"/><path d="M15 6h5v5"/>', house: '<path d="M3 11l9-7 9 7"/><path d="M5 10v10h14V10"/><path d="M10 20v-5h4v5"/>', scale: '<path d="M12 3v18M5 7h14M7 7l-3 7a3 3 0 0 0 6 0zM17 7l-3 7a3 3 0 0 0 6 0z"/>',
     out: '<path d="M7 17L17 7M9 7h8v8"/>', debt: '<path d="M4 7h16M4 12h16M4 17h10"/>', spark: '<path d="M12 3v4M12 17v4M3 12h4M17 12h4M6 6l2.5 2.5M15.5 15.5L18 18M6 18l2.5-2.5M15.5 8.5L18 6"/>',
+    basket: '<path d="M3 9h18l-2 11H5zM7 9l5-6 5 6M9 13v3M15 13v3"/>', fuel: '<rect x="4" y="3" width="10" height="17" rx="1.5"/><path d="M6 7h6M2 21h14M14 10h2a2 2 0 0 1 2 2v4a2 2 0 0 0 4 0V7l-3-3M19 4v5h3"/>',
     gift: '<rect x="3" y="9" width="18" height="12" rx="1.5"/><path d="M3 13h18M12 9v12M12 9c-2-4-6-4-6-1.5S10 9 12 9zM12 9c2-4 6-4 6-1.5S14 9 12 9z"/>', gear: '<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1"/>'
   };
   var icon = function (n, size) { return '<svg width="' + (size || 22) + '" height="' + (size || 22) + '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + (ICON[n] || "") + "</svg>"; };
