@@ -250,13 +250,16 @@ function exSharedWith_(f) {
     It's a new standalone spreadsheet, not a copy of this file, so the script and its properties (the keys) never go
     with it. Other files are never touched. */
 function backupNow() {
-  var id = PropertiesService.getScriptProperties().getProperty("BACKUP_FOLDER_ID"), folder;
-  if (!id) { Logger.log("No backup made: add Script Property BACKUP_FOLDER_ID (Project Settings > Script Properties) with the backup folder's id."); return null; }
+  var backupProps=PropertiesService.getScriptProperties();
+  backupProps.setProperty("BACKUP_LAST_ATTEMPT",String(Date.now()));
+  var failed=function(reason){backupProps.setProperty("BACKUP_LAST_ERROR",reason);return null;};
+  var id = backupProps.getProperty("BACKUP_FOLDER_ID"), folder;
+  if (!id) { Logger.log("No backup made: add Script Property BACKUP_FOLDER_ID (Project Settings > Script Properties) with the backup folder's id."); return failed("Backup folder is not configured"); }
   try { folder = DriveApp.getFolderById(String(id).trim()); folder.getName(); }
-  catch (e) { Logger.log("No backup made: can't open the backup folder " + id + ". Check it's shared with this account as an editor. (" + (e && e.message || e) + ")"); return null; }
+  catch (e) { Logger.log("No backup made: can't open the backup folder " + id + ". Check it's shared with this account as an editor. (" + (e && e.message || e) + ")"); return failed("Backup folder could not be opened"); }
   // a backup is the whole sheet, both of your money in full, so it only goes in a folder nobody else can open
   var shared = exSharedWith_(folder);
-  if (shared) { Logger.log("No backup made: the backup folder is shared (" + shared + "). A backup holds everything in the sheet, both of yours, so use a folder only you can open (or stop sharing this one)."); return null; }
+  if (shared) { Logger.log("No backup made: the backup folder is shared (" + shared + "). A backup holds everything in the sheet, both of yours, so use a folder only you can open (or stop sharing this one)."); return failed("Backup folder has shared access; use a private folder"); }
   var name = EXTRAS_BACKUP_NAME + exTodayIso_(), copy;
   try {
     // Capture one coherent data state under the same lock as bank imports and phone
@@ -277,7 +280,7 @@ function backupNow() {
     copy = DriveApp.getFileById(dest.getId());
     copy.moveTo(folder);
   }
-  catch (e) { Logger.log("No backup made: copying the sheet failed. (" + (e && e.message || e) + ")"); return null; }
+  catch (e) { Logger.log("No backup made: copying the sheet failed. (" + (e && e.message || e) + ")"); return failed("Copying the data failed"); }
   // only our own backups: a Google Sheet named "Budgie data backup YYYY-MM-DD", newest first
   var mine = [], it = folder.getFiles(), re = /^Budgie data backup \d{4}-\d{2}-\d{2}$/;
   while (it.hasNext()) {
@@ -290,6 +293,7 @@ function backupNow() {
   mine.slice(EXTRAS_KEEP_BACKUPS).forEach(function (x) { try { x.f.setTrashed(true); gone++; } catch (e) { Logger.log("Couldn't remove old backup " + x.name + ": " + (e && e.message || e)); } });
   Logger.log("Backup made: " + name + "." + (gone ? " Moved " + exPlural_(gone, "older backup") + " to the bin." : "") + " Keeping the newest " + EXTRAS_KEEP_BACKUPS + ".");
   PropertiesService.getScriptProperties().setProperty("BACKUP_LAST_OK", String(Date.now()));
+  backupProps.setProperty("BACKUP_LAST_ERROR", "");
   return name;
 }
 

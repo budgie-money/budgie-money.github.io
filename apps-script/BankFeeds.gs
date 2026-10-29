@@ -202,7 +202,7 @@ function bankStatusFor_(p) {
   var maps = {}; readTable_("settings").rows.forEach(function (r) { if (r.person === p && !bankTrue_(r.deleted) && /^bank\.map\./.test(String(r.key))) maps[String(r.key).slice(9)] = String(r.value === undefined || r.value === null ? "" : r.value); });
   var review = 0; readTable_("transactions").rows.forEach(function (r) { if (r.person === p && bankTrue_(r.review) && !bankTrue_(r.deleted)) review++; });
   var approved = tok && tok.provider === "monzo" ? (tok.approvedAt || tok.issuedAt) : 0;
-  var props=PropertiesService.getScriptProperties(), maintenance={backupConfigured:!!props.getProperty("BACKUP_FOLDER_ID"),backupLastSuccess:+props.getProperty("BACKUP_LAST_OK")||0};
+  var props=PropertiesService.getScriptProperties(), maintenance={backupConfigured:!!props.getProperty("BACKUP_FOLDER_ID"),backupLastSuccess:+props.getProperty("BACKUP_LAST_OK")||0,backupLastAttempt:+props.getProperty("BACKUP_LAST_ATTEMPT")||0,backupError:props.getProperty("BACKUP_LAST_ERROR")||""};
   try { var handlers=ScriptApp.getProjectTriggers().map(function(t){return t.getHandlerFunction();});maintenance.bankPoll=handlers.indexOf("bankPoll")>=0;maintenance.backupTrigger=handlers.indexOf("backupNow")>=0; } catch(e) { maintenance.triggersUnknown=true; }
   return {
     provider: provider, connected: !!tok && !s.needsReconnect, needsSetup: !tok, needsReconnect: !!(tok && s.needsReconnect),

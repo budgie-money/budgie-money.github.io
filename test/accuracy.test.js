@@ -34,6 +34,30 @@ const plan=(t,d)=>{let db=B.load(t,d);return B.planFor(db,'ethan',B.periodAt(db,
  db=B.load(t,d);f=B.goalForecast(db,'ethan','car',d,'2027-02-07');eq(f.routed,false,'unattached spare route flagged');near(f.projected,4200,'surplus outside goal excluded');
  t.income[0].amount=500;t.amounts=[];db=B.load(t,d);f=B.goalForecast(db,'ethan','car',d,'2027-02-07');near(f.projected,1000,'unfunded contributions excluded');eq(f.warnings.some(w=>w.includes('short')),true,'shortfall is explicit');
 }
+// A bank snapshot on the purchase date does not prove its pot reimbursement happened.
+// Settling it on payday must not make yesterday's earmarked cash look free a second time.
+{
+ const t=simple();t.bills=[];t.budgets=[{id:'food',person:'ethan',name:'Food',mode:'daily',amount:100,account:'e-food'}];t.goals=[];
+ t.valuations=[{id:'food-before',account:'e-food',date:'2026-11-29',amount:100},{id:'main-before',account:'e-main',date:'2026-11-29',amount:1000}];
+ t.transactions.push({id:'purchase',person:'ethan',date:'2026-11-29',account:'e-main',budget:'food',amount:9});
+ let d=B.load(t,'2026-11-30'),per=B.periodAt(d,'ethan','2026-11-30'),p=B.payday(d,'ethan',per),g=B.reimbursements(d,'ethan',B.prevPeriod(d,'ethan',per),'2026-11-29').find(x=>x.from==='e-food'&&x.to==='e-main');
+ near(p.moves.find(x=>x.to==='e-food').amount,9,'reserve the old 9 reimbursement before counting pot money for the new month');
+ t.moves.push({id:'bank-refund',person:'ethan',date:'2026-11-30',from:'e-food',to:'e-main',amount:9,key:g.key});d=B.load(t,'2026-11-30');near(B.payday(d,'ethan',B.periodAt(d,'ethan','2026-11-30')).moves.find(x=>x.to==='e-food').amount,9,'payday-morning reimbursement leaves original allocation stable');
+}
+// A balance snapshot on payday does not prove that its saving instructions were performed.
+{
+const f=fixture();for(const k of ['bills','budgets','income','transactions','moves','settlements','loans','loanItems','goals','valuations','amounts','exceptions','settings','transfers'])f[k]=[];
+f.settings=[{person:'ethan',key:'start',value:'2026-10-30'},{person:'ethan',key:'spare.rules',value:JSON.stringify({version:1,since:'2026-10-30',replaceFrom:'2026-10-30',buffer:0,savings:'e-isa',repayments:true})}];f.income=[{id:'pay',person:'ethan',name:'Salary',amount:2000,isPay:true,account:'e-main',unit:'month',on:'30',start:'2026-10-30'}];f.bills=[{id:'rent',person:'ethan',name:'Rent',amount:500,account:'e-main',unit:'month',on:'2',start:'2026-11-02'}];f.budgets=[{id:'food',person:'ethan',name:'Food',mode:'daily',amount:500,account:'e-main'},{id:'lisa',person:'ethan',name:'LISA',mode:'saving',amount:800,account:'e-lisa'}];f.goals=[{id:'car',owners:'ethan',accounts:'e-isa',target:6000}];f.valuations=[{id:'bk-now',account:'e-main',date:'2026-10-30',amount:2000,updated:100},{id:'isa',account:'e-isa',date:'2026-10-30',amount:1000,updated:100}];f.exceptions=[{id:'x-pay-2026-10-30-paid',item:'pay',date:'2026-10-30',action:'paid'}];let d=B.load(f,'2026-10-30');near(B.goalForecast(d,'ethan','car','2026-10-30','2027-02-07').projected,1800,'current 800 LISA instruction is reserved before car surplus');f.moves.push({id:'manual-lisa',person:'ethan',date:'2026-10-30',from:'e-main',to:'e-lisa',amount:800,key:'pay:2026-10-30:e-lisa',updated:200});d=B.load(f,'2026-10-30');near(B.goalForecast(d,'ethan','car','2026-10-30','2027-02-07').projected,1800,'performing the planned LISA instruction does not change the car forecast');
+
+}
+// Returning a payday allocation reopens it without erasing either bank movement.
+{
+ const t=simple();t.moves=[{id:'bk-in',person:'ethan',date:'2026-10-30',from:'e-main',to:'e-bills',amount:500,key:'pay:2026-10-30:e-bills'},{id:'bk-back',person:'ethan',date:'2026-10-30',from:'e-bills',to:'e-main',amount:500,key:'bank:returned'}];
+ let d=B.load(t,'2026-10-30');near(B.ticked(d,'ethan','pay:2026-10-30:e-bills'),0,'returned allocation is no longer done');near(B.balances(d,'2026-10-30')['e-main'],2000,'returned allocation preserves Main ledger');
+ t.moves.push({id:'bk-again',person:'ethan',date:'2026-10-30',from:'e-main',to:'e-bills',amount:500,key:'bank:again'});d=B.load(t,'2026-10-30');near(B.ticked(d,'ethan','pay:2026-10-30:e-bills'),500,'re-funding completes the allocation again');near(B.balances(d,'2026-10-30')['e-main'],1500,'re-funding counts once');
+ t.moves=t.moves.slice(0,2);t.moves[1].key='back:food:2026-10-30:e-main';d=B.load(t,'2026-10-30');near(B.ticked(d,'ethan','pay:2026-10-30:e-bills'),500,'ordinary matched reimbursement is not an undo');
+ t.moves[1].key='bank:returned';t.moves[1].person='sophie';d=B.load(t,'2026-10-30');near(B.ticked(d,'ethan','pay:2026-10-30:e-bills'),500,'partner cannot undo your allocation');
+}
 // A funded bill pot is not charged to future salary a second time.
 {
  const t=simple();t.bills[0].account='e-bills';t.budgets.push({id:'rest',person:'ethan',name:'Spare',mode:'remainder',account:'e-isa'});t.valuations.push({id:'funded',account:'e-bills',date:'2026-10-29',amount:500});

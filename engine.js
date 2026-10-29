@@ -6,7 +6,7 @@
   else root.Budgie = factory();
 })(this, function () {
   "use strict";
-  var VERSION = "1.5.7";
+  var VERSION = "1.5.8";
 
   // ---------- dates ----------
   function D(s) { var p = String(s).split("-"); return new Date(Date.UTC(+p[0], +p[1] - 1, +p[2])); }
@@ -251,6 +251,17 @@
     db.moves.forEach(function (m) { if (/^pay:/.test(m.key || "") && payTick[m.person + "|" + m.key] !== m) m.dup = true; });
     db.moveKeys = dict(); db.moveKeysBy = dict(); db.moveTicks = dict();
     db.moves.forEach(function (m) { if (m.key && !m.dup) { db.moveKeys[m.key] = (db.moveKeys[m.key] || 0) + (+m.amount || 0) + 1e-9; var pk = m.person + "|" + m.key; db.moveKeysBy[pk] = (db.moveKeysBy[pk] || 0) + (+m.amount || 0) + 1e-9; (db.moveTicks[pk] = db.moveTicks[pk] || []).push(m); } });
+    // An exact bank transfer returned on the same day is an undone payday allocation.
+    // Preserve both ledger entries; only completion changes. A normal reimbursement
+    // has its own back/cover key and is never treated as a returned allocation.
+    db.payReturns=dict();
+    db.moves.forEach(function(m){
+      if(m.dup||!/^pay:\d{4}-\d{2}-\d{2}:/.test(m.key||"")||/:cover$/.test(m.key)||m.to!==String(m.key).slice(15)||!(m.amount>0))return;
+      var events=db.moves.filter(function(x){return !x.dup&&x.person===m.person&&/^bk-/.test(String(x.id))&&/^bank:/.test(x.key||"")&&x.date===m.date&&Math.abs(x.amount-m.amount)<0.005&&((x.from===m.to&&x.to===m.from)||(x.from===m.from&&x.to===m.to));});
+      if(!events.some(function(x){return x.from===m.to;}))return;
+      var pk=m.person+"|"+m.key;db.payReturns[pk]={move:m,events:events};
+      db.moveKeysBy[pk]=payReturnAmount(db.payReturns[pk]);
+    });
     // a LISA payment copied from the provider's statement that is the same money as a move ticked in Budgie
     // (same account and amount, within 5 days) only counts once
     db.moves.forEach(function (m) {
@@ -352,7 +363,8 @@
   // tick off something of yours, whatever key they carry)
   function ticked(db, p, key) { return db.moveKeysBy[p + "|" + key] || 0; }
   // the same, counting only moves dated before a day (the ones a balance at the end of the day before includes)
-  function tickedBefore(db, p, key, date) { var t = 0; (db.moveTicks[p + "|" + key] || []).forEach(function (m) { if (m.date < date) t += (+m.amount || 0) + 1e-9; }); return t; }
+  function payReturnAmount(r,before){var m=r.move,t=!before||m.date<before?+m.amount:0;r.events.forEach(function(x){if(!before||x.date<before)t+=x.from===m.from?+x.amount:-x.amount;});return round(Math.max(0,Math.min(+m.amount,t)));}
+  function tickedBefore(db, p, key, date) { var pk=p+"|"+key,r=db.payReturns&&db.payReturns[pk];if(r)return payReturnAmount(r,date);var t = 0; (db.moveTicks[pk] || []).forEach(function (m) { if (m.date < date) t += (+m.amount || 0) + 1e-9; }); return t; }
   // the day a ticked move should be dated: payday moves belong to their payday, everything else to the day you tick it.
   // A payday move ticked once a new tax year has begun (March's LISA money moved on 7 April) is dated the day it moved,
   // as the bank feed dates it, so it counts towards the tax year it really went in
@@ -907,10 +919,10 @@
       keepOf = function (accId) { return keepBud(accId) + (accId === main ? owe : 0); };
       // moves still on the To do count as done, so a forgotten tick doesn't ask for the money twice;
       // but a balance checked on or after the move already includes it, so that side is left alone
-      var vd = dict(); db.valuations.forEach(function (v) { if (v.date <= dayBefore && v.date > (vd[v.account] || "")) vd[v.account] = v.date; });
-      var pendMove = function (from2, to2, amt, when) {
-        if (bal[from2] !== undefined && !(vd[from2] >= when)) bal[from2] = round(bal[from2] - amt);
-        if (bal[to2] !== undefined && !(vd[to2] >= when)) bal[to2] = round(bal[to2] + amt);
+      var vd=dict(),vbank=dict(),vtime=dict();db.valuations.forEach(function(v){if(v.date<=dayBefore&&(v.date>(vd[v.account]||"")||v.date===vd[v.account]&&(+v.updated||0)>=(vtime[v.account]||0))){vd[v.account]=v.date;vtime[v.account]=+v.updated||0;vbank[v.account]=/^bk-/.test(String(v.id));}});
+      var pendMove = function (from2, to2, amt, when, pendingBankDay) {
+        if (bal[from2] !== undefined && (!(vd[from2] >= when) || pendingBankDay && vbank[from2] && vd[from2] === when)) bal[from2] = round(bal[from2] - amt);
+        if (bal[to2] !== undefined && (!(vd[to2] >= when) || pendingBankDay && vbank[to2] && vd[to2] === when)) bal[to2] = round(bal[to2] + amt);
       };
       // (a move ticked from payday on, say last month's on payday morning, isn't in the balance the day before, so it
       // still counts as one to do: ticking it doesn't change this month's plan)
@@ -921,14 +933,21 @@
         rbk.forEach(function (g) { (g.bankIds || []).forEach(function (id) { tkn[id] = true; }); });
         if (pk.pay && !pk.opening) {
           var pdk = payday(db, p, pk);
-          pdk.moves.forEach(function (m) { if (!tickedBefore(db, p, "pay:" + pk.start + ":" + m.to, from)) pendMove(m.from, m.to, m.amount, pk.start); });
-          pdk.later.forEach(function (m) { var left = round(m.amount - tickedBefore(db, p, m.key, from)); if (left > 0.004 && !takeLoose(db, p, tkn, m.from, m.to, left, pk.start, dayBefore)) pendMove(m.from, m.to, left, m.date); });
+          pdk.moves.forEach(function(m){var left=round(m.amount-tickedBefore(db,p,"pay:"+pk.start+":"+m.to,from));if(left>0.004&&!takeLoose(db,p,tkn,m.from,m.to,left,pk.start,dayBefore))pendMove(m.from,m.to,left,pk.start,true);});
+          pdk.later.forEach(function (m) { var left = round(m.amount - tickedBefore(db, p, m.key, from)); if (left > 0.004 && !takeLoose(db, p, tkn, m.from, m.to, left, pk.start, dayBefore)) pendMove(m.from, m.to, left, m.date, true); });
         }
-        rbk.forEach(function (g) { var left = round(g.amount - tickedBefore(db, p, g.key, from) - (g.bank || 0)); if (left > 0.004) pendMove(g.from, g.to, left, g.date || pk.start); });
+        rbk.forEach(function (g) {
+          var left=round(g.amount-tickedBefore(db,p,g.key,from)-(g.bank||0));
+          // An unresolved refund belongs after the opening snapshot, even when its
+          // purchase was on that snapshot's day. A balance is not evidence it was repaid.
+          // Don't invent fallback cash for an overspend that Main already funds.
+          if(g.kind==="over"&&g.to===main&&!ticked(db,p,g.key)&&!(g.bank>0)&&(bal[main]||0)>=0)return;
+          if(left>0.004)pendMove(g.from,g.to,left,from);
+        });
         // money sent straight to a goal that isn't moved yet is as good as moved: it isn't counted again as left over
         directItems(db, p, dayBefore).forEach(function (it) {
           if (it.date < pk.start || it.date >= pk.next) return;
-          var left = round(it.amount - tickedBefore(db, p, it.key, from)); if (left > 0.004 && !takeLoose(db, p, tkn, it.from, it.to, left, pk.start, dayBefore)) pendMove(it.from, it.to, left, it.date);
+          var left = round(it.amount - tickedBefore(db, p, it.key, from)); if (left > 0.004 && !takeLoose(db, p, tkn, it.from, it.to, left, pk.start, dayBefore)) pendMove(it.from, it.to, left, it.date, true);
         });
       });
     }
