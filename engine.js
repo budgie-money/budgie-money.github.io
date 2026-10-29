@@ -1544,7 +1544,7 @@
     // goes on payday: said when that's somewhere else, a Cash ISA say
     var lo = nplan.lines.filter(function (l) { return l.leftover; })[0], rl = nplan.lines.filter(function (l) { return l.remainder; })[0], spare = null;
     if (lo && rl && rl.account !== main && rl.amount > 0.004) spare = {amount: round(Math.min(lo.amount, rl.amount)), to: rl.account, toName: accName(db, rl.account), date: nxt};
-    return {date: date, period: per, plan: plan, daysLeft: daysLeft, safe: round(safe), cash: round(cash), needed: round(cash - cashFree), cashDay: cap, budgetDay: budgetDay, status: status, overs: overs, tiles: tiles, cashFree: cashFree, nextPay: nxt,
+    return {date: date, period: per, plan: plan, daysLeft: daysLeft, safe: round(safe), cash: round(cash), needed: round(Math.max(0, -committed)), cashDay: cap, budgetDay: budgetDay, status: status, overs: overs, tiles: tiles, cashFree: cashFree, nextPay: nxt,
       nextPayAmount: (nplan.lines.filter(function (l) { return l.isPay; })[0] || {}).amount || 0, spare: spare,
       todo: todo(db, p, date), coming: coming(db, p, date, 14)};
   }

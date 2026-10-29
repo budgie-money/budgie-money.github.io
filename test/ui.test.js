@@ -634,7 +634,7 @@ const fails = [], check = (name, cond, extra) => { if (cond) console.log("ok", n
       {
         // the pay period at a glance first (Money in, Going out, Left over), then Coming in, Payments out, Pots (and Goals): in that order
         const stripCells = await page.$$eval("main .mstrip .mc .n", ns => ns.map(n => n.textContent.trim()));
-        check("Money opens with a strip: Money in, Going out, Left over (" + scheme + ")", JSON.stringify(stripCells) === JSON.stringify(["Money in", "Going out", "Left over"]), stripCells);
+        check("Money opens with a strip: Money in, Going out, then Left over or Left to save (" + scheme + ")", ["Money in", "Going out"].every((x, i) => stripCells[i] === x) && /^(Left over|Left to save|Short)$/.test(stripCells[2]), stripCells);
         const order = await page.evaluate(() => [...document.querySelectorAll("main .mstrip, main .card h2")].map(e => e.classList.contains("mstrip") ? "strip" : e.textContent.trim()));
         const names = order.filter(x => ["strip", "Coming in", "Payments out", "Pots", "Spaces", "Goals"].includes(x)).map(x => x === "Spaces" ? "Pots" : x).join(">");
         check("then Coming in, Payments out, Pots, and Goals last, in that order (" + scheme + ")", names === "strip>Coming in>Payments out>Pots" || names === "strip>Coming in>Payments out>Pots>Goals", order);

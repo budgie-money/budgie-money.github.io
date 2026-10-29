@@ -1687,10 +1687,17 @@ const tickPay11 = (t, p, d) => { const L0 = B.load(t, d), per = B.periodAt(L0, p
 {
   for (const day of ["2026-10-28", "2026-11-05", "2026-11-20"]) {
     const r = B.today(B.load(fixture(), day), "ethan", day);
-    near("hero " + day + ": cash less what is needed is what is free", r.cash - r.needed, r.cashFree);
+    // what's still needed is what's due out before payday (never the cash itself), and cash less that is what's free
+    // (free is never below nothing: when the cash doesn't cover what's needed, nothing is free)
+    eq("hero " + day + ": what's still needed is never less than nothing", r.needed >= 0, true);
+    near("hero " + day + ": cash less what is needed is what is free", Math.max(0, r.cash - r.needed), r.cashFree);
     near("hero " + day + ": the cash allows free over the days left", r.cashDay, r.cashFree / r.daysLeft);
     near("hero " + day + ": you can spend the lower of what the cash and the budgets allow", r.safe, Math.min(r.cashDay, r.budgetDay));
   }
+  // the cash doesn't cover what's due: "still needed" is what's due, not the cash again
+  const t2 = fixture(); t2.valuations.push({id: "v-low", account: "e-main", date: "2026-11-05", amount: 5});
+  const r2 = B.today(B.load(t2, "2026-11-05"), "ethan", "2026-11-05");
+  eq("hero: with little cash, still needed isn't just the cash again", r2.cashFree === 0 && Math.abs(r2.needed - Math.abs(r2.cash)) > 0.01 ? true : r2.cashFree > 0, true);
 }
 
 console.log(fails ? fails + " failed, " + passes + " passed" : "All " + passes + " passed");

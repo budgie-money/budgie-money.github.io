@@ -469,7 +469,7 @@
     var days = t.daysLeft + (t.daysLeft === 1 ? " day" : " days");
     openSheet("<h2>You can spend today</h2>" + '<div class="list" style="margin-top:6px">' +
       r("Cash available", "In the accounts your budgets spend from", M(t.cash)) +
-      r("Still needed before payday", "Bills and payments due, and money put by", M(-t.needed)) +
+      r("Still needed before payday", "Bills and payments due, and money put by", M(t.needed)) +
       r("Free to spend", "Over " + days + " until payday", M(t.cashFree)) +
       r("Your cash allows", "A day, over " + days, M(t.cashDay)) +
       r("Your budgets allow", "A day, from what's left in each", M(t.budgetDay)) +
@@ -532,9 +532,12 @@
     html += '<div class="row" style="margin:14px 0 0;align-items:center"><button type="button" class="round" data-a="month" data-v="-1" aria-label="Earlier month">' + icon("back", 18) + '</button><div style="text-align:center"><div style="font-weight:800">' + esc(per.name) + infoBtn("sheet") + '</div><div class="small muted">' + esc(dates) + '</div></div><button type="button" class="round" data-a="month" data-v="1" aria-label="Later month" style="transform:scaleX(-1)">' + icon("back", 18) + "</button></div>";
     // at a glance: what comes in, what goes out, and what's left (or short), then how the going out splits
     var cell = function (label, v, cls) { return '<div class="mc"><div class="n">' + label + '</div><div class="v' + (cls ? " " + cls : "") + '">' + M0(v) + "</div></div>"; };
-    var goes = B.round(t.bill + t.spend + t.save), short = pl.shortfall > 0.004;
+    // "whatever is left" going into savings (a Cash ISA, say) is what's left over, not part of what goes out: the strip
+    // shows it as that, so it's never just £0 because the plan put everything somewhere
+    var remL = (pl.remainderBudget && pl.remainder > 0.004) ? mv.lines.filter(function (l) { return l.remainder && l.kind === "save"; })[0] : null, rem = remL ? B.round(pl.remainder) : 0;
+    var goes = B.round(t.bill + t.spend + t.save - rem), short = pl.shortfall > 0.004;
     var key = function (k, label) { return '<div class="k-' + k + '"><span class="kdot"></span><span>' + label + "<b>" + M0(t[k]) + "</b></span></div>"; };
-    html += card('<div class="mstrip" role="group" aria-label="This pay period">' + cell("Money in", t.in) + cell("Going out", goes) + (short ? cell("Short", pl.shortfall, "bad") : cell("Left over", Math.max(0, t.left))) + "</div>" + kindBar(t, "big") +
+    html += card('<div class="mstrip" role="group" aria-label="This pay period">' + cell("Money in", t.in) + cell("Going out", goes) + (short ? cell("Short", pl.shortfall, "bad") : cell(rem ? "Left to save" : "Left over", rem || Math.max(0, t.left))) + "</div>" + kindBar(t, "big") +
       '<div class="legend3">' + key("bill", "Bills") + key("spend", "Spending") + key("save", "Saving") + "</div>");
     var row = function (l) {
       var right = num(M(l.amount)), why = "", tbl = l.kind === "in" ? (l.id === "opening" ? "" : (d.byId[l.id] && d.income.indexOf(d.byId[l.id]) >= 0 ? "income" : "transfers")) : l.kind === "bill" ? (l.transfer ? "transfers" : l.loan ? "loans" : "bills") : l.kind === "topup" || l.setAside ? "" : "budgets", name = l.name;
