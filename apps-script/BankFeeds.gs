@@ -888,7 +888,8 @@ function bankApply_(p, data, windowFrom, payCarry) {
     var TODO_KEY_ = /^(back|cover|fill|lent|late|refund):|^pay:\d{4}-\d{2}-\d{2}:cover$/, openTodo = null, todoTaken = {}, appTaken = {};
     var todoMatch = function (from, to, amount, date) {
       if (D.diff(date, today) > 7) return null;
-      if (openTodo === null) { try { openTodo = D.todo(db, p, today).filter(function (x) { return x.type === "move" && !x.payday && x.keys && x.keys.length && x.keys.every(function (k) { return TODO_KEY_.test(k.key); }); }); } catch (e) { openTodo = []; } }
+      // (looking at it as if no pot move had been made at the bank yet, so one saved under the bank's own key is found too)
+      if (openTodo === null) { try { db.looseOff = true; db._c = {}; openTodo = D.todo(db, p, today).filter(function (x) { return x.type === "move" && !x.payday && x.keys && x.keys.length && x.keys.every(function (k) { return TODO_KEY_.test(k.key); }); }); } catch (e) { openTodo = []; } db.looseOff = false; db._c = {}; }
       for (var i = 0; i < openTodo.length; i++) { var it = openTodo[i]; if (!todoTaken[i] && it.from === from && it.to === to && same(it.amount, amount)) { todoTaken[i] = true; return it; } }
       return null;
     };

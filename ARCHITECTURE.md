@@ -69,6 +69,10 @@ People are `ethan` and `sophie`. Money is in pounds. Dates are real dates.
 - **To do**: payday moves, moving money back when something was paid from the wrong pot, covering an overspend
   from the fallback pot, topping up a pot (or the main account itself) before a bill. A move is only suggested if the
   money is really there.
+  A pot move already made in the bank is done: the bank feed saves it as a loose move (key `bank:…`), and if it is the
+  same two accounts, the same amount to the penny, in the same pay period as an item, To do doesn't ask for it (each bank
+  move is for one item only). If it was also ticked in the app afterwards, the tick is the move and the loose bank row is
+  set aside as the same money, so the balance counts it once.
 - **Between you two**: shared bills and split payments by their split rule (for example 2 parts to 1), minus what
   has been paid, so you always know who owes whom and by how much. Loans between you are kept separate. A split that
   changes from a date is a dated row in `amounts` (item: the split, shares), so earlier months keep theirs.
