@@ -150,3 +150,11 @@ of that person's apps.
 
 - Google Calendar: a shared "Budgie" calendar with paydays, bills and who-pays-whom, kept up to date by Apps Script.
 - More themes, receipt photos, mortgage tracking once there is a mortgage.
+
+## Category budget and daily saving (1.5.1)
+
+- `clarity.js` installs the category budget, activity, actual pot balances, category-aware daily guide, credit-balance input and compact saving settings. It reuses existing records and forms. Activity and scheduled items are separate; recorded incoming money opens a receipt before any rule editor. More retains the original icon tiles. The tour is optional.
+- Feasible pot actions respect both actual source cash and the engine's reserved funding. Partial reimbursement saves only the amount moved. Each confirmation has a `moves.batch`, so multiple partial moves on the same day reconcile individually against the bank without duplicating cash.
+- `transactions.creditAccount` classifies credit funding separately from immutable bank fields. The engine retains `observedAccount` and uses the owned credit account for balances and budget reimbursements. The UI accepts a positive amount owed and stores a negative credit valuation.
+- A saving-transfer bill can have an owned `toAccount`, daily frequency and `dailyIncrease`. Its first amount grows by the daily increment from `start`; dated amount changes begin a new base. Saving transfers debit and credit the two owned accounts. Actual moves match scheduled transfers one for one, and matched schedules do not generate another cash flow. The bank feed excludes these transfers from external bill matching.
+- Private live-data cleanup remains in the app UI. Neither live amounts nor browser state belong in this repository.

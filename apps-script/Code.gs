@@ -22,19 +22,19 @@ function webAppUrl_() {
 }
 var NO_URL_ = "Add a Script Property WEB_APP_URL (Project Settings > Script Properties) with your Web app URL, ending /exec (Deploy > Manage deployments), and run again.";
 var APP_URL = "https://budgie-money.github.io/";
-// 3: linked refunds, bill receipts and credit repayments. Raised whenever a table or column is added: the sheet gets it by itself (ensureSchema_)
-var SCHEMA_VERSION = 3;
+// 4: credit funding, daily saving transfers and move-confirmation batches. Raised whenever a table or column is added: the sheet gets it by itself (ensureSchema_)
+var SCHEMA_VERSION = 4;
 var COMMON = ["deleted", "updated", "by"];
 var SCHEMA = {
   people: ["id", "name", "bank", "potWord", "partner", "colour"],
   accounts: ["id", "owner", "name", "kind", "purpose", "fallback", "order"],
   income: ["id", "person", "name", "amount", "account", "isPay", "unit", "every", "on", "shift", "start", "end", "dates", "notes"],
-  bills: ["id", "person", "name", "category", "amount", "account", "split", "variable", "setAside", "unit", "every", "on", "shift", "start", "end", "dates", "pool", "notes", "creditAccount"],
+  bills: ["id", "person", "name", "category", "amount", "account", "split", "variable", "setAside", "unit", "every", "on", "shift", "start", "end", "dates", "pool", "notes", "creditAccount", "toAccount", "dailyIncrease"],
   budgets: ["id", "person", "name", "amount", "mode", "account", "carry", "start", "end", "notes"],
   splits: ["id", "name", "shares", "notes"],
   transfers: ["id", "from", "to", "name", "amount", "fromAccount", "toAccount", "purpose", "unit", "every", "on", "shift", "start", "end", "dates", "notes"],
-  transactions: ["id", "date", "person", "amount", "budget", "account", "split", "note", "source", "bankId", "review", "splitHint", "refundOf", "loanItem", "purchaseTotal", "iouShare", "planId", "billId", "billDate"],
-  moves: ["id", "date", "person", "from", "to", "amount", "key", "note", "review"],
+  transactions: ["id", "date", "person", "amount", "budget", "account", "split", "note", "source", "bankId", "review", "splitHint", "refundOf", "loanItem", "purchaseTotal", "iouShare", "planId", "billId", "billDate", "creditAccount"],
+  moves: ["id", "date", "person", "from", "to", "amount", "key", "note", "review", "batch"],
   settlements: ["id", "date", "from", "to", "amount", "fromAccount", "toAccount", "loan", "key", "note"],
   loans: ["id", "lender", "borrower", "name", "amount", "date", "account", "repay", "repayFrom", "repayDay", "notes"],
   loanItems: ["id", "loan", "name", "date", "cost", "share", "note"],
@@ -532,10 +532,16 @@ function applyOne_(me, op, now, by, opts) {
     }
   }
   if (!sys && t === "bills" && row.creditAccount) { var ca = byId_("accounts", String(row.creditAccount)); if (!ca || ca.kind !== "credit" || ca.owner !== row.person || ca.id === row.account) throw refuse_("Choose your credit account and a separate account to pay it from"); }
+  if (!sys && t === "bills" && !toBoolCell_(row.deleted)) {
+    if (row.toAccount) { var target = byId_("accounts", String(row.toAccount)); if (!target || target.owner !== row.person || !/^(pot|saving|isa)$/.test(target.kind) || row.toAccount === row.account || row.creditAccount || row.split || row.pool) throw refuse_("Choose a separate saving destination for this transfer"); }
+    if (row.dailyIncrease && (!(+row.dailyIncrease > 0) || !isFinite(+row.dailyIncrease) || !/^(day|days)$/.test(row.unit) || !Budgie.isIso(String(row.start)))) throw refuse_("A daily increase needs a daily schedule and its first date");
+  }
   if (!sys && t === "transactions" && !toBoolCell_(row.deleted)) {
+    if (row.creditAccount) { var paidCredit = byId_("accounts", String(row.creditAccount)); if (!paidCredit || paidCredit.owner !== me || paidCredit.kind !== "credit") throw refuse_("Choose your own credit account"); }
+
     if (row.billId) {
       var linkedBill = byId_("bills", String(row.billId)), receiptSource = row.bankId || "manual:" + id;
-      if (!linkedBill || linkedBill.person !== me || toBoolCell_(linkedBill.deleted) || !(+row.amount > 0) || !Budgie.isIso(String(row.billDate))) throw refuse_("Choose one of your own bills and its payment date");
+      if (!linkedBill || linkedBill.toAccount || linkedBill.person !== me || toBoolCell_(linkedBill.deleted) || !(+row.amount > 0) || !Budgie.isIso(String(row.billDate))) throw refuse_("Choose one of your own bills and its payment date");
       var receiptDb = Budgie.load(allTables_(), String(row.date));
       if (!Budgie.occurrences(receiptDb, linkedBill, Budgie.addDays(String(row.billDate), -45), Budgie.addDays(String(row.billDate), 46)).some(function (o) { return o.orig === String(row.billDate); })) throw refuse_("Choose an existing payment of this bill");
       var marked = byId_("exceptions", "x-" + row.billId + "-" + row.billDate + "-bankpaid-" + me);
@@ -624,8 +630,8 @@ function loanTotal_(loanId, now) {
 // accounts; a regular payment or a payment between you goes from the payer's account to the other's; a loan is paid
 // from the lender's
 var ACCOUNT_SIDES_ = {
-  transactions: {account: "person"}, moves: {from: "person", to: "person"},
-  bills: {account: "person", creditAccount: "person"}, income: {account: "person"}, budgets: {account: "person"},
+  transactions: {account: "person", creditAccount: "person"}, moves: {from: "person", to: "person"},
+  bills: {account: "person", creditAccount: "person", toAccount: "person"}, income: {account: "person"}, budgets: {account: "person"},
   transfers: {fromAccount: "from", toAccount: "to"}, settlements: {fromAccount: "from", toAccount: "to"}, loans: {account: "lender"}
 };
 // the accounts money comes out of, on rows either of you can write

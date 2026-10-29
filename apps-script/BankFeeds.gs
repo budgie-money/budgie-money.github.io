@@ -904,7 +904,7 @@ function bankApply_(p, data, windowFrom, payCarry) {
     // (what one tick in the app saved: its parts, one row each, on the same day between the same two accounts)
     var appTicks = null;
     var appTicked = function (from, to, amount, date) {
-      if (appTicks === null) { var g = {}; appTicks = []; db.moves.forEach(function (m) { if (m.dup || m.person !== p || /^bk-/.test(String(m.id)) || !TODO_KEY_.test(String(m.key || ""))) return; var k = m.date + "|" + m.from + "|" + m.to; if (!g[k]) { g[k] = {date: m.date, from: m.from, to: m.to, amount: 0}; appTicks.push(g[k]); } g[k].amount += +m.amount || 0; }); }
+      if (appTicks === null) { var g = {}; appTicks = []; db.moves.forEach(function (m) { if (m.dup || m.person !== p || /^bk-/.test(String(m.id)) || !TODO_KEY_.test(String(m.key || ""))) return; var k = (m.batch || m.date) + "|" + m.from + "|" + m.to; if (!g[k]) { g[k] = {date: m.date, from: m.from, to: m.to, amount: 0}; appTicks.push(g[k]); } g[k].amount += +m.amount || 0; }); }
       for (var i = 0; i < appTicks.length; i++) { var x = appTicks[i]; if (!appTaken[i] && x.from === from && x.to === to && same(x.amount, amount) && Math.abs(D.diff(x.date, date)) <= 3) { appTaken[i] = true; return x; } }
       return null;
     };
@@ -939,7 +939,7 @@ function bankApply_(p, data, windowFrom, payCarry) {
       var win = function (item) { return D.occurrences(db, item, D.addDays(t.date, -10), D.addDays(t.date, 11)).filter(function (o) { var d = planDay(o); return d >= lo && d < hi; }); };
       db.bills.forEach(function (b) {
         // (a pooled estimate is never paid as itself: its real bills come in as payments counted against it)
-        if (b.person !== p) return;
+        if (b.person !== p || b.toAccount) return;
         var bw = bankMerchantKey_(b.name).split(" "), nameHit = words.some(function (w) { return bw.indexOf(w) >= 0; });
         if (needName && !nameHit) return;   // a card payment only counts as a bill if the names agree (a subscription, say)
         win(b).forEach(function (o) {
