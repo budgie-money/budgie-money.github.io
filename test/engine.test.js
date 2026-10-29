@@ -1521,5 +1521,32 @@ const tickPay11 = (t, p, d) => { const L0 = B.load(t, d), per = B.periodAt(L0, p
   eq("Z5: after a week it isn't waited for any more", B.payPending(B.load(mk(), "2026-11-06"), "ethan", B.periodAt(B.load(mk(), "2026-11-06"), "ethan", "2026-11-06"), "2026-11-06"), false);
 }
 
+// --- itemised IOUs (loanItems): a loan with items is worth the sum of their shares; one without behaves as before
+{
+  const items = (t) => { t.loanItems = [
+    {id: "i1", loan: "sofa", name: "Sofa", date: "2026-10-20", cost: 700, share: 350, note: "half"},
+    {id: "i2", loan: "sofa", name: "Delivery", date: "2026-10-22", cost: 60, share: 60},
+    {id: "i3", loan: "sofa", name: "Her half of the takeaway", date: "2026-10-25", cost: 40, share: -20},
+    {id: "i4", loan: "sofa", name: "Gone", share: 999, deleted: true}]; };
+  const L = db(items), l = B.loans(L, "ethan", "2026-11-01")[0];
+  near("IOU items: the loan is the sum of its shares (a negative one takes off)", l.amount, 390);
+  eq("IOU items: listed oldest first, deleted ones left out, cost kept", l.items.map(x => [x.name, x.share, x.cost]), [["Sofa", 350, 700], ["Delivery", 60, 60], ["Her half of the takeaway", -20, 40]]);
+  eq("IOU items: an item with no cost has none", db(t => { items(t); t.loanItems.push({id: "i5", loan: "sofa", name: "Tip", share: 5}); }).loans[0].items.slice(-1)[0].name, "Tip");
+  eq("IOU items: no cost reads as none", B.loans(db(t => { items(t); t.loanItems.push({id: "i5", loan: "sofa", name: "Tip", share: 5}); }), "ethan", "2026-11-01")[0].items.slice(-1)[0].cost, null);
+  // repayments follow the new total: £200 a month of £390 is £200 then £190
+  eq("IOU items: repayments are worked out from the total, one schedule", l.plan.map(r => [r.date, r.amount]), [["2026-12-28", 200], ["2027-01-28", 190]]);
+  near("IOU items: paid back so far still counts against it", B.loans(db(t => { items(t); t.settlements.push({id: "s1", date: "2026-12-28", from: "sophie", to: "ethan", amount: 200, loan: "sofa", key: "loan:sofa:2026-12-28"}); }), "ethan", "2026-12-29")[0].left, 190);
+  near("IOU items: net worth owed uses the total", B.netWorth(L, "ethan", "2026-11-01").rows.find(r => /owes you/.test(r.name)).amount, 390);
+  near("IOU items: so does Sophie's side", B.netWorth(L, "sophie", "2026-11-01").rows.find(r => /You owe/.test(r.name)).amount, -390);
+  near("IOU items: the plan's repayment due is the same", B.loans(L, "sophie", "2026-11-01")[0].plan[0].amount, 200);
+  // no items: exactly as before
+  near("IOU items: a loan without items keeps its own amount", B.loans(db(), "ethan", "2026-11-01")[0].amount, 600);
+  eq("IOU items: and has an empty list", B.loans(db(), "ethan", "2026-11-01")[0].items, []);
+  near("IOU items: items that are all taken off leave the loan's own amount", B.loans(db(t => { t.loanItems = [{id: "i4", loan: "sofa", name: "Gone", share: 999, deleted: true}]; }), "ethan", "2026-11-01")[0].amount, 600);
+  near("IOU items: an item of a loan that isn't there changes nothing", B.loans(db(t => { t.loanItems = [{id: "i9", loan: "nothing", name: "x", share: 5}]; }), "ethan", "2026-11-01")[0].amount, 600);
+  // an item typed into the sheet as text with a pound sign is still a number
+  near("IOU items: a share typed as £1,234.50 is a number", B.loans(db(t => { t.loanItems = [{id: "i6", loan: "sofa", name: "x", share: "£1,234.50"}]; }), "ethan", "2026-11-01")[0].amount, 1234.5);
+}
+
 console.log(fails ? fails + " failed, " + passes + " passed" : "All " + passes + " passed");
 process.exit(fails ? 1 : 0);

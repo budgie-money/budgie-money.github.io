@@ -161,7 +161,7 @@
   }
 
   // ---------- loading ----------
-  var NUM = ["amount", "every", "order", "target", "repay", "newAmount", "extra", "price", "limit", "cost"];
+  var NUM = ["amount", "every", "order", "target", "repay", "newAmount", "extra", "price", "limit", "cost", "share"];
   var DATE = ["start", "end", "date", "newDate", "due", "repayFrom"];
   var BOOL = ["deleted", "isPay", "fallback", "carry", "variable", "bought"];
   function toBool(v) { return v === true || /^(true|yes|y|1)$/i.test(String(v || "").trim()); }
@@ -176,7 +176,7 @@
     });
     return r;
   }
-  var TABLES = ["people", "accounts", "income", "bills", "budgets", "splits", "transfers", "transactions", "moves", "settlements", "loans", "goals", "valuations", "amounts", "exceptions", "settings", "gifts", "prices", "meta"];
+  var TABLES = ["people", "accounts", "income", "bills", "budgets", "splits", "transfers", "transactions", "moves", "settlements", "loans", "loanItems", "goals", "valuations", "amounts", "exceptions", "settings", "gifts", "prices", "meta"];
   // today (optional): money already in pots only counts for periods that have started
   function load(tables, today) {
     // (lookups by id have no built-in keys, so an id like "constructor" or "__proto__" is only ever that row)
@@ -184,6 +184,16 @@
     TABLES.forEach(function (t) { db[t] = (tables[t] || []).map(clean).filter(function (r) { return !r.deleted && (t === "meta" || t === "settings" || r.id); }); });
     db.amounts.forEach(function (a) { (db.byItem.amounts[a.item] = db.byItem.amounts[a.item] || []).push(a); });
     db.exceptions.forEach(function (x) { (db.byItem.exceptions[x.item] = db.byItem.exceptions[x.item] || []).push(x); });
+    // what a loan is made of: its items, dated ones first (in the order they were added), and a loan that has any is
+    // worth what their shares add up to, so repayments, Between you two and net worth all keep working from one number
+    db.itemsByLoan = dict();
+    db.loanItems.forEach(function (x, i) { x.seq = i; if (x.loan) (db.itemsByLoan[x.loan] = db.itemsByLoan[x.loan] || []).push(x); });
+    db.loans.forEach(function (l) {
+      var its = db.itemsByLoan[l.id]; if (!its || !its.length) return;
+      its.sort(function (a, b) { var x = a.date || "9999", y = b.date || "9999"; return x < y ? -1 : x > y ? 1 : a.seq - b.seq; });
+      var sum = 0; its.forEach(function (x) { sum += +x.share || 0; });
+      l.items = its; l.ownAmount = +l.amount || 0; l.amount = round(sum);
+    });
     db.accounts.sort(function (a, b) { return (+a.order || 99) - (+b.order || 99); });
     ["accounts", "income", "bills", "budgets", "splits", "transfers", "loans", "goals", "people"].forEach(function (t) { db[t].forEach(function (r) { db.byId[r.id] = r; }); });
     // (no built-in keys either: a setting typed in for a person or key called "__proto__" or "constructor" is just a setting)
@@ -2002,7 +2012,8 @@
   function loans(db, p, date) {
     return db.loans.filter(function (l) { return l.lender === p || l.borrower === p; }).map(function (l) {
       var paid = loanPaid(db, l, date), left = round((+l.amount || 0) - paid);
-      return {id: l.id, name: l.name, lender: l.lender, borrower: l.borrower, amount: +l.amount || 0, notes: String(l.notes || ""), paid: paid, left: left, pct: l.amount ? Math.round(paid / l.amount * 100) : 0, plan: loanPlan(db, l).filter(function (r) { return !r.paid; }).map(function (r) { return Object.assign({}, r, {amount: r.left}); })};
+      var items = (l.items || []).map(function (x) { return {id: x.id, name: String(x.name || ""), date: x.date || "", cost: x.cost === "" || x.cost === undefined ? null : +x.cost, share: +x.share || 0, note: String(x.note || "")}; });
+      return {id: l.id, name: l.name, lender: l.lender, borrower: l.borrower, amount: +l.amount || 0, notes: String(l.notes || ""), items: items, paid: paid, left: left, pct: l.amount ? Math.round(paid / l.amount * 100) : 0, plan: loanPlan(db, l).filter(function (r) { return !r.paid; }).map(function (r) { return Object.assign({}, r, {amount: r.left}); })};
     });
   }
 
