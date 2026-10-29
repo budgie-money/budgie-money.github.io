@@ -6,7 +6,7 @@
   else root.Budgie = factory();
 })(this, function () {
   "use strict";
-  var VERSION = "1.6.0";
+  var VERSION = "1.6.1";
 
   // ---------- dates ----------
   function D(s) { var p = String(s).split("-"); return new Date(Date.UTC(+p[0], +p[1] - 1, +p[2])); }
@@ -1281,7 +1281,7 @@
       occurrencesAll(db, i, addDays(per.start, -1), addDays(per.start, 2)).forEach(function (o) { if (o.date === per.start) { found = true; if (o.paid) seen = true; } });
     });
     if (!found || seen) return false;
-    return !db.moves.some(function (m) { return !m.dup && m.person === p && String(m.key || "").indexOf("pay:" + per.start + ":") === 0; });
+    return !db.moves.some(function (m) { return !m.dup && m.person === p && String(m.key || "").indexOf("pay:" + per.start + ":") === 0; })&&!accountsOf(db,p).some(function(a){return ticked(db,p,'pay:'+per.start+':'+a.id)>.004;});
   }
 
   // ---------- To do ----------
@@ -1539,7 +1539,7 @@
       for(var i=0;i<v.parts.length;i++){
         var k=v.parts[i];if(!isFinite(k.amount)||k.amount<=0||round(k.amount)!==k.amount||seen[k.key])return null;seen[k.key]=true;
         if(k.reverse){if(!/^back:/.test(k.key)||k.key.slice(-main.length-1)!==':'+main)return null;}
-        else if(k.key!=='pay:'+v.period+':'+a.id)return null;
+        else if(k.key!=='pay:'+v.period+':'+a.id&&k.key!=='fill:budget:'+v.period+':'+a.id)return null;
         sum+=k.reverse?-k.amount:k.amount;
       }
       if(Math.abs(round(sum)-(m.from===main?m.amount:-m.amount))>.004)return null;
@@ -1550,17 +1550,25 @@
   // outstanding parts. Offset makes two equal partial transfers distinct.
   function paydaySteps(db,p,date,per) {
     per=per||periodAt(db,p,date);var pd=payday(db,p,per),main=pd.payAccount,groups=[],netted=dict(),since=planningRule(db,p,'payday.netFrom',per.start),enabled=isIso(since)&&per.start>=since&&main===mainOf(db,p);
+    var state=budgetState(db,p,per),balancesNow=balances(db,date),budgetFloor=dict(),futureOut=dict(),baseMoves=pd.moves.slice();
+    if(enabled){
+      Object.keys(state).forEach(function(id){var s=state[id],a=db.byId[s.budget.account];if(a&&a.owner===p&&a.kind==='pot'&&isSpend(db,s.budget)){budgetFloor[a.id]=round((budgetFloor[a.id]||0)+Math.max(0,s.left));if(!baseMoves.some(function(m){return m.to===a.id;}))baseMoves.push({from:main,to:a.id,amount:0,why:'Keep the remaining spending allowance funded'});}});
+      flows(db,date,addDays(per.next,-1)).forEach(function(f){futureOut[f.account]=(futureOut[f.account]||0)-f.amount;});
+    }
     periods(db,p,startOf(db,p),addDays(date,1)).forEach(function(pk){if(pk.start>per.start)return;reimbursements(db,p,pk,date).forEach(function(g){if(g.kind==='back'&&g.to===main){var left=round(Math.max(0,g.amount-ticked(db,p,g.key)-(g.bank||0)));if(left>.004)groups.push(Object.assign({},g,{left:left}));}});});
-    var steps=pd.moves.map(function(m){
+    var steps=baseMoves.map(function(m){
       var key='pay:'+per.start+':'+m.to,paid=Math.min(m.amount,ticked(db,p,key)),left=round(Math.max(0,m.amount-paid)),backs=groups.filter(function(g){return g.from===m.to;}),back=round(backs.reduce(function(n,g){return n+g.left;},0)),parts=[{key:key,amount:left,reverse:false}];
-      var step=Object.assign({},m,{account:m.to,allocation:m.amount,paid:paid,key:key,remaining:left,from:m.from,to:m.to,offset:paid,parts:[],back:0});
-      step.settledBack=0;db.moves.forEach(function(mv){if(mv.dup||mv.person!==p||db.netReturns[mv.key])return;var ps=netParts(db,mv);if(ps&&ps.some(function(k){return k.key===key;}))ps.forEach(function(k){if(k.reverse)step.settledBack=round(step.settledBack+k.amount);});});
-      if(enabled&&left>.004&&(back>.004||paid>.004)&&((db.byId[m.to]||{}).kind!=='lisa'||back===0)){
+      var target=budgetFloor[m.to]===undefined?null:round(budgetFloor[m.to]+Math.max(0,futureOut[m.to]||0)+Math.max(0,(pd.plan.reserveOut||{})[m.to]||0)),fill=enabled&&target!==null?round(Math.max(0,target-((balancesNow[m.to]||0)+left-back))):0;
+      var step=Object.assign({},m,{account:m.to,allocation:m.amount,paid:paid,key:key,remaining:left,from:m.from,to:m.to,offset:paid,parts:[],back:0,fill:fill,target:target,returned:!!db.payReturns[p+'|'+key]&&left>.004});
+      step.settledBack=0;db.moves.forEach(function(mv){if(mv.dup||mv.person!==p||db.netReturns[mv.key])return;var ps=netParts(db,mv);if(ps){var v=JSON.parse(mv.key.slice(4));if(v.period===per.start&&v.account===m.to)ps.forEach(function(k){if(k.reverse)step.settledBack=round(step.settledBack+k.amount);});}});
+      if(enabled&&(left>.004||fill>.004)&&(back>.004||paid>.004||fill>.004)&&((db.byId[m.to]||{}).kind!=='lisa'||back===0)){
         backs.forEach(function(g){parts.push({key:g.key,amount:g.left,reverse:true});netted[g.key]=g.left;});
-        var amount=round(left-back),payload={v:1,period:per.start,account:m.to,offset:paid,parts:parts},revisions=[];
+        if(fill>.004)parts.push({key:'fill:budget:'+per.start+':'+m.to,amount:fill,reverse:false});
+        parts=parts.filter(function(k){return k.amount>.004;});
+        var amount=round(left+fill-back),payload={v:1,period:per.start,account:m.to,offset:paid,parts:parts},revisions=[];
         Object.keys(db.netReturns||{}).forEach(function(k){try{var v=JSON.parse(k.slice(4));if(v.period===per.start&&v.account===m.to)revisions.push(db.netReturns[k]);}catch(e){}});
         if(revisions.length)payload.revision=revisions.join(',');
-        step.key='net:'+JSON.stringify(payload);step.parts=parts;step.back=back;step.remaining=Math.abs(amount);step.from=amount<0?m.to:main;step.to=amount<0?main:m.to;step.net=true;step.returned=!!revisions.length;
+        step.key='net:'+JSON.stringify(payload);step.parts=parts;step.back=back;step.remaining=Math.abs(amount);step.from=amount<0?m.to:main;step.to=amount<0?main:m.to;step.net=true;step.returned=step.returned||!!revisions.length;
       }
       return step;
     });
@@ -1568,9 +1576,11 @@
   }
   function partialNetKey(step,amount) {
     if(!step.net||!(amount>0)||amount>step.remaining+.004)return null;
-    var v=JSON.parse(step.key.slice(4)),factor=amount/step.remaining,pay=round(v.parts[0].amount*factor),reverse=round(pay-(step.from===step.to?0:step.parts[0].amount-step.back>0?amount:-amount)),left=reverse;
-    v.parts[0].amount=pay;
-    for(var i=1;i<v.parts.length;i++){var k=v.parts[i],take=i===v.parts.length-1?left:Math.min(left,round(k.amount*factor));left=round(left-take);k.amount=take;}
+    var v=JSON.parse(step.key.slice(4)),factor=amount/step.remaining,original=v.parts.map(function(k){return Math.round(k.amount*100);}),sign=v.parts.reduce(function(n,k){return n+(k.reverse?-k.amount:k.amount);},0)<0?-1:1,sum=0;
+    v.parts.forEach(function(k){k.amount=Math.round(k.amount*100*factor);sum+=k.reverse?-k.amount:k.amount;});
+    var difference=Math.round(amount*100)*sign-sum;
+    for(var guard=0;difference&&guard<200;guard++)for(var i=0;i<v.parts.length&&difference;i++){var k=v.parts[i],delta=(difference>0?1:-1)*(k.reverse?-1:1);if(k.amount+delta>=0&&k.amount+delta<=original[i]){k.amount+=delta;difference-=delta*(k.reverse?-1:1);}}
+    if(difference)return null;v.parts.forEach(function(k){k.amount=round(k.amount/100);});
     v.parts=v.parts.filter(function(k){return k.amount>.004;});return 'net:'+JSON.stringify(v);
   }
 
@@ -1711,7 +1721,9 @@
     var fundingInMain=0, projectedPot=dict();
     if(per.pay&&!per.opening&&!payPending(db,p,per,date)){
       var pd=payday(db,p,per), other=0,spending=0,mainDue=0;
-      pd.moves.forEach(function(m){var left=Math.max(0,round(m.amount-ticked(db,p,"pay:"+per.start+":"+m.to)));if(spendAccs[m.to]){spending+=left;projectedPot[m.to]=(projectedPot[m.to]||0)+left;}else other+=left;});
+      var journey=paydaySteps(db,p,date,per);
+      if(journey.enabled)journey.steps.forEach(function(m){var left=m.from===main?m.remaining:0;if(spendAccs[m.account]){spending+=left;projectedPot[m.account]=(projectedPot[m.account]||0)+left;}else other+=left;});
+      else pd.moves.forEach(function(m){var left=Math.max(0,round(m.amount-ticked(db,p,"pay:"+per.start+":"+m.to)));if(spendAccs[m.to]){spending+=left;projectedPot[m.to]=(projectedPot[m.to]||0)+left;}else other+=left;});
       flows(db,date,addDays(per.next,-1)).forEach(function(f){if(f.account===main&&f.amount<0)mainDue-=f.amount;});
       unseenBills(db,p,date).forEach(function(r){if(r.account===main)mainDue+=r.amount;});
       var rules=spareRules(db,p,date),held=rules?Math.max(0,+rules.buffer||0):0;
