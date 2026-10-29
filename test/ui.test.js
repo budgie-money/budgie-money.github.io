@@ -1035,6 +1035,49 @@ const fails = [], check = (name, cond, extra) => { if (cond) console.log("ok", n
     await page.context().close();
   }
 
+
+  // ===== budgets: changes coming (listed, added, changed, removed) and what happens to unspent money
+  {
+    const dump = async t => (await (await page.request.get("http://localhost:" + PORT + "/dump?" + t)).json());
+    page = await newPage("2026-11-02");
+    await page.goto(links.ethan); await hiE(page);
+    await page.evaluate(() => { document.querySelector("#sheets").innerHTML = ""; window.BudgieApp.go("list", {table: "budgets"}); }); await page.waitForTimeout(100);
+    await page.click('[data-a="edit"][data-v="budgets:e-food-b"]'); await page.waitForTimeout(80);
+    const sel = await page.$eval('[data-f="carry"]', el => [...el.options].map(o => o.textContent + (o.selected ? "*" : "")));
+    check("Unspent on payday is a clear choice, saying where it goes", sel.join("|") === "Keep it for next month*|Let it go to Cash ISA", sel);
+    check("and there is no bare tickbox for it", !(await page.$('input[type="checkbox"][data-f="carry"]')));
+    await page.click('[data-a="chgnew"]'); await page.waitForTimeout(60);
+    await page.fill("#chgDate", "2026-11-26"); await page.fill("#chgAmt", "250"); await page.click('[data-a="chgsave"]'); await page.waitForTimeout(80);
+    let t = T(await page.textContent("main"));
+    check("Changes coming lists the date and the amount, under the budget's amount", /Changes coming.*Thu 26 Nov£250\.00/.test(t), t.slice(0, 400));
+    await shot(page, "budget-1-changes-coming", true);
+    await page.click('[data-a="chgedit"]'); await page.waitForTimeout(60);
+    check("tapping one opens it with its date and amount", (await page.inputValue("#chgDate")) === "2026-11-26" && (await page.inputValue("#chgAmt")) === "250");
+    await page.fill("#chgAmt", "260"); await page.click('[data-a="chgsave"]'); await page.waitForTimeout(80);
+    check("and it can be changed", /Thu 26 Nov£260\.00/.test(T(await page.textContent("main"))));
+    await page.click('[data-a="chgnew"]'); await page.fill("#chgDate", "2026-12-26"); await page.fill("#chgAmt", "275"); await page.click('[data-a="chgsave"]'); await page.waitForTimeout(80);
+    await page.click('[data-a="chgnew"]'); await page.fill("#chgDate", "2026-11-02"); await page.fill("#chgAmt", "1"); await page.click('[data-a="chgsave"]'); await page.waitForTimeout(60);
+    check("a date that is today or earlier is turned down", /after today/.test(await page.textContent("#toast")) && !!(await page.$("#chgDate")));
+    await page.click('[data-a="sheetclose"], .sheet-bg'); await page.waitForTimeout(40);
+    await page.evaluate(() => { document.querySelector("#sheets").innerHTML = ""; });
+    const dated = (await dump("amounts")).filter(r => r.item === "e-food-b" && !r.deleted);
+    check("they are saved as dated amounts, nothing else touched", dated.length === 2 && dated.some(r => r.start === "2026-11-26" && +r.amount === 260), dated);
+    await page.evaluate(() => { document.querySelector("#sheets").innerHTML = ""; });
+    await page.click('[data-a="chgedit"][data-v="' + dated.find(r => r.start === "2026-12-26").id + '"]'); await page.click('[data-a="chgdel"]'); await page.waitForTimeout(80);
+    check("a change can be removed", !/26 Dec/.test(T(await page.textContent("main"))) && /26 Nov/.test(T(await page.textContent("main"))));
+    // choose to let unspent money go, save
+    await page.selectOption('[data-f="carry"]', "false"); await page.click('[data-a="editsave"]'); await page.waitForTimeout(500);
+    const food = (await dump("budgets")).find(r => r.id === "e-food-b");
+    check("choosing 'Let it go' is saved (carry off)", food.carry === false || /^false$/i.test(String(food.carry)) || food.carry === "", food.carry);
+    // not for one-offs, saving or what's left; and bills and pay have changes coming too
+    await page.evaluate(() => window.BudgieApp.go("list", {table: "budgets"})); await page.click('[data-a="edit"][data-v="budgets:e-isa-b"]'); await page.waitForTimeout(80);
+    check("a 'whatever is left' budget has no unspent choice and no changes coming", !(await page.$('[data-f="carry"]')) && !(await page.$('[data-a="chgnew"]')));
+    await page.evaluate(() => window.BudgieApp.go("list", {table: "income"})); await page.click('[data-a="edit"][data-v="income:e-pay"]'); await page.waitForTimeout(80);
+    check("pay has Change from a date", !!(await page.$('[data-a="chgnew"]')));
+    await page.evaluate(() => window.BudgieApp.go("bills")); await page.waitForTimeout(40);
+    await page.context().close();
+  }
+
   // ===== polish 2026-10-27 (1.4.15): on every screen and sheet, at 320, 384 and 412px, with Larger text and with the
   // phone's text at 130%, no button's text runs past its edge, no one-line button wraps, no row of buttons is ragged
   // (all on one line, even lines, or one under another) and nothing is wider than the screen. Long names, big amounts.

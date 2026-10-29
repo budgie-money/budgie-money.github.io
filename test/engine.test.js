@@ -1589,5 +1589,18 @@ const tickPay11 = (t, p, d) => { const L0 = B.load(t, d), per = B.periodAt(L0, p
   eq("IOU paid: no items, no states", B.loans(db(), "ethan", "2026-11-03")[0].items, []);
 }
 
+// --- unspent money on payday: a budget that keeps it holds it back; one that lets it go counts it as already there, so
+// less is moved in and the same amount more goes to whatever is left (Ethan's Cash ISA)
+{
+  const at = (carry) => { const d = db(t => { t.budgets.find(b => b.id === "e-food-b").carry = carry; t.budgets.find(b => b.id === "e-fun").carry = carry; });
+    d.today = "2026-11-26"; const pl = B.planFor(d, "ethan", B.periodAt(d, "ethan", "2026-11-26")); return {pl, d}; };
+  const keep = at(true).pl, go = at(false).pl, line = (pl, acc) => (pl.lines.find(l => l.already && l.account === acc) || {amount: 0}).amount;
+  near("unspent kept: the food pot only counts what is beyond the carried money", line(keep, "e-food"), 21.43);
+  near("unspent let go: all the unspent food money counts as already in the pot", line(go, "e-food"), 200);
+  near("so what is left (the Cash ISA) is more by exactly the unspent money", go.remainder - keep.remainder, (200 - 21.43) + (150 - 16.07));
+  near("and the payday move into the food pot is smaller by the same", B.payday(at(true).d, "ethan", B.periodAt(at(true).d, "ethan", "2026-11-26")).moves.concat([{to: "e-food", amount: 0}]).find(m => m.to === "e-food").amount - (B.payday(at(false).d, "ethan", B.periodAt(at(false).d, "ethan", "2026-11-26")).moves.concat([{to: "e-food", amount: 0}]).find(m => m.to === "e-food").amount), 178.57);
+  eq("the budget that gets what's left is the Cash ISA", go.remainderBudget.name, "Cash ISA");
+}
+
 console.log(fails ? fails + " failed, " + passes + " passed" : "All " + passes + " passed");
 process.exit(fails ? 1 : 0);

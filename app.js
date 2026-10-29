@@ -220,6 +220,9 @@
     bankmap: ["Which is which", "Tell Budgie which of its accounts each one is. Moves between them tick off your payday list by themselves."],
     modes: ["How budgets work", "Day to day builds up each day. Weekly is paced week by week, good for food shops. One-offs have no daily pace. Saving is moved on payday. Whatever is left gets what's left after everything else."],
     rate: ["Saving rate", "How much of what comes in each month is saved. Coming in is your pay and money paid to you, not money carried over from last month. Money put by for yearly bills isn't counted as saved. The month still going is the lighter bar."],
+    carry: ["Unspent on payday", "Keep it: what you don't spend stays in this budget's pot for next month, up to one month's worth. Let it go: on payday it counts as already in the pot, so less is moved in and the same amount more goes to whatever is left."],
+    changes: ["Changes coming", "A change counts from its date. Months before it keep what they had. Budgets are worked out a pay period at a time, so a change counts from the first pay period that is mostly after its date."],
+    direct: ["Straight to this goal", "When this is on, one-off money into your bank (with no budget) and what your partner pays back to you show up in To do, to move into this goal's first account as soon as it lands. Payday then leaves that money out of what's left, so it's never counted twice. It starts from the day you turn it on."],
     pots: ["Where this comes from", "Budgie works out what should be in each one from your rules and what you've logged. Tap one if your bank app shows something different, and tell Budgie what it says."]
   };
   function infoBtn(k) { return '<button type="button" class="info" data-a="info" data-v="' + k + '" aria-label="' + esc(INFO[k][0]) + '">' + icon("info", 18) + "</button>"; }
@@ -1362,6 +1365,20 @@
     var fixed = txt.match(/([a-z]+)\s*=\s*([\d.]+)/i); if (fixed) return names(fixed[1].toLowerCase()) + " pays " + M(+fixed[2]) + ", the rest by the other";
     var parts = []; txt.replace(/([a-z]+)\s*:\s*([\d.]+)/gi, function (_, a, b) { parts.push(names(a.toLowerCase()) + " " + b); }); return parts.length ? parts.join(" : ") + " parts" : "Half each";
   }
+  // ----- dated changes: what a bill, pay, payment or budget will be from a date, listed and changed in one place
+  function changesComing() { var now = todayIso(); return (tables().amounts || []).filter(function (x) { return x.item === EDIT.id && !x.deleted && x.amount !== "" && x.amount !== undefined && x.amount !== null && !x.shares && x.start > now; }).sort(function (a, b) { return a.start < b.start ? -1 : 1; }); }
+  function changesBlock() {
+    var list = changesComing();
+    return (list.length ? '<div class="row" style="margin-top:14px"><span style="font-size:13px;font-weight:600;color:var(--muted)">Changes coming</span>' + infoBtn("changes") + '</div><div class="list">' + list.map(function (x) { return li(esc(B.nice(x.start)), "", num(M(x.amount)), "chgedit", x.id); }).join("") + "</div>" : "") +
+      '<button type="button" class="btn dash" data-a="chgnew">Change from a date</button>';
+  }
+  function chgSheet(id) {
+    var x = id ? changesComing().filter(function (c) { return c.id === id; })[0] : null, tomorrow = B.addDays(todayIso(), 1);
+    S.ui.chg = x ? x.id : "";
+    openSheet('<h2>Change from a date</h2><label class="f">From<input type="date" id="chgDate" min="' + tomorrow + '" value="' + esc(x ? x.start : "") + '"></label><label class="f">New amount<input type="text" inputmode="decimal" id="chgAmt" placeholder="£" value="' + esc(x ? x.amount : "") + '"></label>' +
+      '<button type="button" class="btn wide" style="margin-top:14px" data-a="chgsave">Save</button>' + (x ? '<button type="button" class="btn danger wide" style="margin-top:10px" data-a="chgdel">Remove this change</button>' : ""));
+  }
+
   // ----- IOUs: what one is made of
   // who the IOU is owed by, as the form or the engine says it (direction: "in" means your partner owes you)
   function iouBorrower(direction) { var mine = direction === "out", q = person(partner()); return {mine: mine, name: mine ? "You" : shortName(q.name)}; }
@@ -1425,7 +1442,7 @@
   var FORMS = {
     bills: {title: "Bill", fields: function () { return [{k: "name", t: "text", l: "Name"}, {k: "amount", t: "money", l: "Amount"}].concat(SCHED()).concat([{k: "account", t: "account", l: "Comes out of"}, {k: "category", t: "select", l: "Type", o: [["home", "Home and flat bills"], ["subscription", "Subscription"], ["phone", "Phone"], ["car", "Car"], ["health", "Health"], ["work", "Work and fees"], ["insurance", "Insurance"], ["other", "Other"]]}, {k: "split", t: "split", l: "Shared with your partner?"}, {k: "variable", t: "check", l: "The amount changes each time (like energy)"}, {k: "pool", t: "pool"}, {k: "setAside", t: "setaside"}, {k: "notes", t: "text", l: "Notes"}]); }, owner: "person"},
     income: {title: "Money coming in", fields: function () { return [{k: "name", t: "text", l: "Name"}, {k: "amount", t: "money", l: "Amount (after tax)"}].concat(SCHED()).concat([{k: "account", t: "account", l: "Goes into"}, {k: "isPay", t: "check", l: "This is my pay (it sets my pay periods)"}, {k: "notes", t: "text", l: "Notes"}]); }, owner: "person"},
-    budgets: {title: "Budget", fields: function () { return [{k: "name", t: "text", l: "Name"}, {k: "amount", t: "money", l: "Amount each pay period (leave empty for whatever is left)"}, {k: "mode", t: "select", l: "How it works", info: "modes", o: [["daily", "Day to day"], ["weekly", "Weekly (food shops)"], ["oneoff", "One-offs"], ["saving", "Saving on payday"], ["remainder", "Whatever is left"]]}, {k: "account", t: "account", l: "Kept in", all: true}, {k: "carry", t: "check", l: "Carry anything unspent into next month"}, {k: "start", t: "date", l: "Starts (optional)"}, {k: "end", t: "date", l: "Ends (optional)"}]; }, owner: "person"},
+    budgets: {title: "Budget", fields: function () { return [{k: "name", t: "text", l: "Name"}, {k: "amount", t: "money", l: "Amount each pay period (leave empty for whatever is left)"}, {k: "mode", t: "select", l: "How it works", info: "modes", o: [["daily", "Day to day"], ["weekly", "Weekly (food shops)"], ["oneoff", "One-offs"], ["saving", "Saving on payday"], ["remainder", "Whatever is left"]]}, {k: "account", t: "account", l: "Kept in", all: true}, {k: "carry", t: "unspent"}, {k: "start", t: "date", l: "Starts (optional)"}, {k: "end", t: "date", l: "Ends (optional)"}]; }, owner: "person"},
     accounts: {title: "Account", fields: function () { return [{k: "name", t: "text", l: "Name"}, {k: "kind", t: "select", l: "Kind", o: [["main", "Main account"], ["pot", "Pot or Space"], ["saving", "Savings pot"], ["isa", "ISA"], ["lisa", "Lifetime ISA"], ["pension", "Pension"], ["credit", "Credit or overdraft"]]}, {k: "purpose", t: "text", l: "What it's for"}, {k: "fallback", t: "check", l: "Covers going over budget (only one should)"}, {k: "order", t: "number", l: "Order on screen"}]; }, owner: "owner"},
     goals: {title: "Goal", fields: function () { return [{k: "name", t: "text", l: "Name"}, {k: "target", t: "money", l: "Target"}, {k: "due", t: "date", l: "Target date (optional)"}, {k: "kind", t: "select", l: "Kind", o: [["savings", "Saving for something"], ["house", "House deposit"], ["emergency", "Emergency fund"], ["car", "Car"], ["holiday", "Holiday"], ["other", "Other"]]}, {k: "accounts", t: "accounts", l: "Which accounts count towards it"}, {k: "extra", t: "money", l: "Plus money kept elsewhere (optional)"}, {k: "owners", t: "owners", l: "Whose goal"}, {k: "price", t: "money", l: "House price you're aiming for (house goals)"}, {k: "notes", t: "text", l: "Notes"}]; }, owner: "owners"},
     splits: {title: "Split", fields: function () { return [{k: "name", t: "text", l: "Name (for example Flat bills)"}, {k: "shares", t: "shares", l: "How it's shared"}]; }, owner: null},
@@ -1458,7 +1475,7 @@
   }
   SCREENS.edit = function () {
     var F = FORMS[EDIT.table], r = EDIT.row, html = "";
-    F.fields().forEach(function (f) { html += field(f, r); });
+    F.fields().forEach(function (f) { html += field(f, r); if (f.k === "amount" && EDIT.id && DATED.test(EDIT.table) && !(EDIT.table === "budgets" && r.mode === "remainder")) html += changesBlock(); });
     var canStop = EDIT.id && /bills|income|transfers|budgets/.test(EDIT.table);
     html += '<button type="button" class="btn wide" style="margin-top:18px" data-a="editsave">Save</button>';
     if (EDIT.id) html += '<div class="two fit" style="margin-top:10px">' + (canStop ? '<button type="button" class="btn line" data-a="editstop">' + (EDIT.table === "budgets" ? "Stop at next payday" : "Stop from today") + "</button>" : "") + '<button type="button" class="btn danger" data-a="editdelete">Delete</button></div>';
@@ -1472,6 +1489,11 @@
       case "number": return input("number", ' inputmode="numeric"');
       case "money": return input("text", ' inputmode="decimal" placeholder="£"');
       case "date": return input("date");
+      case "unspent":
+        // only for budgets that can have something left: day to day and weekly. Where it goes is the "whatever is left" budget
+        if (!/^(daily|weekly)$/.test(r.mode || "daily")) return "";
+        var rem = B.budgetsIn(db(), me(), B.periodAt(db(), me(), todayIso())).filter(function (b) { return b.person === me() && b.mode === "remainder"; })[0], keeps = v === true || /^true$/i.test(String(v));
+        return '<label class="f">Unspent on payday' + infoBtn("carry") + '<select data-f="carry"><option value="true"' + (keeps ? " selected" : "") + '>Keep it for next month</option><option value="false"' + (keeps ? "" : " selected") + ">Let it go to " + esc(rem ? budName(rem) : "what\'s left") + "</option></select></label>";
       case "loanitems":
         var its = EDIT.items || [], sts = B.itemStates(its, EDIT.paid || 0), bw = iouBorrower(r.direction), tot = B.round(its.reduce(function (t, x) { return t + (+x.share || 0); }, 0));
         return (sts.length ? '<div class="f" style="font-size:13px;font-weight:600;color:var(--muted);margin-top:12px">What it\'s made of</div><div class="list">' + sts.map(function (x) { return itemRow(x, bw, "itemedit"); }).join("") + "</div>" : "") +
@@ -1535,6 +1557,7 @@
     Object.keys(multi).forEach(function (k) { r[k] = multi[k].join(", "); });
     var sh = root.querySelector('[data-sh="mode"]');
     if (sh) { var fixed = sh.value === "fixed", bits = []; root.querySelectorAll("[data-sh]").forEach(function (el) { if (el.dataset.sh !== "mode" && el.value.trim()) bits.push(el.dataset.sh + (fixed ? "=" : ":") + el.value.trim().replace(/[£,]/g, "")); }); r.shares = bits.join(", "); }
+    if (EDIT.table === "budgets" && r.carry !== undefined) r.carry = r.carry === true || r.carry === "true";
     ["amount", "target", "extra", "limit", "cost", "repay", "price"].forEach(function (k) { if (r[k] !== undefined && r[k] !== "") r[k] = B.round(+String(r[k]).replace(/[£,\s]/g, "") || 0); });
     return r;
   }
@@ -1793,6 +1816,17 @@
     lisapaidsave: function () { var raw = ($("#lisaPaid") || {}).value || "", a = +String(raw).replace(/[£,\s]/g, ""); if (raw === "" || isNaN(a)) return; setting("lisa.paidBefore." + S.ui.lisaAcc, B.round(a)); markChecked("lisapaid-" + S.ui.lisaAcc); closeSheet(); toast("Saved"); render(); },
     edit: function (v) { var k = v.split(":"); openEditor(k[0], k[1]); }, "new": function (v) { openEditor(v, null); },
     editsave: function () { saveEditor(); },
+    chgnew: function () { chgSheet(""); }, chgedit: function (v) { chgSheet(v); },
+    chgsave: function () {
+      var d = ($("#chgDate") || {}).value, raw = String(($("#chgAmt") || {}).value || "").replace(/[£,\s]/g, ""), a = +raw;
+      if (!B.isIso(d) || d <= todayIso()) { toast("Pick a date after today. To change it from today, change the amount above."); return; }
+      if (raw === "" || isNaN(a) || a < 0) { toast("Type the new amount"); return; }
+      // one change a day: a second on the same day replaces the first
+      var same = changesComing().filter(function (c) { return c.start === d && c.id !== S.ui.chg; })[0], id = S.ui.chg || (same && same.id) || newId("amt");
+      if (same && S.ui.chg) del("amounts", same.id, true);
+      put("amounts", {id: id, item: EDIT.id, start: d, amount: B.round(a)}, true); closeSheet(); toast("Saved: " + M(a) + " from " + B.nice(d)); render();
+    },
+    chgdel: function () { if (S.ui.chg) del("amounts", S.ui.chg, true); closeSheet(); toast("Change removed"); render(); },
     itemnew: function () { itemSheet(""); }, itemedit: function (v) { itemSheet(v); },
     itemmode: function (v) { var x = itemRead(); x.mode = v; itemSheet(x.id, x); },
     itemsave: function () {
@@ -1971,7 +2005,7 @@
       if (el.dataset.f === "on") S.ui.onTouched = true;
       // a new bill's day follows its start date until you pick a day yourself
       if (el.dataset.f === "start" && !EDIT.id && !S.ui.onTouched && B.isIso(el.value)) { var onEl = $("#main").querySelector('[data-f="on"]'); if (onEl) onEl.value = String(+el.value.slice(8, 10)); }
-      if (el.dataset.f === "how" || el.dataset.f === "poolOn" || (el.dataset.f === "direction" && EDIT.table === "loans")) render();   // render reads the form first, so nothing typed is lost
+      if (el.dataset.f === "how" || el.dataset.f === "poolOn" || (el.dataset.f === "direction" && EDIT.table === "loans") || (el.dataset.f === "mode" && EDIT.table === "budgets")) render();   // render reads the form first, so nothing typed is lost
       return;
     }
     if (!c) return;
