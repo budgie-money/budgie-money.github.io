@@ -32,6 +32,7 @@
       style.textContent =
         ".c-tabs{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;margin-bottom:18px}.c-tabs button{padding:11px 3px;min-width:0;font-size:14px;white-space:nowrap}.c-tabs [aria-pressed=true]{background:var(--accent);color:var(--accent-ink)}.c-period{display:grid;grid-template-columns:42px 1fr 42px;gap:6px;align-items:center;margin:8px 0 18px;text-align:center}.c-period strong,.c-period small{display:block}.c-period small{font-size:12px;color:var(--muted);margin-top:3px;line-height:1.5}.c-budget-head,.c-budget-row{display:grid;grid-template-columns:minmax(0,1.3fr) minmax(0,1fr) minmax(0,1fr);gap:8px;align-items:center;text-align:right}.c-budget-head{font-size:12px;color:var(--muted);padding:8px 0}.c-budget-head>:first-child,.c-budget-row>:first-child{text-align:left}.c-budget-row{width:100%;background:none;color:inherit;border:0;border-top:1px solid var(--line2);padding:15px 0;font:inherit}.c-budget-row strong{font-size:15px;line-height:1.35;display:block;overflow-wrap:anywhere}.c-budget-row small{display:block;font-size:11px;color:var(--muted);margin-top:4px}.c-budget-row .c-amount{font-size:15px;font-weight:750;font-variant-numeric:tabular-nums;white-space:nowrap}.c-over{color:var(--warn)}.c-guide{display:block;width:100%;border:0;text-align:left;color:var(--accent-ink);padding:20px}.c-guide .big{font-size:38px;line-height:1.2;margin:5px 0 15px}.c-guide-parts{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;border-top:1px solid rgba(255,255,255,.25);padding-top:13px}.c-guide-parts span,.c-guide-parts b{display:block;font-size:12px;line-height:1.5}.c-guide-parts span{opacity:.85;overflow-wrap:anywhere}.c-guide-parts b{font-size:15px}.c-action{border-bottom:1px solid var(--line2);padding:14px 0}.c-action:last-child{border:0}.c-action strong{display:block;font-size:15px;line-height:1.45}.c-action .btn{margin-top:9px}.c-section{margin:20px 2px 10px;font-size:15px;color:var(--muted)}.c-date{margin:18px 0 4px;font-size:13px;font-weight:700;color:var(--muted)}.c-activity .li{align-items:center}.c-activity .what{line-height:1.4}.c-activity .rt{flex-shrink:0;margin-left:6px}.c-guide-sheet .li{align-items:center}.c-actions-empty{margin:0;color:var(--muted);font-size:13px}.c-quick{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:14px}.c-quick button{padding-left:5px;padding-right:5px;font-size:13px;white-space:nowrap}.c-activity-switch{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px}.c-activity-switch button{font-size:13px;padding:9px 4px;white-space:nowrap}";
       document.head.appendChild(style);
+      style.textContent += ".c-activity .li,.c-guide-sheet .li{align-items:flex-start}.c-budget-row{align-items:start}.c-budget-row strong,.c-budget-row .c-amount{font-size:1em;line-height:1.4}.c-budget-row .c-amount{display:block;font-size:clamp(14px,4.8vw,1em)}.c-budget-row small{line-height:1.4;min-height:1.4em}.c-guide{color:var(--hero-ink);background:var(--hero);position:relative}.c-guide-top{display:flex;justify-content:space-between;align-items:center;gap:12px}.c-guide-top>span{font-size:13px;font-weight:700}.c-guide-link{border:1px solid color-mix(in srgb,var(--hero-ink) 35%,transparent);border-radius:20px;padding:6px 10px;font-size:11px!important}.c-guide-total{display:flex;align-items:baseline;gap:9px;margin:10px 0 16px}.c-guide-total .big{margin:0;font-size:40px}.c-guide-total .small{font-size:13px;opacity:.9}.c-guide-parts{border-color:color-mix(in srgb,var(--hero-ink) 25%,transparent);align-items:stretch}.c-guide-parts>div{display:flex;flex-direction:column;justify-content:space-between;gap:7px}.c-guide-parts span{opacity:1;min-height:3em}.c-guide-parts b{line-height:1.4}.c-guide-until{font-size:12px;margin-top:10px;opacity:.9}.c-choice-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin:18px 0}.c-choice-grid .btn{min-width:0;font-size:13px;padding:12px 8px;white-space:normal}.c-choice-list{display:grid;gap:10px}.c-partner-overview{display:grid;gap:0}.c-partner-overview .li{align-items:start}.c-partner-overview .num{line-height:1.4}.c-budget-caption{font-size:12px;color:var(--muted);margin:10px 0 0;line-height:1.5}";
       A.TITLES.money = function () {
         return ["Money", ""];
       };
@@ -110,7 +111,7 @@
                 (over ? "c-over" : "") +
                 '">' +
                 M(Math.abs(left)) +
-                (over ? '<small class="c-over">over</small>' : "") +
+                (over ? '<small class="c-over">over</small>' : '<small aria-hidden="true">&nbsp;</small>') +
                 "</span></" +
                 tag +
                 ">"
@@ -192,7 +193,6 @@
               it.short = false;
               available[it.from] = B.round(available[it.from] - amount);
             }
-            if (it.type === "warn") return;
             rows.push(it);
           });
         S.ui.cActions = rows;
@@ -234,7 +234,7 @@
               ) +
               "</strong>" +
               button(
-                move
+                it.type === "warn" ? "Review budget" : move
                   ? "View move"
                   : it.type === "loan" && it.borrower !== me()
                     ? "It arrived"
@@ -255,7 +255,7 @@
             "ghost wide",
           );
         return html
-          ? card('<h2>To do</h2><div class="list">' + html + "</div>")
+          ? '<section id="c-actions">' + card('<h2>To do</h2><div class="list">' + html + "</div>") + '</section>'
           : "";
       }
       ACT.cAll = function () {
@@ -265,6 +265,7 @@
       ACT.cAction = function (v) {
         var it = (S.ui.cActions || [])[+v];
         if (!it) return;
+        if (it.type === "warn") { go("plan"); return; }
         if (it.type !== "move") {
           A.tick(it);
           return;
@@ -330,9 +331,9 @@
             "sync",
           );
         html +=
-          '<button type="button" class="hero card c-guide" data-a="herosheet"><span class="small">Daily guide</span><div class="big">' +
+          '<button type="button" id="c-guide" class="hero card c-guide" data-a="herosheet"><div class="c-guide-top"><span>Daily guide</span><span class="c-guide-link">View breakdown ↗</span></div><div class="c-guide-total"><div class="big">' +
           M(t.safe) +
-          '</div><div class="c-guide-parts">' +
+          '</div><span class="small">per day</span></div><div class="c-guide-parts">' +
           parts
             .map(function (x) {
               return (
@@ -344,7 +345,7 @@
               );
             })
             .join("") +
-          "</div></button>";
+          '</div><div class="c-guide-until">Until payday · ' + E(B.nice(t.nextPay)) + '</div></button>';
         if (t.plan.shortfall > 0.004)
           html += A.li(
             "Budget needs attention",
@@ -353,13 +354,13 @@
             "go",
             "payday",
           );
-        html += card(
+        html += actionsCard(t);
+        html += '<section id="c-budget">' + card(
           '<div class="row"><h2>Your budget</h2><span class="tiny muted">to ' +
             E(B.nice(B.addDays(t.period.next, -1))) +
             "</span></div>" +
             budgetTable(categories(t.period), t.period, false),
-        );
-        html += actionsCard(t);
+        ) + '</section>';
         html += originals.sorted();
         return (
           html +
@@ -1072,6 +1073,32 @@
         render();
       };
       V.more = originals.more;
+      A.tour(function () {
+        var t = B.today(db(), me(), now()), q = A.person(A.partner()).name || "Your partner";
+        var example = '<div class="c-budget-head"><span>Budget</span><span>Spent</span><span>Left</span></div><div class="c-budget-row"><span><strong>Food</strong><small>£200 budget</small></span><span>£45</span><span>£155</span></div>';
+        return [
+          {t:"Your daily guide",s:"This is a pace for Food, Fuel and Fun until payday, limited by available cash after commitments. Each category still has its own budget. Tap the card to see the per-day breakdown.",m:'<div class="hero card"><div class="big">'+M(t.safe)+'</div><span>per day</span></div>',show:"guide"},
+          {t:"What needs doing",s:"To do comes before the budget. It shows bank moves you can actually fund and payments to check. Budgie reads your bank; it never moves money for you. A budget going over does not, by itself, mean Main needs emergency money.",m:'<p>Check → move in your bank → confirm</p>',show:"actions"},
+          {t:"Budget, Spent and Left",s:"Budget is the allowance for this pay period. Spent is your share of recorded expenses, less linked refunds. Left is the difference; an overspend stays visible. Tap a category to see the expenses behind it.",m:example,show:"budget"},
+          {t:"Your payments",s:"Activity starts with the most recent receipts. Money in and Money out are filters; Due next contains scheduled payments. Opening a receipt lets you check its budget, link a refund or match a bill.",m:'<p>Recent · Due next<br>All · Money out · Money in</p>',show:"activity"},
+          {t:"Where the money is",s:"Pots show account balances separately from category allowances. A purchase from Main can still reduce Food. Moving money between your own pots does not count as another expense.",m:'<p>Balances and recent pot moves</p>',show:"pots"},
+          {t:"Payday",s:"Once your pay is seen, sort it into the pots listed here. Existing money in each pot counts towards what it needs, including bills and yearly costs. Only confirm a move after you have made it.",m:'<p>Pay → commitments → budgets → saving</p>',show:"payday"},
+          {t:"Daily saving and spare money",s:"Daily saving is a scheduled transfer, including its 1p daily increase. It is protected alongside bills. Saving rules keep your Main buffer before suggesting genuinely spare money for the destination you chose.",m:'<p>Daily saving · Main buffer · Savings</p>',show:"spare"},
+          {t:q+"’s overview",s:"Category amounts are budget allowances, not bank balances. A bank balance is shown separately only if shared. Shared bills show each person's share; itemised IOUs keep purchases and repayments together.",m:'<p>Budget · shared bills · IOUs · shared goals</p>',show:"partner"},
+          {t:"Goals and the forecast",s:"A target is an intention. The forecast only counts the accounts and saving routes attached to it. Sales, gifts and extra income are not cash until recorded. Open a goal to check what counts towards it.",m:'<p>Saved so far → saving planned → target date</p>',show:"goals"}
+        ];
+      });
+      ACT.extourShow = function (target) {
+        var routes = {guide:["today","#c-guide"],actions:["today","#c-actions"],budget:["today","#c-budget"],activity:["money",".c-tabs"],pots:["money",".c-tabs"]};
+        var r = routes[target] || [target,"main"], selector = r[1];
+        if (target === "activity" || target === "pots") S.ui.cMoney = target;
+        // go closes the sheet and reuses its history entry. Closing it separately races the scroll with Back.
+        go(r[0]);
+        setTimeout(function () {
+          var el = document.querySelector(selector) || document.querySelector("#c-budget") || document.querySelector("main");
+          if (el) { el.classList.add("c-tour-focus"); el.scrollIntoView({block:"center",behavior:"instant"}); setTimeout(function () { el.classList.remove("c-tour-focus"); },2200); }
+        },180);
+      };
       var oldPartner = V.partner;
       V.partner = function () {
         var q = A.partner();
@@ -1082,13 +1109,20 @@
           box = document.createElement("div");
         box.innerHTML = oldPartner();
         if (box.firstElementChild) box.firstElementChild.remove();
-        return (
+        var next = sm.nextPay ? 'Next payday · ' + B.nice(sm.nextPay) : "";
+        var overview = '<section id="c-partner"><div class="card"><div class="row"><h2>' + E(A.person(q).name) + '</h2></div><p class="small muted">' + E(next) + '</p><div class="list c-partner-overview">';
+        overview += sm.mainBalance ? A.li("Current account", "Last balance · " + E(B.nice(sm.mainBalance.date)), A.num(M(sm.mainBalance.amount))) : A.li("Current account", "Bank balance isn’t shared", "");
+        if (sm.safe !== undefined) overview += A.li("Daily guide", "Cash-limited budget pace", A.num(M(sm.safe)));
+        if (sm.bills !== undefined) overview += A.li("Bills this pay period", "Planned commitments", A.num(M(sm.bills)));
+        if (sm.saved !== undefined) overview += A.li("Saving this pay period", "Planned contributions", A.num(M(sm.saved)));
+        overview += '</div></div></section>';
+        return overview + (
           card(
             "<h2>" +
               E(A.person(q).name) +
               "’s budget</h2>" +
               (sm.tiles
-                ? budgetTable(sm.tiles, null, true)
+                ? budgetTable(sm.tiles, null, true) + '<p class="c-budget-caption">Left is the category allowance, not the bank balance.</p>'
                 : '<p class="small muted">Budget details aren’t shared.</p>'),
           ) + box.innerHTML
         );

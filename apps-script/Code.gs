@@ -213,7 +213,7 @@ function handle_(b) {
     } finally { lock.releaseLock(); locked = false; }
     var out = app ? appSync_(me, app, b.since || "", !!b.full, snap) : sync_(me, b.since || "", !!b.full, snap);
     out.applied = applied; out.rejected = rejected; out.keyType = keyType;
-    if (applied.length) { try { maybeRefreshViews_(); } catch (x) { out.viewError = String(x); } }
+    if (applied.length) { try { queueBudgetViews_(); } catch (x) { out.viewError = String(x); } }
     return json_(out);
   } catch (err) {
     if (locked) { try { lock.releaseLock(); } catch (x) {} }
@@ -908,6 +908,22 @@ function maybeRefreshViews_() {
   // noted first, so a refresh that keeps failing is tried at most once a minute, not after every change
   props.setProperty("VIEWS_AT", String(Date.now()));
   refreshBudgetTabs();
+}
+// The phone already calculates its current budget. Rebuilding the formatted sheet tabs is slower and must
+// not hold up acknowledgement of a saved payment. One pending trigger coalesces edits from both phones.
+function queueBudgetViews_() {
+  var lock = LockService.getScriptLock(); lock.waitLock(5000);
+  try {
+    if (!ScriptApp.getProjectTriggers().some(function (t) { return t.getHandlerFunction() === "refreshBudgetViewsPending"; }))
+      ScriptApp.newTrigger("refreshBudgetViewsPending").timeBased().after(1000).create();
+  } finally { lock.releaseLock(); }
+}
+function refreshBudgetViewsPending() {
+  var lock = LockService.getScriptLock(); lock.waitLock(25000);
+  try {
+    ScriptApp.getProjectTriggers().forEach(function (t) { if (t.getHandlerFunction() === "refreshBudgetViewsPending") ScriptApp.deleteTrigger(t); });
+  } finally { lock.releaseLock(); }
+  CACHE_ = {}; maybeRefreshViews_();
 }
 // A pooled bill's bills month (the flat bills) is settled up the day after it ends, and two days after that the sheet
 // records how (settings "pool:<bill>:<start>", once, Budgie.poolToFreeze), so a later change (the pool date, pooling

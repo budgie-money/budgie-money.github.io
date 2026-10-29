@@ -102,8 +102,8 @@ function problems(){
     await p.evaluate(()=>document.querySelector('#sheets').innerHTML='');await go(p,'review');await p.locator('[data-a="exguess"][data-v="t-ex-refund"]').click();const found=await p.evaluate(problems);if(found.length)layout.push({width,size,who,screen:'refund picker',found});
     await p.evaluate(()=>document.querySelector('#sheets').innerHTML='');
    }
-   // Tour is seven live-data steps, has routes, and fits on both phones.
-   await go(p,'more');await p.locator('[data-a="tour"]').click();for(let i=0;i<7;i++){ok('tour step '+(i+1),await p.locator('#sheets h2').count()===1);const found=await p.evaluate(problems);if(found.length)layout.push({width,size,who,screen:'tour '+i,found});if(i<6)await p.locator('#sheets [data-a="tournext"]').click();else await p.locator('#sheets [data-a="tourskip"]').click();}
+   // Tour is nine live-data steps, has routes, and fits on both phones.
+   await go(p,'more');await p.locator('[data-a="tour"]').click();for(let i=0;i<9;i++){ok('tour step '+(i+1),await p.locator('#sheets h2').count()===1);const found=await p.evaluate(problems);if(found.length)layout.push({width,size,who,screen:'tour '+i,found});if(i<8)await p.locator('#sheets [data-a="tournext"]').click();else await p.locator('#sheets [data-a="tourskip"]').click();}
    await p.context().close();
   }
   fs.writeFileSync(path.join(out,'layout-results.json'),JSON.stringify(layout,null,2));ok('all current screens and tour buttons fit',layout.length===0);ok('no browser runtime errors',errors.length===0);

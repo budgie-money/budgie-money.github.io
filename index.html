@@ -214,8 +214,8 @@ label.check input,input.tick{width:24px;height:24px;accent-color:var(--accent);f
 .valup{display:flex;flex-direction:column;align-items:flex-end;flex:none}
 .valup .linkbtn{min-height:44px;padding:0 0 0 10px;margin:-8px 0 -12px}
 .date.k-in,.date.k-bill{background:color-mix(in srgb, var(--kc) 15%, var(--card))}
-.swatches{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
-.swatches button{flex:1 1 calc((100% - 24px) / 4 - .1px);min-width:44px;height:44px;border-radius:22px;border:3px solid var(--card);box-shadow:0 0 0 1px var(--line)}
+.swatches{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-top:12px}
+.swatches button{width:48px;min-width:44px;height:48px;border-radius:24px;justify-self:center;border:3px solid var(--card);box-shadow:0 0 0 1px var(--line)}
 .swatches button[aria-pressed="true"]{box-shadow:0 0 0 3px var(--ink)}
 .theme-card{border:1px solid var(--line);border-radius:14px;padding:12px;text-align:left;background:var(--card);display:flex;gap:12px;align-items:center;width:100%;margin-top:8px}
 .theme-card[aria-pressed="true"]{border:2px solid var(--accent)}
@@ -236,6 +236,14 @@ label.check input,input.tick{width:24px;height:24px;accent-color:var(--accent);f
 .easy .hide-easy{display:none!important}
 :focus-visible{outline:3px solid var(--accent);outline-offset:2px}
 @media (prefers-reduced-motion: reduce){*{animation:none!important;transition:none!important}}
+/* Shared spacing: full-width actions remain separate in every sheet and screen. */
+.sheet>.btn+.btn,.sheet>.two+.btn,.sheet>.btn+.two,main>.card+.btn,main>.btn+.btn{margin-top:12px}
+.sheet>h2{margin-bottom:10px}.sheet .btn{height:auto;padding-top:12px;padding-bottom:12px;line-height:1.4}
+.sheet .two{align-items:stretch}.sheet .two>.btn{min-width:0}
+details>summary{min-height:44px;display:list-item;padding:10px 0;cursor:pointer;font-weight:650}
+.li:not(label){align-items:flex-start}.li>.num,.li>.rt{line-height:1.4}.row>h2{min-width:0}.row>.tiny{flex-shrink:0}.li .what{line-height:1.4}.li .why{line-height:1.5;margin-top:3px}
+.c-tour-focus{animation:tourFocus 2s ease-out;scroll-margin-top:90px}@keyframes tourFocus{0%,45%{outline:3px solid var(--accent);outline-offset:5px}100%{outline:3px solid transparent;outline-offset:8px}}
+@media(prefers-reduced-motion:reduce){.c-tour-focus{animation:none;outline:2px solid var(--accent);outline-offset:3px}}
 </style>
 </head>
 <body>

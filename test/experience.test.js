@@ -217,4 +217,15 @@ function record(name, details){out.push({name,...details});}
   assert(B.balances(B.load(t,day),day)['a-card']===-50,'a due date alone must not clear an unobserved credit debt');
   t.exceptions=[{id:'x-repayment-2026-10-28-paid',item:'repayment',date:'2026-10-28',action:'paid'}];assert(B.balances(B.load(t,day),day)['a-card']===0,'an observed or confirmed repayment clears the debt');
 }
-console.log('All 16 experience regression scenarios passed');
+{
+ const t=household();t.valuations=[{id:'observed-main',account:'a-main',date:day,amount:12}];
+ let summary=B.summary(B.load(t,day),'alex',day);assert(!summary.mainBalance,'totals and categories never grant balance sharing');
+ t.settings.push({id:'alex:sharepayments',person:'alex',key:'share.payments',value:'true'});
+ summary=B.summary(B.load(t,day),'alex',day);assert(summary.mainBalance.amount===12&&summary.mainBalance.date===day,'shared observed bank cash is separate from budget left');
+}
+{
+ const t=household();t.budgets[0].account='a-main';t.valuations=[{id:'main-cash',account:'a-main',date:day,amount:300},{id:'reserve',account:'a-save',date:day,amount:100}];t.transactions=[{id:'overspend',person:'alex',date:day,amount:250,budget:'a-budget',account:'a-main'}];
+ const d=B.load(t,day);assert(!B.todo(d,'alex',day).some(x=>x.from==='a-save'&&x.to==='a-main'),'an observed cash balance can absorb overspending without emergency money');
+ assert(B.today(d,'alex',day).overs.some(x=>x.id==='a-budget'),'the overspend remains visible');
+}
+console.log('All 18 experience regression scenarios passed');
