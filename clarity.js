@@ -337,7 +337,7 @@
           paydayWord = days === 0 ? "Today" : days === 1 ? "Tomorrow" : days + " days",
           shortName = function (name) { return name.replace(/^Fun and spending$/i, "Fun"); },
           active = parts.filter(function (x) { return x.amount > 0.004; }),
-          context = active.length === 1 ? "Today’s guide comes from " + shortName(active[0].name)
+          context = t.fundingInMain > .004 ? "Includes budget money still in Main — sort payday to fund your pots" : active.length === 1 ? "Today’s guide comes from " + shortName(active[0].name)
             : active.length ? "Split across your daily budgets"
             : t.budgetDay > t.cashDay ? "Available cash is limiting today’s guide" : "No daily allowance available";
         html +=

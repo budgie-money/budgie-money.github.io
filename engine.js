@@ -6,7 +6,7 @@
   else root.Budgie = factory();
 })(this, function () {
   "use strict";
-  var VERSION = "1.5.8";
+  var VERSION = "1.5.9";
 
   // ---------- dates ----------
   function D(s) { var p = String(s).split("-"); return new Date(Date.UTC(+p[0], +p[1] - 1, +p[2])); }
@@ -1643,6 +1643,21 @@
     Object.keys(spendAccs).forEach(function (a) { cash += bal[a] || 0; });
     // money set aside for a yearly cost that isn't due before payday isn't spare
     Object.keys(plan.setAside || {}).forEach(function (id) { var b = db.byId[id], acc = b ? b.account || main : ""; if (spendAccs[acc]) committed -= Math.min(plan.setAside[id], Math.max(0, bal[acc] || 0)); });
+    // A funded spending allowance is usable while its money is still in Main.
+    // Reserve every other pending allocation and Main's upcoming payments first.
+    // Moving the same money into its pot must not change the daily guide.
+    var fundingInMain=0, projectedPot=dict();
+    if(per.pay&&!per.opening&&!payPending(db,p,per,date)){
+      var pd=payday(db,p,per), other=0,spending=0,mainDue=0;
+      pd.moves.forEach(function(m){var left=Math.max(0,round(m.amount-ticked(db,p,"pay:"+per.start+":"+m.to)));if(spendAccs[m.to]){spending+=left;projectedPot[m.to]=(projectedPot[m.to]||0)+left;}else other+=left;});
+      flows(db,date,addDays(per.next,-1)).forEach(function(f){if(f.account===main&&f.amount<0)mainDue-=f.amount;});
+      unseenBills(db,p,date).forEach(function(r){if(r.account===main)mainDue+=r.amount;});
+      var rules=spareRules(db,p,date),held=rules?Math.max(0,+rules.buffer||0):0;
+      fundingInMain=round(Math.min(spending,Math.max(0,(bal[main]||0)-other-mainDue-held)));
+      if(spendAccs[main])committed-=other+held;else cash=round(cash+fundingInMain);
+      // A yearly-cost allocation arriving in a spending pot remains reserved.
+      var used=0;Object.keys(plan.setAside||{}).forEach(function(id){var b=db.byId[id],acc=b?b.account||main:"",extra=Math.min(Math.max(0,plan.setAside[id]-Math.max(0,bal[acc]||0)),projectedPot[acc]||0,Math.max(0,fundingInMain-used));if(spendAccs[acc]){committed-=extra;used+=extra;}});
+    }
     var cashFree = round(Math.max(0, cash + committed));
     // Rebase only when money changes, not merely when the calendar advances.
     var anchor = maxS(per.start, startOf(db, p));
@@ -1658,7 +1673,7 @@
     // goes on payday: said when that's somewhere else, a Cash ISA say
     var lo = nplan.lines.filter(function (l) { return l.leftover; })[0], rl = nplan.lines.filter(function (l) { return l.remainder; })[0], spare = null;
     if (lo && rl && rl.account !== main && rl.amount > 0.004) spare = {amount: round(Math.min(lo.amount, rl.amount)), to: rl.account, toName: accName(db, rl.account), date: nxt};
-    return {date: date, period: per, plan: plan, daysLeft: daysLeft, allowanceDays: allowanceDays, allowanceFrom: anchor, safe: round(safe), cash: round(cash), needed: round(Math.max(0, -committed)), cashDay: cap, budgetDay: budgetDay, status: status, overs: overs, tiles: tiles, cashFree: cashFree, nextPay: nxt,
+    return {date: date, period: per, plan: plan, daysLeft: daysLeft, allowanceDays: allowanceDays, allowanceFrom: anchor, safe: round(safe), cash: round(cash), needed: round(Math.max(0, -committed)), cashDay: cap, budgetDay: budgetDay, status: status, overs: overs, tiles: tiles, cashFree: cashFree, fundingInMain:fundingInMain, nextPay: nxt,
       nextPayAmount: (nplan.lines.filter(function (l) { return l.isPay; })[0] || {}).amount || 0, spare: spare,
       todo: todo(db, p, date), coming: coming(db, p, date, 14)};
   }
@@ -2065,6 +2080,11 @@
     flows(db, date, deadline).forEach(function (f) { if (mine(f.account)) rows.push({date:f.date, name:f.what, amount:f.amount, kind:"scheduled"}); });
     var current = periodAt(db,p,date), currentPlan=planFor(db,p,current);
     if(currentPlan.shortfall>0.004) { warnings.push("Current pay period is short; its remaining scheduled additions are excluded."); rows=rows.filter(function(r){return !(r.amount>0&&r.date<current.next);}); }
+    if(current.pay&&!current.opening&&currentPlan.shortfall<=0.004){
+      var currentPD=payday(db,p,current);
+      currentPD.moves.forEach(function(m){if(!mine(m.to))return;var left=round(Math.max(0,m.amount-ticked(db,p,"pay:"+current.start+":"+m.to)));if(left>0.004)rows.push({date:date,name:"Remaining allocation from this payday",amount:left,kind:"current-contribution"});});
+      (currentPD.later||[]).forEach(function(m){if(!mine(m.to)||m.date>deadline)return;var left=round(Math.max(0,m.amount-ticked(db,p,m.key)));if(left>0.004)rows.push({date:maxS(date,m.date),name:"Saving from later income",amount:left,kind:"current-contribution"});});
+    }
     var per = nextPeriod(db, p, current), firstFuture=per.start, loops = 0;
     while (per.start <= deadline && loops++ < 50) {
       var pl = planFor(db, p, per), incoming = 0, outgoing = 0, ready = per.start, late = 0, contribution = 0;

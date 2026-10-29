@@ -1,7 +1,7 @@
 /* Budgie app: screens, syncing and offline queue. The maths lives in engine.js. */
 (function () {
   "use strict";
-  var B = window.Budgie, TH = window.BudgieThemes, APP_VERSION = "1.5.8";
+  var B = window.Budgie, TH = window.BudgieThemes, APP_VERSION = "1.5.9";
   var $ = function (s) { return document.querySelector(s); };
   var esc = function (s) { return String(s === undefined || s === null ? "" : s).replace(/[&<>"']/g, function (c) { return {"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]; }); };
   // wiped: Budgie's copy at the old address has been wiped (it's moving across), so nothing is saved here again
@@ -998,6 +998,7 @@
     else if (pr && pr.basis === "history") course = "Recent account growth: " + M0(pr.perMonth) + " a month";
     var joint = fl && String((d.byId[g.id] || {}).owners || "").split(/[,\s]+/).filter(Boolean).length > 1;
     var flow = fl && fl.lines.length ? '<div class="row small" style="margin-top:10px;font-weight:600"><span>' + (joint ? "Your part this pay period" : "This pay period") + "</span>" + num(M0(fl.total) + " in") + "</div>" + fl.lines.map(function (l) { return '<div class="row tiny muted" style="padding-top:2px"><span>' + esc(l.label) + (l.names && l.names.length ? " (" + esc(l.names.join(", ")) + ")" : "") + (l.kind === "direct-repaid" || l.kind === "direct-oneoff" ? (l.done ? "" : " · to move") : "") + "</span><span>" + M(l.amount) + "</span></div>"; }).join("") : "";
+    if (B.goalForecast) flow = '<div class="small muted" style="margin-top:12px">Saved by account</div><div class="list">' + (g.parts || []).map(function(x){return li(esc(x.name),'',num(M(x.amount)));}).join('') + '</div>';
     return '<div class="row"><span style="font-weight:700">' + esc(g.name) + "</span>" + num(g.pct + "%") + '</div><div style="margin:8px 0 6px">' + bar(g.pct, null, "var(--k-save)") + '</div><div class="row small"><span class="num" style="font-weight:600">' + M0(g.saved) + " of " + M0(g.target) + '</span><span class="muted">' + (g.due ? "by " + esc(monthYear(String(g.due).slice(0, 10))) : "") + "</span></div>" +
       (course ? '<div class="small" style="margin-top:6px">' + course + "</div>" : "") + extra + flow;
   }
