@@ -1185,6 +1185,16 @@ function bankApply_(p, data, windowFrom, payCarry) {
       } else {
         // money coming in: a refund counts against its budget; your pay is checked against what was expected
         if (!t.card) {
+          // money in that's really a move into this account: from Moneybox (your Cash ISA or LISA), or one already in
+          // Budgie as a move (logged in the app, or the bank's) of the same amount within 3 days
+          var inAmt0 = -t.amount, boxIn = /moneybox/i.test(t.name) ? (isaAcc || lisaAcc) : null, myId = "bk-" + provider + "-" + t.id;
+          var movedIn = function () { return Object.keys(moveRows).some(function (k) { var m = moveRows[k]; return m && m.id !== myId && m.person === p && !bankTrue_(m.deleted) && m.to === acc && near(+m.amount, inAmt0) && Math.abs(D.diff(m.date, t.date)) <= 3; }); };
+          // (a money-in row an earlier read kept for one of those is taken off, and a Moneybox one becomes the move)
+          if (mine && /^bk-/.test(mine.id) && !bankTrue_(mine.deleted) && +mine.amount < 0 && !mine.budget && (boxIn || movedIn())) {
+            update("transactions", mine.id, {deleted: true});
+            if (boxIn && !movedIn()) putMove(t, boxIn.id, acc, inAmt0, "bank:" + t.id, true, t.name);
+            return;
+          }
           // money from your partner is never your pay, however much it is
           if (mine || namesPartner(t)) return;
           var pi = payIn(t);
@@ -1197,7 +1207,8 @@ function bankApply_(p, data, windowFrom, payCarry) {
           // (anything pay-sized near a payday is left for the pay check, which might not have seen that payday yet when a first read comes in parts)
           db.income.forEach(function (i) { if (i.person === p) inWin(i).forEach(function (o) { var base = D.amountAt(db, i, o.orig); if (near(inAmt, o.amount) || (i.isPay && base > 0 && Math.abs(inAmt - base) <= base * 0.5)) plannedIn = true; }); });
           db.transfers.forEach(function (tr) { if (tr.to === p) inWin(tr).forEach(function (o) { if (near(inAmt, o.amount)) plannedIn = true; }); });
-          if (plannedIn) return;
+          if (plannedIn || movedIn()) return;
+          if (boxIn) { putMove(t, boxIn.id, acc, inAmt, "bank:" + t.id, true, t.name); return; }
           create("transactions", {id: "bk-" + provider + "-" + t.id, date: t.date, person: p, amount: t.amount, budget: "", account: acc, split: "", splitHint: "", note: t.name, source: provider, bankId: t.id, review: false});
           return;
         }

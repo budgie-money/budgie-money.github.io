@@ -2100,6 +2100,29 @@ ok("secrets only under BANK_TOKEN_ / BANK_CLIENT_ / BANK_OAUTH_ in the owner's U
   ok("PC: a pot feed that can't be read doesn't stop the read", live(tx().find(r => r.id === "bk-monzo-tx_pc_main2")) && !st2.needsReconnect && Array.isArray(st2.potErrors), st2);
   monzo.pots = pots0; monzo.ledgers = {};
 }
+{
+  // Y2: money in from Moneybox is a move from the Cash ISA, not money in; and money in that's already a move in Budgie
+  // (one you logged) isn't added again. A money-in row an older read kept for one is taken off.
+  freshMonzo(); NOW = RealDate.parse("2026-11-17T12:00:00Z");
+  monzo.txns = monzoData(planned).concat([
+    mtx("tx_y2_box", "2026-11-16", 40000, {counterparty: {name: "Moneybox"}, description: "MONEYBOX", category: "transfers", time: "09:00:00"}),
+    mtx("tx_y2_box2", "2026-11-12", 5000, {counterparty: {name: "Moneybox"}, description: "MONEYBOX", category: "transfers", time: "09:00:00"}),
+    mtx("tx_y2_sale", "2026-11-15", 2500, {counterparty: {name: "A BUYER"}, category: "general", time: "10:00:00"})
+  ]);
+  const G = bankEnv(t => {
+    t.moves.push({id: "mv-y2-logged", date: "2026-11-16", person: "ethan", from: "e-isa", to: "e-main", amount: 400, key: "isa-out", note: "From the ISA"});
+    // what an older read kept for the £50 one
+    t.transactions.push({id: "bk-monzo-tx_y2_box2", date: "2026-11-12", person: "ethan", amount: -50, budget: "", account: "e-main", note: "Moneybox", source: "monzo", bankId: "tx_y2_box2", review: false});
+  });
+  connectMonzo(G, {acc_00009main: "e-main"});
+  const live = r => !!r && r.deleted !== true, tx = id => grow(G, "transactions").find(r => r.id === id), mv = id => grow(G, "moves").find(r => r.id === id);
+  ok("Y2: Moneybox money in already logged as a move isn't money in or a second move", !live(tx("bk-monzo-tx_y2_box")) && !live(mv("bk-monzo-tx_y2_box")), [tx("bk-monzo-tx_y2_box"), mv("bk-monzo-tx_y2_box")]);
+  const m2 = mv("bk-monzo-tx_y2_box2");
+  ok("Y2: Moneybox money in not logged becomes a move from the Cash ISA, and the older money-in row is taken off", live(m2) && m2.from === "e-isa" && m2.to === "e-main" && +m2.amount === 50 && !live(tx("bk-monzo-tx_y2_box2")), [m2, tx("bk-monzo-tx_y2_box2")]);
+  ok("Y2: other money in is still kept", live(tx("bk-monzo-tx_y2_sale")) && +tx("bk-monzo-tx_y2_sale").amount === -25);
+  NOW += 30 * 60000; G.c.bankPoll();
+  ok("Y2: and stays that way on the next read", !live(tx("bk-monzo-tx_y2_box")) && grow(G, "moves").filter(r => /tx_y2_box2/.test(r.id) && r.deleted !== true).length === 1);
+}
 // an error from the bank is shown without anything secret in it
 ok("errors are scrubbed", c.bankScrub_("sophie", "failed Bearer " + SECRET.starling + " token=" + SECRET.starling).indexOf(SECRET.starling) < 0);
 
