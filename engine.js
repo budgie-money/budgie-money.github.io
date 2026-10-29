@@ -6,7 +6,7 @@
   else root.Budgie = factory();
 })(this, function () {
   "use strict";
-  var VERSION = "1.5.9";
+  var VERSION = "1.6.0";
 
   // ---------- dates ----------
   function D(s) { var p = String(s).split("-"); return new Date(Date.UTC(+p[0], +p[1] - 1, +p[2])); }
@@ -247,8 +247,8 @@
     db.settings.forEach(function (s) { var p = s.person || "all"; (db.set[p] = db.set[p] || Object.create(null))[s.key] = s.value; });
     // a payday move ticked twice (in the app and by the bank feed) counts once: the latest one
     var payTick = {};
-    db.moves.forEach(function (m) { if (!/^pay:/.test(m.key || "")) return; var k = m.person + "|" + m.key, c = payTick[k]; if (!c || (+m.updated || 0) >= (+c.updated || 0)) payTick[k] = m; });
-    db.moves.forEach(function (m) { if (/^pay:/.test(m.key || "") && payTick[m.person + "|" + m.key] !== m) m.dup = true; });
+    db.moves.forEach(function (m) { if (!/^(pay:|net:)/.test(m.key || "")) return; var k = m.person + "|" + m.key, c = payTick[k]; if (!c || (+m.updated || 0) >= (+c.updated || 0)) payTick[k] = m; });
+    db.moves.forEach(function (m) { if (/^(pay:|net:)/.test(m.key || "") && payTick[m.person + "|" + m.key] !== m) m.dup = true; });
     db.moveKeys = dict(); db.moveKeysBy = dict(); db.moveTicks = dict();
     db.moves.forEach(function (m) { if (m.key && !m.dup) { db.moveKeys[m.key] = (db.moveKeys[m.key] || 0) + (+m.amount || 0) + 1e-9; var pk = m.person + "|" + m.key; db.moveKeysBy[pk] = (db.moveKeysBy[pk] || 0) + (+m.amount || 0) + 1e-9; (db.moveTicks[pk] = db.moveTicks[pk] || []).push(m); } });
     // An exact bank transfer returned on the same day is an undone payday allocation.
@@ -264,11 +264,25 @@
     });
     // a LISA payment copied from the provider's statement that is the same money as a move ticked in Budgie
     // (same account and amount, within 5 days) only counts once
-    db.moves.forEach(function (m) {
+    var lisaEvidenceUsed=dict();
+    db.moves.filter(function(m){return /^lisa:in/.test(m.key||'');}).sort(function(a,b){return a.date.localeCompare(b.date);}).forEach(function (m) {
       if (!/^lisa:in/.test(m.key || "") || !m.to) return;
-      m.dup = db.moves.some(function (o) { return o !== m && !o.dup && !/^lisa:/.test(o.key || "") && o.to === m.to && Math.abs((+o.amount || 0) - (+m.amount || 0)) < 0.005 && Math.abs(diff(o.date, m.date)) <= 5; });
+      var cands=db.moves.filter(function(o){return o!==m&&!o.dup&&!lisaEvidenceUsed[o.id]&&!/^lisa:/.test(o.key||'')&&o.person===m.person&&o.to===m.to&&Math.abs(diff(o.date,m.date))<=5;}),exact=cands.filter(function(o){return Math.abs(o.amount-m.amount)<.005;})[0];
+      if(exact){m.dup=true;lisaEvidenceUsed[exact.id]=true;return;}
+      var groups=dict();cands.forEach(function(o){var key=String(o.key||''),period=/^pay:(\d{4}-\d{2}-\d{2}):/.exec(key);if(/^net:/.test(key)){try{var v=JSON.parse(key.slice(4));if(netParts(db,o))period=[null,v.period];}catch(e){}}if(period)(groups[period[1]]=groups[period[1]]||[]).push(o);});
+      var matches=Object.keys(groups).filter(function(k){return Math.abs(groups[k].reduce(function(n,o){return n+o.amount;},0)-m.amount)<.005;});
+      if(matches.length===1){m.dup=true;groups[matches[0]].forEach(function(o){lisaEvidenceUsed[o.id]=true;});}
     });
     dupBankTicks(db);
+    // One real bank movement may satisfy opposing allocation instructions. Only the
+    // actual net amount enters flows; the parts are non-cash completion evidence.
+    db.netReturns = dict();var netReturnTaken=dict();
+    db.moves.slice().sort(function(a,b){return (+a.updated||0)-(+b.updated||0);}).forEach(function(m){
+      if(m.dup)return;var parts=netParts(db,m);if(!parts)return;
+      var returned=db.moves.filter(function(x){return !netReturnTaken[x.id]&&!x.dup&&x.person===m.person&&/^bk-/.test(String(x.id))&&/^bank:/.test(x.key||'')&&x.date===m.date&&x.from===m.to&&x.to===m.from&&Math.abs(x.amount-m.amount)<.005;})[0];
+      if(returned&&m.amount>.004){netReturnTaken[returned.id]=true;db.netReturns[m.key]=m.id;db.moveKeysBy[m.person+'|'+m.key]=0;db.moveTicks[m.person+'|'+m.key]=[];return;}
+      parts.forEach(function(k){var pk=m.person+'|'+k.key;db.moveKeysBy[pk]=(db.moveKeysBy[pk]||0)+k.amount;(db.moveTicks[pk]=db.moveTicks[pk]||[]).push({date:m.date,amount:k.amount,virtual:true});});
+    });
     // the bills that are pooled, now or in a month the sheet has recorded (so working out a date needn't look)
     db.poolIds = dict();
     db.bills.forEach(function (b) { if (poolSegs(b).length) db.poolIds[b.id] = true; });
@@ -286,7 +300,7 @@
   // in the app later: the same money twice. A loose bank move that is the same as one ticked in the app (the same two
   // accounts, the same amount to the penny, in the same pay period, one for one) is the tick itself, so it counts once:
   // the tick stays (it carries the key) and the loose bank move is set aside as a duplicate.
-  var TODO_TICK = /^(back|cover|fill|lent|late|refund|goal|sweep):|^pay:\d{4}-\d{2}-\d{2}:cover$/;
+  var TODO_TICK = /^(back|cover|fill|lent|late|refund|goal|sweep|net):|^pay:\d{4}-\d{2}-\d{2}:cover$/;
   function tickPeriod(db, m) {
     var k = String(m.key || "").match(/^(?:back|cover|lent|refund):.*:(\d{4}-\d{2}-\d{2}):[^:]*$/);
     return k ? k[1] : periodAt(db, m.person, m.date).start;
@@ -299,7 +313,7 @@
       if (/^bank:/.test(k)) { loose.push(m); return; }
       // (one tick in the app saves each part of an item as a row on the same day; the bank feed's own rows are never ticks of this kind)
       if (/^bk-/.test(String(m.id)) || !TODO_TICK.test(k)) return;
-      var ps = tickPeriod(db, m), gk = m.person + "|" + ps + "|" + (m.batch || m.date) + "|" + m.from + "|" + m.to;
+      var ps = tickPeriod(db, m), gk = m.person + "|" + ps + "|" + (/^net:/.test(k)?m.id:m.batch || m.date) + "|" + m.from + "|" + m.to;
       if (!g[gk]) { g[gk] = {person: m.person, start: ps, date: m.date, from: m.from, to: m.to, amount: 0}; ticks.push(g[gk]); }
       g[gk].amount += +m.amount || 0;
     });
@@ -364,7 +378,7 @@
   function ticked(db, p, key) { return db.moveKeysBy[p + "|" + key] || 0; }
   // the same, counting only moves dated before a day (the ones a balance at the end of the day before includes)
   function payReturnAmount(r,before){var m=r.move,t=!before||m.date<before?+m.amount:0;r.events.forEach(function(x){if(!before||x.date<before)t+=x.from===m.from?+x.amount:-x.amount;});return round(Math.max(0,Math.min(+m.amount,t)));}
-  function tickedBefore(db, p, key, date) { var pk=p+"|"+key,r=db.payReturns&&db.payReturns[pk];if(r)return payReturnAmount(r,date);var t = 0; (db.moveTicks[pk] || []).forEach(function (m) { if (m.date < date) t += (+m.amount || 0) + 1e-9; }); return t; }
+  function tickedBefore(db, p, key, date) { var pk=p+"|"+key,r=db.payReturns&&db.payReturns[pk],t=r?payReturnAmount(r,date):0;(db.moveTicks[pk]||[]).forEach(function(m){if(m.date<date&&(!r||m.virtual))t+=(+m.amount||0)+1e-9;});return t; }
   // the day a ticked move should be dated: payday moves belong to their payday, everything else to the day you tick it.
   // A payday move ticked once a new tax year has begun (March's LISA money moved on 7 April) is dated the day it moved,
   // as the bank feed dates it, so it counts towards the tax year it really went in
@@ -1020,6 +1034,7 @@
         if (cut > 0.004) { l.requested = l.amount; l.amount = round(l.amount - cut); deficit = round(deficit - cut); adjustments.push({id:l.id, name:l.name, requested:l.requested, amount:l.amount, reduction:cut}); }
       });
     }
+    var lisaCuts=capLisaLines(db,p,per,lines);lisaCuts.forEach(function(x){adjustments.push(x);});
     lines.forEach(function (l) { if (l.kind === "save" && !l.setAside && potOk(l.account)) reserveOut[l.account] = round((reserveOut[l.account] || 0) + l.amount); });
     Object.keys(reserveOut).forEach(function (id) { if (!potOk(id) || !(reserveOut[id] > 0.004)) delete reserveOut[id]; });
     Object.keys(setOut).forEach(function (id) { if (!(setOut[id] > 0.004)) delete setOut[id]; });
@@ -1295,10 +1310,11 @@
     };
     // 1. payday: sort the pay into pots (current period, from payday for 7 days)
     if (per.pay && !per.opening) {
-      var pdNow = payday(db, p, per), waiting = payPending(db, p, per, today);
+      var pdNow = payday(db, p, per), journey=paydaySteps(db,p,today,per), waiting = payPending(db, p, per, today);
       // (the pay isn't in yet: it's on its way, so the account it comes into isn't short of it, and nothing is topped up for that)
       if (waiting && pdNow.pay) pend[pdNow.payAccount] = (pend[pdNow.payAccount] || 0) + pdNow.pay.amount;
-      pdNow.moves.forEach(function (m) { plan("pay:" + per.start + ":" + m.to, m.from, m.to, m.amount, "Payday: move " + money(m.amount) + " to " + accName(db, m.to), m.why, {payday: true, waiting: waiting}); });
+      if(journey.enabled)journey.steps.forEach(function (m) { if(!(m.remaining>.004)){if(m.net)items.push({type:'allocate',key:m.key,payday:true,what:'Apply the reconciled allocation',amount:0});return;}plan(m.key,m.from,m.to,m.remaining,"Payday: move "+money(m.remaining)+" to "+accName(db,m.to),m.why,{payday:true,waiting:waiting,net:!!m.net}); });
+      else pdNow.moves.forEach(function(m){plan('pay:'+per.start+':'+m.to,m.from,m.to,m.amount,'Payday: move '+money(m.amount)+' to '+accName(db,m.to),m.why,{payday:true,waiting:waiting});});
       // the payday screen's cover, from the pot that covers going over, counts as on its way while that screen still has
       // moves to tick; once they're all done (it can come later, when a bill's real amount is logged), To do asks for it
       var pc = pdNow.cover;
@@ -1342,7 +1358,8 @@
     rbAll.forEach(function (x) {
       x.gs.forEach(function (g0) {
         // (what the bank has moved already is out of it: as if ticked)
-        var g = g0.bank ? Object.assign({}, g0, {amount: round(g0.amount - g0.bank)}) : g0;
+        var netted=journey&&journey.netted[g0.key]||0;
+        var g = g0.bank||netted ? Object.assign({}, g0, {amount: round(g0.amount - (g0.bank||0)-netted)}) : g0;
         if (g.kind === "back") plan(g.key, g.from, g.to, g.amount, "", backWhy(g.name, g.to, g.theirs, g.mine, g.from), {partial: true, names: [g.name], theirs: !!g.theirs, mine: !!g.mine});
         else if (g.kind === "lent") {
           // your partner's share of what a pot paid goes back into the pot from the main account, as long as the main account
@@ -1512,6 +1529,51 @@
   }
 
   // ---------- between partners ----------
+  function netParts(db,m) {
+    if(!/^net:/.test(m.key||''))return null;
+    try{
+      var v=JSON.parse(m.key.slice(4)),main=mainOf(db,m.person),a=db.byId[v.account],sum=0;
+      if(v.v!==1||!isIso(v.period)||!a||a.owner!==m.person||a.id===main||!Array.isArray(v.parts)||!v.parts.length||v.parts.length>50||!isFinite(+m.amount)||m.amount<0)return null;
+      if(!((m.from===main&&m.to===a.id)||(m.to===main&&m.from===a.id)))return null;
+      var seen=dict();
+      for(var i=0;i<v.parts.length;i++){
+        var k=v.parts[i];if(!isFinite(k.amount)||k.amount<=0||round(k.amount)!==k.amount||seen[k.key])return null;seen[k.key]=true;
+        if(k.reverse){if(!/^back:/.test(k.key)||k.key.slice(-main.length-1)!==':'+main)return null;}
+        else if(k.key!=='pay:'+v.period+':'+a.id)return null;
+        sum+=k.reverse?-k.amount:k.amount;
+      }
+      if(Math.abs(round(sum)-(m.from===main?m.amount:-m.amount))>.004)return null;
+      return v.parts;
+    }catch(e){return null;}
+  }
+  // Gross allocations remain stable; these instructions reconcile only their
+  // outstanding parts. Offset makes two equal partial transfers distinct.
+  function paydaySteps(db,p,date,per) {
+    per=per||periodAt(db,p,date);var pd=payday(db,p,per),main=pd.payAccount,groups=[],netted=dict(),since=planningRule(db,p,'payday.netFrom',per.start),enabled=isIso(since)&&per.start>=since&&main===mainOf(db,p);
+    periods(db,p,startOf(db,p),addDays(date,1)).forEach(function(pk){if(pk.start>per.start)return;reimbursements(db,p,pk,date).forEach(function(g){if(g.kind==='back'&&g.to===main){var left=round(Math.max(0,g.amount-ticked(db,p,g.key)-(g.bank||0)));if(left>.004)groups.push(Object.assign({},g,{left:left}));}});});
+    var steps=pd.moves.map(function(m){
+      var key='pay:'+per.start+':'+m.to,paid=Math.min(m.amount,ticked(db,p,key)),left=round(Math.max(0,m.amount-paid)),backs=groups.filter(function(g){return g.from===m.to;}),back=round(backs.reduce(function(n,g){return n+g.left;},0)),parts=[{key:key,amount:left,reverse:false}];
+      var step=Object.assign({},m,{account:m.to,allocation:m.amount,paid:paid,key:key,remaining:left,from:m.from,to:m.to,offset:paid,parts:[],back:0});
+      step.settledBack=0;db.moves.forEach(function(mv){if(mv.dup||mv.person!==p||db.netReturns[mv.key])return;var ps=netParts(db,mv);if(ps&&ps.some(function(k){return k.key===key;}))ps.forEach(function(k){if(k.reverse)step.settledBack=round(step.settledBack+k.amount);});});
+      if(enabled&&left>.004&&(back>.004||paid>.004)&&((db.byId[m.to]||{}).kind!=='lisa'||back===0)){
+        backs.forEach(function(g){parts.push({key:g.key,amount:g.left,reverse:true});netted[g.key]=g.left;});
+        var amount=round(left-back),payload={v:1,period:per.start,account:m.to,offset:paid,parts:parts},revisions=[];
+        Object.keys(db.netReturns||{}).forEach(function(k){try{var v=JSON.parse(k.slice(4));if(v.period===per.start&&v.account===m.to)revisions.push(db.netReturns[k]);}catch(e){}});
+        if(revisions.length)payload.revision=revisions.join(',');
+        step.key='net:'+JSON.stringify(payload);step.parts=parts;step.back=back;step.remaining=Math.abs(amount);step.from=amount<0?m.to:main;step.to=amount<0?main:m.to;step.net=true;step.returned=!!revisions.length;
+      }
+      return step;
+    });
+    return {period:per,payday:pd,enabled:enabled,steps:steps,netted:netted,remaining:round(steps.reduce(function(n,s){return n+(s.from===main?s.remaining:-s.remaining);},0))};
+  }
+  function partialNetKey(step,amount) {
+    if(!step.net||!(amount>0)||amount>step.remaining+.004)return null;
+    var v=JSON.parse(step.key.slice(4)),factor=amount/step.remaining,pay=round(v.parts[0].amount*factor),reverse=round(pay-(step.from===step.to?0:step.parts[0].amount-step.back>0?amount:-amount)),left=reverse;
+    v.parts[0].amount=pay;
+    for(var i=1;i<v.parts.length;i++){var k=v.parts[i],take=i===v.parts.length-1?left:Math.min(left,round(k.amount*factor));left=round(left-take);k.amount=take;}
+    v.parts=v.parts.filter(function(k){return k.amount>.004;});return 'net:'+JSON.stringify(v);
+  }
+
   // shared bills and the regular transfers that pay for them are settled by completed calendar month,
   // so a rent share sent on the 13th for rent on the 15th never shows as owed; split payments count straight away
   function between(db, p, today) {
@@ -2122,6 +2184,68 @@
     rows.forEach(function (r) { total = round(total + r.amount); });
     return {date:date, deadline:deadline, saved:actual.saved, projected:total, target:actual.target, gap:round(Math.max(0, actual.target - total)), rows:rows, warnings:warnings, routed:routed, onTrack:actual.target > 0 && total >= actual.target - 0.004};
   }
+  function purchaseCheck(db,p,date,budgetId,amount,goalId,funding) {
+    amount=round(+amount||0);var per=periodAt(db,p,date),state=budgetState(db,p,per),s=state[budgetId],t=today(db,p,date),g=goals(db,p,date).filter(function(x){return x.id===goalId;})[0],forecast=g&&g.due?goalForecast(db,p,g.id,date,g.due):null;
+    if(!(amount>0)||amount>1000000||(!s&&funding!=='goal')||(funding==='goal'&&!g))return null;
+    var left=s?Math.max(0,s.left):0,home=s?s.budget.account||mainOf(db,p):'',other=0,homeOther=0,bal=balances(db,date),committed=0;
+    Object.keys(state).forEach(function(id){var q=state[id];if(id!==budgetId&&isSpend(db,q.budget)){other+=Math.max(0,q.left);if((q.budget.account||mainOf(db,p))===home)homeOther+=Math.max(0,q.left);}});
+    flows(db,date,addDays(per.next,-1)).forEach(function(f){if(f.account===home&&f.amount<0)committed-=f.amount;});
+    unseenBills(db,p,date).forEach(function(r){if(r.account===home)committed+=r.amount;});
+    Object.keys(t.plan.setAside||{}).forEach(function(id){if((db.byId[id]||{}).account===home)committed+=t.plan.setAside[id];});
+    var ownCash=Math.max(0,(bal[home]||0)-homeOther-committed),cash=round(Math.min(left,Math.max(ownCash,t.cashFree-other,0))),excess=round(Math.max(0,amount-left));
+    var accessible=0;if(g)goalAccIds(g).forEach(function(id){var a=db.byId[id];if(a&&a.owner===p&&!/^(lisa|pension|credit)$/.test(a.kind))accessible+=Math.max(0,bal[id]||0);});
+    var fromGoal=funding==='goal',impact=fromGoal?amount:excess;
+    return {amount:amount,budget:budgetId,budgetLeft:left,leftAfter:round(left-amount),cashAvailable:cash,budgetFits:amount<=left+.004,cashFits:amount<=cash+.004,excess:excess,funding:fromGoal?'goal':'budget',goal:g?{id:g.id,name:g.name,saved:g.saved,accessible:round(accessible),projected:forecast?forecast.projected:null,after:forecast?round(forecast.projected-impact):null,target:g.target,due:g.due,impact:impact}:null,unknown:t.todo.some(function(x){return x.type==='warn';})||db.transactions.some(function(x){return x.person===p&&x.review&&x.date<=date;})};
+  }
+  function financeQuote(principal,apr,months) {
+    principal=round(+principal||0);apr=+apr||0;months=Math.floor(+months||0);
+    if(principal<0||principal>1000000||apr<0||apr>100||months<1||months>120)return null;
+    var r=Math.pow(1+apr/100,1/12)-1,payment=r?principal*r/(1-Math.pow(1+r,-months)):principal/months;
+    return {principal:principal,apr:apr,months:months,payment:round(payment),total:round(payment*months),interest:round(payment*months-principal),rate:r};
+  }
+  function goalScenario(db,p,goalId,date,input) {
+    input=input||{};var g=goals(db,p,date).filter(function(x){return x.id===goalId;})[0],deadline=parseDate(input.deadline||g&&g.due),buy=parseDate(input.buyDate||deadline),base=g&&goalForecast(db,p,goalId,date,deadline);
+    if(!g||!base||!buy||buy<date||buy>deadline)return null;
+    function moneyInput(k){var v=+input[k]||0;return isFinite(v)&&v>=0&&v<=1000000?round(v):null;}
+    var price=moneyInput('price'),deposit=moneyInput('deposit'),extra=moneyInput('extra'),running=moneyInput('running'),sale=moneyInput('sale'),loan=moneyInput('loan'),repay=moneyInput('repay'),fees=moneyInput('fees');
+    if([price,deposit,extra,running,sale,loan,repay,fees].some(function(v){return v===null;})||!(price>0)||repay>loan)return null;
+    var financed=input.mode==='finance',quote=financed?financeQuote(Math.max(0,price-deposit),input.apr,input.months):null;if(financed&&(!quote||deposit>price))return null;
+    var saleDate=sale?parseDate(input.saleDate):'',loanDate=loan?parseDate(input.loanDate):'',repayDate=repay?parseDate(input.repayDate):'';
+    if(sale&&(!saleDate||saleDate<date)||loan&&(!loanDate||loanDate<date)||repay&&(!repayDate||repayDate<loanDate))return null;
+    var rows=[],upfront=financed?deposit:price,atBuy=goalForecast(db,p,goalId,date,buy),paydays=payDates(db,p,addDays(date,1),addDays(deadline,1));
+    paydays.forEach(function(d){if(extra)rows.push({date:d,name:'Extra saving per future payday',amount:extra});});
+    if(sale)rows.push({date:saleDate,name:'Possible sale proceeds',amount:sale});if(loan)rows.push({date:loanDate,name:'Possible family loan received',amount:loan});if(repay)rows.push({date:repayDate,name:'Family loan repaid',amount:-repay});
+    rows.push({date:buy,name:financed?'Deposit and upfront fees':'Cash purchase and upfront costs',amount:-round(upfront+fees)});
+    var dates=scheduleDates({unit:'month',on:String(+buy.slice(8)),start:addDays(buy,1)},addDays(buy,1),addDays(deadline,1)).filter(function(d){return d>buy;}),first=addMonthsDay(buy,1);
+    dates=dates.filter(function(d){return d>=first;});
+    var payments=0,balance=quote?quote.principal:0,interest=0;
+    dates.forEach(function(d){if(quote&&payments<quote.months){var charge=balance*quote.rate,paid=payments===quote.months-1?balance+charge:Math.min(balance+charge,quote.payment);balance=Math.max(0,balance+charge-paid);interest+=charge;payments++;rows.push({date:d,name:'Finance payment',amount:-round(paid)});}if(running)rows.push({date:d,name:'Additional running costs above current budget',amount:-running});});
+    var delta=rows.filter(function(r){return r.date<=deadline;}).reduce(function(n,r){return n+r.amount;},0),beforeBuy=rows.filter(function(r){return r.date<=buy&&r.amount>0||r.date<buy&&r.amount<0;}).reduce(function(n,r){return n+r.amount;},0),available=round(atBuy.projected+beforeBuy),required=round(upfront+fees);
+    var shortfalls=[],runningDelta=0,dated=rows.filter(function(r){return r.date<=deadline;}).sort(function(a,b){return a.date.localeCompare(b.date);}),byDay=dict();dated.forEach(function(r){byDay[r.date]=(byDay[r.date]||0)+r.amount;});
+    Object.keys(byDay).sort().forEach(function(day){runningDelta=round(runningDelta+byDay[day]);var f=goalForecast(db,p,goalId,date,day),cash=round(f.projected+runningDelta);if(cash<-.004)shortfalls.push({date:day,amount:-cash});});
+    return {baseline:base.projected,after:round(base.projected+delta),deadline:deadline,buyDate:buy,available:available,required:required,gap:round(Math.max(0,required-available)),price:price,quote:quote,financeRemaining:round(balance),payments:payments,interestByDate:round(interest),familyRemaining:loanDate&&loanDate<=deadline?round(loan-(repayDate&&repayDate<=deadline?repay:0)):0,rows:dated,shortfalls:shortfalls,conditional:!!(sale||loan),extraPaydays:paydays.length};
+  }
+  function addMonthsDay(day,n){var y=+day.slice(0,4),m=+day.slice(5,7)-1+n;return dayInMonth(y+Math.floor(m/12),((m%12)+12)%12,+day.slice(8));}
+  function reconcile(db,p,date,per) {
+    per=per||periodAt(db,p,date);var end=minS(date,addDays(per.next,-1)),issues=[],accounts=[],facts=dict(),paid=dict();
+    db.transactions.forEach(function(x){if(x.person!==p||x.date> end)return;facts[x.id]=true;if(x.date>=per.start&&x.review)issues.push({text:(x.note||'Payment')+' needs checking',kind:'receipt'});});
+    db.moves.forEach(function(m){if(m.person===p&&!m.dup)facts[m.id]=true;});db.settlements.forEach(function(s){if(s.from===p||s.to===p)facts[s.id]=true;});db.loans.forEach(function(l){if(l.lender===p)facts[l.id]=true;});
+    db.income.concat(db.bills).concat(db.transfers).forEach(function(it){if(it.person!==p&&it.from!==p&&it.to!==p)return;occurrences(db,it,addDays(per.start,-400),addDays(end,1)).forEach(function(o){if(o.paid)paid[o.key]=true;});});
+    accountsOf(db,p).forEach(function(a){
+      var vals=db.valuations.filter(function(v){return v.account===a.id&&v.date<=end;}).sort(function(x,y){return x.date.localeCompare(y.date)||(+x.updated||0)-(+y.updated||0);}),close=vals[vals.length-1],open=close&&vals.filter(function(v){return v.date<=addDays(per.start,-1)&&v.date<close.date;}).pop(),row={id:a.id,name:a.name,kind:a.kind,close:close?{date:close.date,amount:close.amount,id:close.id,updated:close.updated||0}:null};
+      if(!close||close.date<per.start){row.status='Needs a balance';issues.push({text:a.name+' needs a balance for this period',kind:'balance',account:a.id});}
+      else if(a.kind==='lisa'||a.kind==='pension'||a.kind==='credit'){row.status='Provider balance confirmed';row.investment=a.kind!=='credit';}
+      else if(!open){row.status='Opening balance needed';issues.push({text:a.name+' has no earlier opening balance to compare',kind:'opening',account:a.id});}
+      else{row.open={date:open.date,amount:open.amount,id:open.id,updated:open.updated||0};var expected=open.amount;flows(db,open.date,close.date).forEach(function(f){if(f.account===a.id&&(facts[f.src]||paid[f.src]))expected+=f.amount;});row.expected=round(expected);row.difference=round(close.amount-row.expected);row.status=Math.abs(row.difference)<.005?'Balances agree':'Difference to investigate';if(Math.abs(row.difference)>.004)issues.push({text:a.name+' differs by '+money(row.difference),kind:'difference',account:a.id});}
+      accounts.push(row);
+    });
+    var categories=budgetState(db,p,per),budgetRows=Object.keys(categories).map(function(k){var x=categories[k];return {id:k,name:x.budget.name,allowance:x.avail,spent:x.spent,left:x.left};}),out=outgoings(db,p,per,end);
+    out.filter(function(r){return r.status==='late'&&r.date<=end&&r.kind!=='payment';}).forEach(function(r){issues.push({text:r.name+' has no confirmed payment',kind:'bill'});});
+    var actual=recordedSaving(db,p,per.start,end),payload=JSON.stringify({accounts:accounts,budgets:budgetRows,issues:issues,saving:actual,receipts:db.transactions.filter(function(x){return x.person===p&&x.date>=per.start&&x.date<=end;}).map(function(x){return [x.id,x.amount,x.budget,x.account,x.billId,x.refundOf,x.updated];})}),h=2166136261;
+    for(var i=0;i<payload.length;i++){h^=payload.charCodeAt(i);h=Math.imul(h,16777619);}
+    var signature=(h>>>0).toString(16)+'-'+payload.length,stored=null;try{stored=JSON.parse(setting(db,p,'reconcile.'+per.start,''));}catch(e){}
+    return {period:per,through:end,accounts:accounts,budgets:budgetRows,issues:issues,saved:actual,signature:signature,review:stored,current:per.next>date,changed:!!stored&&stored.signature!==signature};
+  }
   function dataAudit(db, p, date) {
     var issues = [], bankIds = dict(), per = periodAt(db, p, date), add = function (kind, text, id) { issues.push({kind:kind, text:text, id:id || ""}); };
     db.transactions.forEach(function (x) {
@@ -2148,6 +2272,35 @@
     });
   }
   function taxYearStart(date) { var y = +date.slice(0, 4); var s = ymd(y, 3, 6); return date >= s ? s : ymd(y - 1, 3, 6); }
+  function planningRule(db,p,key,date){var history;try{history=JSON.parse(setting(db,p,key+'.history',''));}catch(e){}if(Array.isArray(history)){var active=history.filter(function(x){return isIso(x.from)&&x.from<=date;}).sort(function(a,b){return a.from.localeCompare(b.from);}).pop();return active&&active.on===true?active.from:'';}var from=setting(db,p,key,'');return isIso(from)&&from<=date?from:'';}
+  function confirmedLisa(db,p,date) {
+    return memo(db,'lisa-confirmed|'+p+'|'+date,function(){
+      var tys=taxYearStart(date),by=dict(),beforeStart=dict(),ids=dict(),total=0;
+      accountsOf(db,p).filter(function(a){return a.kind==='lisa';}).forEach(function(a){by[a.id]=0;beforeStart[a.id]=0;});
+      function add(id,day,amount){if(by[id]===undefined||day<tys||day>date||!(amount>0))return;by[id]=round(by[id]+amount);if(day<startOf(db,p))beforeStart[id]+=amount;}
+      db.moves.forEach(function(m){if(m.dup||m.person!==p||/^(lisa:bonus|lisa:fee|lisa:transfer)/.test(m.key||'')||(db.byId[m.from]||{}).kind==='lisa')return;add(m.to,m.date,+m.amount||0);ids[m.id]=true;});
+      db.transactions.forEach(function(x){if(x.person===p&&!x.review&&x.amount<0)add(x.account,x.date,-x.amount);});
+      db.income.forEach(function(i){if(i.person===p&&by[i.account]!==undefined)occurrences(db,i,tys,addDays(date,1)).forEach(function(o){if(o.paid&&!o.moveId)add(i.account,o.date,o.amount);});});
+      db.bills.forEach(function(b){if(b.person===p&&by[b.toAccount]!==undefined)occurrences(db,b,tys,addDays(date,1)).forEach(function(o){if(o.paid&&!o.moveId)add(b.toAccount,o.date,o.amount);});});
+      Object.keys(by).forEach(function(id){var old=+setting(db,p,'lisa.paidBefore.'+id,0)||0;if(tys<=startOf(db,p))by[id]=round(by[id]+Math.max(0,old-beforeStart[id]));total+=by[id];});
+      return {total:round(total),accounts:by,remaining:round(Math.max(0,4000-total)),taxYear:tys};
+    });
+  }
+  function capLisaLines(db,p,per,lines) {
+    var since=planningRule(db,p,'lisa.guardFrom',per.start),current=periodAt(db,p,db.today||per.start);
+    if(!isIso(since)||per.start<since||per.start<current.start||per.opening)return [];
+    var ty=taxYearStart(per.start),cutDate=minS(db.today||per.start,per.start),actual=confirmedLisa(db,p,cutDate<ty?ty:cutDate),paid=actual.taxYear===ty?actual.total:0,reserved=0,main=mainOf(db,p);
+    var start=maxS(ty,maxS(since,current.start));
+    // Earlier unperformed planned contributions still use that tax year's room.
+    payDates(db,p,start,per.start).forEach(function(day){var pk=periodAt(db,p,day),by=dict();budgetsOf(db,p,pk).forEach(function(b){if(b.mode==='saving'&&(db.byId[b.account]||{}).kind==='lisa')by[b.account]=(by[b.account]||0)+budgetAmount(db,b,pk);});Object.keys(by).forEach(function(id){reserved+=Math.max(0,by[id]-ticked(db,p,'pay:'+day+':'+id));});});
+    var tyNext=ymd(+ty.slice(0,4)+1,3,6),directFrom=maxS(addDays(cutDate,1),ty);
+    db.income.forEach(function(i){if(i.person===p&&(db.byId[i.account]||{}).kind==='lisa')occurrences(db,i,directFrom,tyNext).forEach(function(o){if(!o.paid)reserved+=o.amount;});});
+    db.bills.forEach(function(b){if(b.person===p&&(db.byId[b.toAccount]||{}).kind==='lisa')occurrences(db,b,directFrom,tyNext).forEach(function(o){if(!o.moveId&&!o.paid)reserved+=o.amount;});});
+    var room=round(Math.max(0,4000-paid-reserved)),floors=dict(),changes=[];
+    db.moves.forEach(function(m){if(!m.dup&&m.person===p&&m.from===main&&m.date>=per.start&&m.date<per.next&&(db.byId[m.to]||{}).kind==='lisa'&&!/^lisa:/.test(m.key||''))floors[m.to]=(floors[m.to]||0)+m.amount;});
+    lines.forEach(function(l){if(l.kind!=='save'||l.setAside||(db.byId[l.account]||{}).kind!=='lisa')return;var floor=Math.min(l.amount,floors[l.account]||0);floors[l.account]=Math.max(0,(floors[l.account]||0)-floor);var allowed=round(Math.min(l.amount,floor+room));room=round(Math.max(0,room-(allowed-floor)));if(allowed<l.amount-.004){var requested=l.amount;l.amount=allowed;changes.push({id:l.id,name:l.name,requested:requested,amount:allowed,reduction:round(requested-allowed),reason:'lisa-limit'});}});
+    return changes;
+  }
   function lisa(db, accId, date) {
     var tys = taxYearStart(date), paid = 0, all = 0;
     // history copied from the provider's statement lives in moves with keys lisa:in / lisa:bonus / lisa:fee
@@ -2175,6 +2328,8 @@
     // statement rows copied in for the same months are the same money, so only the rest counts
     var before = acc ? +setting(db, acc.owner, "lisa.paidBefore." + accId, 0) || 0 : 0;
     if (before && tys <= ownerStart) paid = round(paid + Math.max(0, before - inBeforeStart));
+    var guard=planningRule(db,acc?acc.owner:'','lisa.guardFrom',date);
+    if(isIso(guard)&&date>=guard)paid=confirmedLisa(db,acc.owner,date).accounts[accId]||0;
     bonus = round(Math.min(1000, paid * 0.25));
     // what's still planned to go in before the tax year ends: savings on each payday (including this period's,
     // until its move is ticked) and money paid straight in
@@ -2182,11 +2337,14 @@
     if (owner) {
       var cur = periodAt(db, owner, date);
       payDates(db, owner, maxS(cur.start, tys), addDays(tyEnd, 1)).forEach(function (d) {
-        if (d <= date && ticked(db, owner, "pay:" + d + ":" + accId)) return;
         var pk = periodAt(db, owner, d); if (pk.start !== d || pk.opening) return;
-        db.budgets.forEach(function (b) { if (b.person === owner && b.mode === "saving" && b.account === accId && activeIn(b, pk)) planned += budgetAmount(db, b, pk); });
+        var allocation=0;
+        if(isIso(guard)&&d>=guard)planFor(db,owner,pk).lines.forEach(function(l){if(l.kind==='save'&&!l.setAside&&l.account===accId)allocation+=l.amount;});
+        else db.budgets.forEach(function (b) { if (b.person === owner && b.mode === "saving" && b.account === accId && activeIn(b, pk)) allocation += budgetAmount(db, b, pk); });
+        planned+=Math.max(0,allocation-ticked(db,owner,'pay:'+d+':'+accId));
       });
       db.income.forEach(function (i) { if (i.account === accId) occurrences(db, i, addDays(date, 1), addDays(tyEnd, 1)).forEach(function (o) { planned += o.amount; }); });
+      if(isIso(guard))db.bills.forEach(function(b){if(b.person===owner&&b.toAccount===accId)occurrences(db,b,addDays(date,1),addDays(tyEnd,1)).forEach(function(o){if(!o.moveId)planned+=o.amount;});});
     }
     var onCourse = round(paid + planned), exp = expectedBonus(db, accId, date, before, ownerStart), expTot = 0;
     exp.forEach(function (x) { expTot += x.amount; });
@@ -2206,18 +2364,19 @@
   // 30 Sep). Whatever a bonus has left over is for money paid in before the history Budgie has, and is dropped.
   // Payments over the £4,000 a tax year get no bonus.
   function expectedBonus(db, accId, date, before, ownerStart) {
-    var pays = [], bons = [];
+    var pays = [], bons = [],owner=(db.byId[accId]||{}).owner,guard=planningRule(db,owner,'lisa.guardFrom',date);
     db.moves.forEach(function (m) {
       var k = String(m.key || ""), a = +m.amount || 0;
       if (m.to !== accId || !(a > 0) || m.date > date) return;
       if (/^lisa:bonus/.test(k)) bons.push({date: m.date, amount: a});
-      else if (!m.dup && (/^lisa:in/.test(k) || /^pay:\d{4}-\d{2}-\d{2}:/.test(k) || /^bank:/.test(k))) pays.push({date: m.date, amount: a});
+      else if (!m.dup && (guard?!/^lisa:(bonus|fee|transfer)/.test(k)&&(db.byId[m.from]||{}).kind!=='lisa':/^lisa:in/.test(k) || /^pay:\d{4}-\d{2}-\d{2}:/.test(k) || /^(bank|net):/.test(k))) pays.push({date: m.date, amount: a});
     });
     // money paid straight in on a schedule (family topping it up) earns the bonus too, as the balance counts it
     db.income.forEach(function (i) {
       if (i.account !== accId) return;
-      occurrences(db, i, startOf(db, i.person), addDays(date, 1)).forEach(function (o) { if (o.amount > 0) pays.push({date: o.date, amount: o.amount}); });
+      occurrences(db, i, startOf(db, i.person), addDays(date, 1)).forEach(function (o) { if (o.amount > 0&&(!guard||o.paid&&!o.moveId)) pays.push({date: o.date, amount: o.amount}); });
     });
+    if(guard){db.transactions.forEach(function(x){if(x.person===owner&&x.account===accId&&!x.review&&x.amount<0&&x.date<=date)pays.push({date:x.date,amount:-x.amount});});db.bills.forEach(function(b){if(b.person===owner&&b.toAccount===accId)occurrences(db,b,startOf(db,owner),addDays(date,1)).forEach(function(o){if(o.paid&&!o.moveId)pays.push({date:o.date,amount:o.amount});});});}
     var byDate = function (x, y) { return x.date < y.date ? -1 : x.date > y.date ? 1 : 0; };
     pays.sort(byDate); bons.sort(byDate);
     // what's been paid in each tax year so far (money paid before Budgie's history counts towards the £4,000)
@@ -2437,9 +2596,9 @@
   }
 
   return {
-    VERSION: VERSION, TABLES: TABLES,
+    VERSION: VERSION, TABLES: TABLES, planningRule:planningRule, confirmedLisa:confirmedLisa, purchaseCheck:purchaseCheck, financeQuote:financeQuote, goalScenario:goalScenario, reconcile:reconcile,
     load: load, payPending: payPending, occurrences: occurrences, occurrencesAll: occurrencesAll, outgoings: outgoings, scheduleDates: scheduleDates, isWorkingDay: isWorkingDay, bankHolidays: bankHolidays,
-    periods: periods, periodAt: periodAt, prevPeriod: prevPeriod, nextPeriod: nextPeriod, planFor: planFor, payday: payday,
+    periods: periods, periodAt: periodAt, prevPeriod: prevPeriod, nextPeriod: nextPeriod, planFor: planFor, payday: payday, paydaySteps:paydaySteps, netParts:netParts, partialNetKey:partialNetKey,
     budgetState: budgetState, balances: balances, flows: flows, todo: todo, between: between, today: today, coming: coming,
     calendar: calendar, pots: pots, monthView: monthView, year: year, kindOf: kindOf, newMoney: newMoney, kinds: kinds,
     savingFlexible: savingFlexible, recordedSaving: recordedSaving, dataAudit: dataAudit, goalForecast: goalForecast, savingFlexible: savingFlexible, recordedSaving: recordedSaving, dataAudit: dataAudit, goalForecast: goalForecast, goalFlow: goalFlow, goalProgress: goalProgress, goalDirect: goalDirect, directItems: directItems, spareRules: spareRules, spareMoney: spareMoney,

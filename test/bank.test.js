@@ -2155,5 +2155,29 @@ ok("sync without an action is unchanged", call({key: kE}).ok === true && Array.i
  ok('receipt lookup exposes no tokens or external bank IDs',!JSON.stringify(r).includes(SECRET.access1)&&!JSON.stringify(r).includes('acc-example')&&!JSON.stringify(r).includes('receipt-max'));
 }
 
+// Net payday instructions keep one actual movement and non-cash allocation evidence.
+{
+ NOW=RealDate.parse('2026-10-29T20:00:00Z');
+ const make=(extra)=>bankEnv(t=>{
+  for(const k of ['bills','budgets','transfers','transactions','moves','loans','loanItems','settlements','goals','valuations','amounts','exceptions','settings','income'])t[k]=[];
+  t.income=[{id:'pay',person:'ethan',amount:2000,isPay:true,account:'e-main',unit:'month',on:'last thursday',start:'2026-10-29'}];
+  t.budgets=[{id:'fun',person:'ethan',name:'Fun',amount:200,mode:'daily',account:'e-food'}];
+  t.settings=[{person:'ethan',key:'start',value:'2026-10-29'},{person:'ethan',key:'payday.netFrom',value:'2026-10-29'},{person:'ethan',key:'bank.map.acc_main',value:'e-main'},{person:'ethan',key:'bank.map.pot_food',value:'e-food'}];
+  t.valuations=[{id:'open',account:'e-main',date:'2026-10-28',amount:0},{id:'food-open',account:'e-food',date:'2026-10-28',amount:0}];
+  t.transactions=[{id:'monitor',person:'ethan',date:'2026-10-29',amount:80,budget:'fun',account:'e-main'}];if(extra)extra(t);
+ });
+ const read=(ids=['net-fund'])=>({provider:'monzo',accounts:[],txns:ids.map(id=>({id,acc:'acc_main',pot:'pot_food',date:'2026-10-29',amount:id==='net-return'?-120:120,name:'',category:'savings'}))});
+ const left=G=>{G.c.CACHE_={};return B.paydaySteps(B.load(G.c.allTables_(),'2026-10-29'),'ethan','2026-10-29').steps[0].remaining;};
+ const G=make();G.c.bankApply_('ethan',read(),'2026-10-01',[]);let mv=rows(G,'moves');ok('NET: imported 120 carries allocation evidence',mv.length===1&&mv[0].amount===120&&/^net:/.test(mv[0].key),mv);near('NET: original 200 allocation completed by 120 real cash',left(G),0);
+ G.c.bankApply_('ethan',read(),'2026-10-01',[]);ok('NET: repeated bank reads remain one movement',rows(G,'moves').length===1);
+ G.c.bankApply_('ethan',read(['net-fund','net-return']),'2026-10-01',[]);near('NET: actual returned transfer reopens',left(G),120);
+ G.c.bankApply_('ethan',read(['net-fund','net-return','net-redo']),'2026-10-01',[]);near('NET: actual re-funding completes',left(G),0);ok('NET: all three actual bank movements preserved',rows(G,'moves').length===3);
+ const L=make(t=>t.moves.push({id:'bk-monzo-net-fund',person:'ethan',date:'2026-10-29',amount:120,from:'e-main',to:'e-food',key:'bank:net-fund',by:'bank'}));L.c.bankApply_('ethan',read(),'2026-10-01',[]);ok('NET: an earlier loose move is reconciled without a new cash entry',rows(L,'moves').length===1&&/^net:/.test(rows(L,'moves')[0].key));near('NET: reclassified old loose move completes allocation',left(L),0);
+ const P=make(t=>{let s=B.paydaySteps(B.load(t,'2026-10-29'),'ethan','2026-10-29').steps[0],key=B.partialNetKey(s,60);t.moves.push({id:'half1',person:'ethan',date:'2026-10-29',amount:60,from:'e-main',to:'e-food',key});s=B.paydaySteps(B.load(t,'2026-10-29'),'ethan','2026-10-29').steps[0];t.moves.push({id:'half2',person:'ethan',date:'2026-10-29',amount:60,from:'e-main',to:'e-food',key:s.key});});
+ const halves=read(['first60','second60']);halves.txns.forEach(t=>t.amount=60);P.c.bankApply_('ethan',halves,'2026-10-01',[]);ok('NET: each of two manual partials matches one bank receipt',rows(P,'moves').filter(x=>!x.deleted).length===2,rows(P,'moves'));
+ const privacy=make(t=>t.settings.push({id:'ethan:scenario.car',person:'ethan',key:'scenario.car',value:'private scenario'},{id:'ethan:reconcile.2026-10-29',person:'ethan',key:'reconcile.2026-10-29',value:'private review'}));
+ ok('NET: scenarios and reconciliation notes remain private',!JSON.stringify(privacy.call({key:privacy.kS,full:true}).rows.settings).includes('private '));
+ const Legacy=make(),legacyData=read(['gross-funding','gross-return']);legacyData.txns[0].amount=200;legacyData.txns[1].amount=-80;Legacy.c.bankApply_('ethan',legacyData,'2026-10-01',[]);near('NET: old gross funding is still recognised',left(Legacy),0);Legacy.c.CACHE_={};ok('NET: separate real reimbursement is not requested again',!B.todo(B.load(Legacy.c.allTables_(),'2026-10-29'),'ethan','2026-10-29').some(x=>/^back:fun:/.test(x.key)));
+}
 console.log(fails ? fails + " failed, " + passes + " passed" : "All " + passes + " passed");
 process.exit(fails ? 1 : 0);

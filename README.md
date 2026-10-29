@@ -16,6 +16,8 @@ Tests: `node test/accuracy.test.js`, `node test/engine.test.js`, `node test/back
 
 Nothing secret lives in this repo: bank keys stay inside the sheet owner's Apps Script, and the test data is made up.
 
+Planning tools: Today / Your budget / **Can I buy this?** previews spending and goal impact. More / **Monthly check** records a reconciliation checkpoint. Goals / **Car scenarios** compares hypothetical purchases, finance and conditional proceeds without changing the live plan. In Saving rules / **Payday protection**, enable combined pot transfers and the LISA allowance guard from a chosen payday. Complete Payday then keeps pot funding, Main reserves and final accessible saving on one screen. See `test/planning.test.js`, `test/planning-ui.test.js` and the planning section of `ARCHITECTURE.md`.
+
 
 Budget health is in Settings. It surfaces unresolved receipts, stale manually checked balances, funding gaps, sync queue and backup verification. In Bank connection, Find a bank receipt reads the last 35 days directly for a merchant and shows how a receipt was reconciled. It never marks a bill paid.
 

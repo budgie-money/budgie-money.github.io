@@ -150,5 +150,6 @@
     ACT.extourShow=function(s){A.closeSheet();go(s);};
     if(window.BudgieClarity) window.BudgieClarity.install(A,{more:originalMore,sorted:sortedCard});
     if(window.BudgieTrust) window.BudgieTrust.install(A);
+    if(window.BudgiePlanning) window.BudgiePlanning.install(A);
   }};
 })();
