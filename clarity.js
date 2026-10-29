@@ -129,10 +129,11 @@
           total = list.reduce(function (n, x) {
             return n + Math.max(0, x.left);
           }, 0),
-          used = 0;
+          used = 0,
+          lastFunded = list.reduce(function (last, x, i) { return x.left > 0.004 ? i : last; }, -1);
         return list.map(function (x, i) {
           var a =
-            i === list.length - 1
+            x.left <= 0.004 ? 0 : i === lastFunded
               ? B.round(Math.max(0, t.safe - used))
               : B.round(total ? (Math.max(0, x.left) / total) * t.safe : 0);
           a = Math.min(a, Math.max(0, B.round(t.safe - used)));
@@ -338,7 +339,7 @@
           active = parts.filter(function (x) { return x.amount > 0.004; }),
           context = active.length === 1 ? "Today’s guide comes from " + shortName(active[0].name)
             : active.length ? "Split across your daily budgets"
-            : t.budgetDay > t.cashDay ? "Available cash is limiting today’s guide" : "Daily budgets used for this pay period";
+            : t.budgetDay > t.cashDay ? "Available cash is limiting today’s guide" : "No daily allowance available";
         html +=
           '<button type="button" id="c-guide" class="hero card c-guide" data-a="herosheet"><div class="c-guide-top"><span>Daily guide</span><span class="c-guide-link">View breakdown ↗</span></div><div class="c-guide-main"><div class="c-guide-total"><div class="big">' +
           M(t.safe) +

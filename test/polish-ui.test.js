@@ -24,7 +24,7 @@ for(const width of [295,320,384,560]){
 // Validate the new category states against actual invented expenses and cash, not a second calculation.
 await go('today');
 const adjustments=await p.evaluate(()=>{const d=BudgieApp.db(),t=Budgie.today(d,'ethan','2026-11-02');return t.tiles.filter(x=>['Food','Fuel','Fun'].includes(x.name)).map(x=>({id:x.id,amount:Budgie.round(x.left-(x.name==='Food'?-5:x.name==='Fuel'?5:0))}));});
-const send=async ops=>{await p.evaluate(async ops=>{const S=BudgieApp.S;const r=await fetch(S.cfg.u,{method:'POST',body:JSON.stringify({key:S.cfg.k,ops})});const j=await r.json();if(!j.ok||j.rejected.length)throw Error('Fixture rejected');await BudgieApp.sync(true);},ops);};
+const send=async ops=>{await p.evaluate(async ops=>{ops=ops.map(o=>o.op==='put'?{...o,row:{...o.row,deleted:false}}:o);const S=BudgieApp.S;const r=await fetch(S.cfg.u,{method:'POST',body:JSON.stringify({key:S.cfg.k,ops})});const j=await r.json();if(!j.ok||j.rejected.length)throw Error('Fixture rejected');await BudgieApp.sync(true);},ops);};
 const scenarioRows=adjustments.map((x,i)=>({table:'transactions',row:{id:'guide-state-'+i,person:'ethan',date:'2026-11-02',amount:x.amount,budget:x.id,account:'e-main',note:'Invented category-state check'}})).concat(['e-main','e-food','e-car'].map((account,i)=>({table:'valuations',row:{id:'guide-value-'+i,account,date:'2026-11-02',amount:5000}})));
 await send(scenarioRows.map(x=>({op:'put',...x})));await go('today');
 ok(/£5.00 over/.test(await p.locator('.c-guide-parts').innerText())&&/Budget used/.test(await p.locator('.c-guide-parts').innerText()),'guide distinguishes overspent and used budgets');
@@ -33,7 +33,10 @@ ok(await p.evaluate(()=>{const n=x=>+x.textContent.replace(/[£,]/g,'');return M
 await p.locator('[data-a="herosheet"]').click();ok(/£5.00 over budget/.test(await p.locator('#sheets').innerText()),'breakdown retains an overspend instead of clamping it to zero');await go('today');
 await send(scenarioRows.filter(x=>x.table==='valuations').map(x=>({op:'put',table:x.table,row:{...x.row,amount:0}})));await go('today');
 ok(/Available cash is limiting/.test(await p.locator('.c-guide-context').innerText()),'cash cap is distinguished from remaining budget');
-await send(scenarioRows.map(x=>({op:'delete',table:x.table,id:x.row.id})));await go('today');
+const pennyRows=await p.evaluate(()=>{const d=BudgieApp.db(),t=Budgie.today(d,'ethan','2026-11-02');return d.transactions.filter(x=>/^guide-state-/.test(x.id)).map(x=>{const tile=t.tiles.find(y=>y.id===x.budget);return {op:'put',table:'transactions',row:{...x,amount:Budgie.round(x.amount+tile.left-1)}};});});
+await send(pennyRows.concat(scenarioRows.filter(x=>x.table==='valuations').map(x=>({op:'put',...x})),[{op:'put',table:'budgets',row:{id:'guide-empty-budget',person:'ethan',name:'Empty example',mode:'daily',amount:0,account:'e-main'}}]));await go('today');
+ok(await p.evaluate(()=>{const rows=[...document.querySelectorAll('.c-guide-parts>div')],r=rows.find(x=>/Empty example/.test(x.textContent));return !!r&&r.querySelector('b').textContent==='£0.00';}),'rounding never gives an exhausted category a daily contribution');
+await send(scenarioRows.map(x=>({op:'delete',table:x.table,id:x.row.id})).concat([{op:'delete',table:'budgets',id:'guide-empty-budget'}]));await go('today');
 await p.setViewportSize({width:384,height:854});await p.evaluate(()=>{BudgieApp.S.prefs.special='hyperspace';BudgieApp.S.prefs.size='normal';BudgieThemes.apply(BudgieApp.S.prefs);});
 await p.evaluate(async()=>{const S=BudgieApp.S;await fetch(S.cfg.u,{method:'POST',body:JSON.stringify({key:S.cfg.k,ops:[{op:'put',table:'transactions',row:{id:'polish-receipt',person:'ethan',date:'2026-11-02',amount:4,budget:'e-fun',account:'e-main',note:'Example receipt'}}]})});await BudgieApp.sync(true);});
 await go('money');await p.locator('[data-a="cTab"][data-v="activity"]').click();const payment=await p.evaluate(()=>Object.values(BudgieApp.S.ui.cActivity).find(x=>x.kind==='payment'&&x.amount>0).id);await p.locator('[data-a="cActivity"][data-v="'+payment+'"]').click();
