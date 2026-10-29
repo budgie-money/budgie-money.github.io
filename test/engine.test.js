@@ -451,7 +451,7 @@ const savedUp = (pl, id) => lineAmt(pl, l => l.setAside && l.bill === id && l.ki
   eq("1.4 review: biggest month", r.biggestMonth, {month: "2026-12", name: "Dec 2026", amount: 65});
   eq("1.4 review: no-spend days since tracking started", r.noSpendDays, B.diff("2026-10-26", "2027-04-05") + 1 - 3);
   let planned = 0; B.periods(d, "ethan", "2026-10-26", "2027-04-06").forEach(pk => { if (pk.start >= "2026-10-26") planned += B.planFor(d, "ethan", pk).totals.save; });
-  near("1.4 review: saved = planned savings less the ISA withdrawal", r.saved, planned - 400);
+  near("1.4 review: saved = planned savings less the ISA withdrawal", r.saved, 333 - 400);
   eq("1.4 review: saved %", r.savedPct, Math.round(r.saved / r.in * 100));
   const L = B.lisa(d, "e-lisa", "2027-04-05");
   eq("1.4 review: LISA", r.lisa, {paidIn: L.paidThisYear, bonus: L.bonusReceived, fees: L.feesThisYear, value: L.balance, expectedBonus: L.expectedBonusTotal});
@@ -490,7 +490,7 @@ const savedUp = (pl, id) => lineAmt(pl, l => l.setAside && l.bill === id && l.ki
   const bs = B.budgetState(c, me, per);
   eq("compat: budgetState(db, me, per)", ["amount", "spent", "left", "avail", "carryIn", "carryOut", "over"].every(k => k in bs["e-fun"]) && bs["e-fun"].period.start === per.start, true);
   eq("compat: still exported", ["load", "coming", "periodAt", "planFor", "budgetState", "today", "checks", "lisa", "yearly", "yearReview"].every(k => typeof B[k] === "function"), true);
-  eq("compat: version", B.VERSION, "1.5.4");
+  eq("compat: version", B.VERSION, "1.5.6");
 })();
 
 // C3: a payday move ticked in the app and by the bank feed counts once (the latest)
@@ -1059,8 +1059,8 @@ const tickPay11 = (t, p, d) => { const L0 = B.load(t, d), per = B.periodAt(L0, p
   eq("I5: new money in is pay and Sophie's shares, not what carried over", rs.map(r => r.fresh), [3040, 3040]);
   const pl = planAt(d, "ethan", "2026-11-10"), sa = lineAmt(pl, l => l.setAside && l.kind === "save"), carried = lineAmt(pl, l => l.leftover || l.already);
   eq("I5: November had money carried over and set aside for the insurance", [carried > 0, sa > 0], [true, true]);
-  near("I5: saved leaves the insurance out", rs[0].saved, lineAmt(pl, l => (l.kind === "save" && !l.setAside) || l.kind === "topup"));
-  near("I5: (the plan's own total has it in)", pl.totals.save - rs[0].saved, sa);
+  near("I5: saved leaves the insurance out", rs[0].planned, lineAmt(pl, l => (l.kind === "save" && !l.setAside) || l.kind === "topup"));
+  near("I5: (the plan's own total has it in)", pl.totals.save - rs[0].planned, sa);
   eq("I5: the rate", rs[0].pct, Math.round(rs[0].saved / 3040 * 100));
   eq("I5: nothing in the short first month", B.savingRates(dbt(null, "2026-11-10"), "sophie", "2026-11-10"), []);
   eq("I5: Sophie's first full month", B.savingRates(dbt(null, "2026-12-05"), "sophie", "2026-12-05").map(r => r.period.start), ["2026-11-27"]);

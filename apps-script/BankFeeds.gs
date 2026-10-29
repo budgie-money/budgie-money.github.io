@@ -167,6 +167,7 @@ function bankAction_(me, b) {
       case "bank.starling.setToken": return starlingSetToken_(me, b);
       case "bank.map": return bankMap_(me, b);
       case "bank.syncNow": return bankSyncNow_(me);
+      case "bank.receipts": return bankReceipts_(me, b);
       case "bank.disconnect": return bankDisconnectLocked_(me);
       default: return {ok: false, error: "Unknown bank action"};
     }
@@ -174,18 +175,40 @@ function bankAction_(me, b) {
     return {ok: false, error: bankScrub_(me, e && e.message || e)};
   }
 }
+// An on-demand, read-only receipt lookup. It exposes only the caller's own bank and
+// its reconciliation references, so a missing charge can be investigated without code.
+function bankReceipts_(p,b) {
+  var query=String(b.query||"").trim().toLowerCase();
+  if(query.length<2||query.length>60)return {ok:false,error:"Use 2 to 60 characters of the merchant name."};
+  var lock=bankLock_(); if(!lock.tryLock(1000))return {ok:false,error:"A bank check is running. Try shortly."};
+  try {
+    var tok=bankGet_(bankKey_("TOKEN",p));if(!tok)return {ok:false,error:"No bank is connected."};
+    var data=tok.provider==="monzo"?monzoRead_(p,false,false):starlingRead_(p,false,false), st=bankStatusFor_(p), tables=allTables_(), D=Budgie.load(tables), matches=[];
+    data.txns.forEach(function(t){
+      if(t.pot||String(t.name||"").toLowerCase().indexOf(query)<0)return;
+      var receipt=tables.transactions.filter(function(x){return x.person===p&&!bankTrue_(x.deleted)&&x.bankId===t.id;})[0];
+      var links=tables.exceptions.filter(function(x){var it=D.byId[x.item]||{};return !bankTrue_(x.deleted)&&x.bankId===t.id&&(it.person===p||it.from===p)&&x.action==="paid";}).map(function(x){return (D.byId[x.item]||{}).name||"Planned payment";});
+      var ext=st.accounts.filter(function(a){return a.extId===t.acc;})[0], mapped=ext&&ext.mappedTo||"", account=mapped?Budgie.accName(D,mapped):"Unmapped account";
+      matches.push({date:t.date,name:String(t.name||""),amount:t.amount,account:account,pending:!!t.pending,declined:!!t.declined,reversed:!!t.reversed,matched:links,recorded:!!receipt,review:!!receipt&&bankTrue_(receipt.review)});
+    });
+    matches.sort(function(a,b){return a.date<b.date?1:a.date>b.date?-1:0;});
+    return {ok:true,receipts:matches.slice(0,80),limited:matches.length>80,from:bankDate_(bankSince_(false,false)),potErrors:(data.potErrors||[]).map(function(e){return bankScrub_(p,e);})};
+  } finally {lock.releaseLock();}
+}
 function bankStatusFor_(p) {
   var s = bankStatus_(p), tok = bankGet_(bankKey_("TOKEN", p)), cl = bankGet_(bankKey_("CLIENT", p));
   var provider = tok ? tok.provider : cl ? "monzo" : "";
   var maps = {}; readTable_("settings").rows.forEach(function (r) { if (r.person === p && !bankTrue_(r.deleted) && /^bank\.map\./.test(String(r.key))) maps[String(r.key).slice(9)] = String(r.value === undefined || r.value === null ? "" : r.value); });
   var review = 0; readTable_("transactions").rows.forEach(function (r) { if (r.person === p && bankTrue_(r.review) && !bankTrue_(r.deleted)) review++; });
   var approved = tok && tok.provider === "monzo" ? (tok.approvedAt || tok.issuedAt) : 0;
+  var props=PropertiesService.getScriptProperties(), maintenance={backupConfigured:!!props.getProperty("BACKUP_FOLDER_ID"),backupLastSuccess:+props.getProperty("BACKUP_LAST_OK")||0};
+  try { var handlers=ScriptApp.getProjectTriggers().map(function(t){return t.getHandlerFunction();});maintenance.bankPoll=handlers.indexOf("bankPoll")>=0;maintenance.backupTrigger=handlers.indexOf("backupNow")>=0; } catch(e) { maintenance.triggersUnknown=true; }
   return {
     provider: provider, connected: !!tok && !s.needsReconnect, needsSetup: !tok, needsReconnect: !!(tok && s.needsReconnect),
     lastSync: s.lastSync || 0, lastError: s.lastError || "", note: s.note || "", waitingForApproval: !!(tok && s.waiting),
     reapproveBy: approved ? Utilities.formatDate(new Date(approved + 90 * BANK_DAY_), tz_(), "yyyy-MM-dd") : "",
     accounts: (s.accounts || []).map(function (a) { return {extId: a.extId, name: a.name, kind: a.kind, balance: a.balance, mappedTo: bankHas_(maps, a.extId) ? maps[a.extId] : null}; }),
-    review: review
+    review: review, maintenance: maintenance
   };
 }
 // (a setting called bank.map.hasOwnProperty, say, can't break the reads)

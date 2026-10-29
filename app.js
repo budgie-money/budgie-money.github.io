@@ -1,7 +1,7 @@
 /* Budgie app: screens, syncing and offline queue. The maths lives in engine.js. */
 (function () {
   "use strict";
-  var B = window.Budgie, TH = window.BudgieThemes, APP_VERSION = "1.5.5";
+  var B = window.Budgie, TH = window.BudgieThemes, APP_VERSION = "1.5.6";
   var $ = function (s) { return document.querySelector(s); };
   var esc = function (s) { return String(s === undefined || s === null ? "" : s).replace(/[&<>"']/g, function (c) { return {"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]; }); };
   // wiped: Budgie's copy at the old address has been wiped (it's moving across), so nothing is saved here again
@@ -766,9 +766,10 @@
     var shared = d.bills.filter(function (b) { return b.split; });
     if (shared.length) html += card('<h2>Shared bills</h2><div class="list" style="margin-top:6px">' + shared.map(function (b) {
       // (an estimate the real bills count against: how far this bills month has got, and how the last one settled)
-      var pmNow = B.poolOn(d, b) ? B.poolMonthAt(d, b, now) : null; if (pmNow) return '<div class="c-shared-row">' + poolRow(pmNow) + '<p class="small muted" style="margin:0 0 10px">' + esc(qp.name) + "’s share: " + M(B.shareOf(d, b.split, q, pmNow.estimate, b.person, pmNow.start)) + " of the estimate</p></div>";
-      var amt = B.amountAt(d, b, now), parts = d.people.map(function (x) { return esc(x.name) + " " + M(B.shareOf(d, b.split, x.id, amt, b.person, now)); }).join(" · ");
-      return li(esc(b.name), parts, num(M(amt)));
+      var pmNow = B.poolOn(d, b) ? B.poolMonthAt(d, b, now) : null;
+      if (pmNow) return li(esc(b.name), esc(qp.name) + "’s estimated share · " + M(pmNow.estimate) + " total · " + M(pmNow.actual) + " paid so far", num(M(B.shareOf(d,b.split,q,pmNow.estimate,b.person,pmNow.start))), "pool", b.id+"|"+pmNow.start);
+      var amt = B.amountAt(d,b,now), other=B.shareOf(d,b.split,q,amt,b.person,now);
+      return li(esc(b.name), esc(qp.name) + "’s share · " + M(amt) + " total · your share " + M(B.shareOf(d,b.split,p,amt,b.person,now)), num(M(other)));
     }).join("") + "</div>");
     B.goals(d, p, now).filter(function (g) { return String((d.byId[g.id] || {}).owners || "").split(/[,\s]+/).filter(Boolean).length > 1; }).forEach(function (g) { html += goalCard(g); });
     return html;
@@ -993,12 +994,8 @@
     var d = db(), p = me(), now = todayIso(), pr = B.goalProgress(d, p, g.id, now), fl = B.goalFlow(d, p, g.id, now), extra = "";
     if (g.kind === "emergency") { var ess = essentials(); if (ess) extra = '<div class="small muted">Three months of essentials would be about ' + M0(ess * 3) + ".</div>"; }
     var course = "";
-    if (pr) {
-      if (pr.reached) course = '<span class="good" style="font-weight:600">Reached</span>';
-      else if (pr.eta) course = "On course for " + esc(monthYear(pr.eta)) + " at " + M0(pr.perMonth) + " a month" + (pr.dueGap !== null ? (pr.dueGap <= 0 ? ", in time" : ", " + monthsWord(pr.dueGap) + " after your date") : "");
-      else if (g.target > 0) course = "No date yet: nothing is going in at the moment";
-      if (pr.needed !== null && pr.dueGap !== null && pr.dueGap > 0) course += '<br><span class="muted">Needs ' + M0(pr.needed) + " a month to be there by " + esc(monthYear(g.due)) + "</span>";
-    }
+    if (pr && pr.reached) course = '<span class="good" style="font-weight:600">Reached</span>';
+    else if (pr && pr.basis === "history") course = "Recent account growth: " + M0(pr.perMonth) + " a month";
     var joint = fl && String((d.byId[g.id] || {}).owners || "").split(/[,\s]+/).filter(Boolean).length > 1;
     var flow = fl && fl.lines.length ? '<div class="row small" style="margin-top:10px;font-weight:600"><span>' + (joint ? "Your part this pay period" : "This pay period") + "</span>" + num(M0(fl.total) + " in") + "</div>" + fl.lines.map(function (l) { return '<div class="row tiny muted" style="padding-top:2px"><span>' + esc(l.label) + (l.names && l.names.length ? " (" + esc(l.names.join(", ")) + ")" : "") + (l.kind === "direct-repaid" || l.kind === "direct-oneoff" ? (l.done ? "" : " · to move") : "") + "</span><span>" + M(l.amount) + "</span></div>"; }).join("") : "";
     return '<div class="row"><span style="font-weight:700">' + esc(g.name) + "</span>" + num(g.pct + "%") + '</div><div style="margin:8px 0 6px">' + bar(g.pct, null, "var(--k-save)") + '</div><div class="row small"><span class="num" style="font-weight:600">' + M0(g.saved) + " of " + M0(g.target) + '</span><span class="muted">' + (g.due ? "by " + esc(monthYear(String(g.due).slice(0, 10))) : "") + "</span></div>" +
@@ -1190,7 +1187,6 @@
     }
     html += rateCard(d, p, now);
     var subs = 0, subNames = []; d.bills.forEach(function (b) { if (b.person === p && /sub/i.test(b.category || "")) { var y = 0; B.occurrences(d, b, now, B.addDays(now, 365)).forEach(function (o) { y += o.amount; }); subs += y; subNames.push([b.name, y]); } });
-    if (subs) { subNames.sort(function (a, b) { return b[1] - a[1]; }); html += card('<div style="font-weight:700">Subscriptions cost ' + M0(subs) + ' a year</div><div class="small muted">' + esc(subNames[0][0]) + " is the biggest at " + M0(subNames[0][1]) + ".</div>"); }
     html += yearCard(taxYearStart(now), true);
     return html;
   };
@@ -1232,7 +1228,7 @@
   function rateCard(d, p, now) {
     var rs = B.savingRates(d, p, now, 6); if (!rs.length) return "";
     var cur = rs[rs.length - 1], pc = function (r) { return r.pct === null ? "–" : r.pct + "%"; }, max = Math.max.apply(null, rs.map(function (r) { return r.pct || 0; }).concat([1]));
-    return card(khead("save", "Saving rate" + infoBtn("rate"), num(pc(cur))) + '<div class="bars k-save" style="height:150px">' + rs.map(function (r) { return '<div><span class="num" style="font-size:11px">' + pc(r) + '</span><i class="' + (r.current ? "plan" : "") + '" style="height:' + Math.max(2, Math.round((r.pct || 0) / max * 100)) + 'px"></i><span>' + esc(r.period.name.slice(0, 3)) + "</span></div>"; }).join("") + "</div>");
+    return card(khead("save", "Recorded saving rate", num(pc(cur))) + '<div class="bars k-save" style="height:150px">' + rs.map(function (r) { return '<div><span class="num" style="font-size:11px">' + pc(r) + '</span><i class="' + (r.current ? "plan" : "") + '" style="height:' + Math.max(2, Math.round((r.pct || 0) / max * 100)) + 'px"></i><span>' + esc(r.period.name.slice(0, 3)) + "</span></div>"; }).join("") + "</div>");
   }
   function taxYearStart(iso) { var y = +iso.slice(0, 4); return (iso.slice(5) >= "04-06" ? y : y - 1) + "-04-06"; }
   // the tax year in money: in Insights all year ("so far"), and on Today for the first weeks after 6 April
@@ -1421,9 +1417,9 @@
       card('<label class="li check"><span class="grow"><span class="what">Send me the Sunday email</span></span><input type="checkbox" data-c="emailon"' + (on ? " checked" : "") + '></label><label class="f">Your email address<input type="email" id="emailTo" inputmode="email" autocomplete="email" value="' + esc(to) + '" placeholder="you@example.com"></label><button type="button" class="btn wide" style="margin-top:12px" data-a="emailsave">Save</button>');
   };
   SCREENS.sharing = function () {
-    var keys = [["totals", "How much is left", "Your can-spend-today and what you're saving"], ["cats", "Your budgets", "Food, fun and the rest, against plan"], ["goals", "Your own goals", "Progress on goals that are just yours"], ["payments", "Each payment", "Every payment you log with its note, and your pay, bills, budgets and balances"]];
+    var keys = [["balance", "Current-account balance", "Share your last checked balance without sharing individual payments"], ["bills", "Bill breakdown", "Names, dates and planned amounts for this pay period"], ["totals", "How much is left", "Your can-spend-today and what you're saving"], ["cats", "Your budgets", "Food, fun and the rest, against plan"], ["goals", "Your own goals", "Progress on goals that are just yours"], ["payments", "Each payment", "Every payment you log with its note, plus your pay, bills, budgets and balances"]];
     return '<p class="small muted" style="margin:0 4px 10px">Shared bills, split payments, money between you and joint goals are always shared. Gift lists never are.</p>' + card('<div class="list">' + keys.map(function (k) {
-      var on = /^(true|yes|on|1)$/i.test(String(getSetting("share." + k[0], k[0] === "payments" ? "false" : "true")));
+      var on = /^(true|yes|on|1)$/i.test(String(getSetting("share." + k[0], /^(payments|balance|bills)$/.test(k[0]) ? "false" : "true")));
       return '<label class="li check"><span class="grow"><span class="what">' + k[1] + '</span><span class="why">' + k[2] + '</span></span><input type="checkbox" data-c="share" data-v="' + k[0] + '"' + (on ? " checked" : "") + "></label>";
     }).join("") + "</div>", "flush");
   };

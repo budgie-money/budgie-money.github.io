@@ -259,10 +259,17 @@ function backupNow() {
   if (shared) { Logger.log("No backup made: the backup folder is shared (" + shared + "). A backup holds everything in the sheet, both of yours, so use a folder only you can open (or stop sharing this one)."); return null; }
   var name = EXTRAS_BACKUP_NAME + exTodayIso_(), copy;
   try {
-    var src = ss_(), dest = SpreadsheetApp.create(name), blank = dest.getSheets()[0];
+    // Capture one coherent data state under the same lock as bank imports and phone
+    // writes. Release it before creating Drive files or applying retention.
+    var lock=LockService.getScriptLock(), snapshot, sourceZone;
+    lock.waitLock(25000);
+    try { var source=ss_();sourceZone=source.getSpreadsheetTimeZone()||"Europe/London";snapshot=source.getSheets().map(function(sh){return {name:sh.getName(),values:sh.getDataRange().getValues()};}); }
+    finally { lock.releaseLock(); }
+    var dest = SpreadsheetApp.create(name), blank = dest.getSheets()[0];
+    dest.setSpreadsheetTimeZone(sourceZone);
     if (blank) blank.setName("_budgie_blank_" + Date.now());
-    src.getSheets().forEach(function (sh, i) {
-      var vals = sh.getDataRange().getValues(), to = dest.insertSheet(sh.getName(), i);
+    snapshot.forEach(function (sh, i) {
+      var vals = sh.values, to = dest.insertSheet(sh.name, i);
       // values only, and text that would read as a formula stays text
       if (vals.length && vals[0].length) to.getRange(1, 1, vals.length, vals[0].length).setValues(vals.map(function (r) { return r.map(function (v) { return typeof cell_ === "function" ? cell_(v) : v; }); }));
     });
@@ -282,6 +289,7 @@ function backupNow() {
   var gone = 0;
   mine.slice(EXTRAS_KEEP_BACKUPS).forEach(function (x) { try { x.f.setTrashed(true); gone++; } catch (e) { Logger.log("Couldn't remove old backup " + x.name + ": " + (e && e.message || e)); } });
   Logger.log("Backup made: " + name + "." + (gone ? " Moved " + exPlural_(gone, "older backup") + " to the bin." : "") + " Keeping the newest " + EXTRAS_KEEP_BACKUPS + ".");
+  PropertiesService.getScriptProperties().setProperty("BACKUP_LAST_OK", String(Date.now()));
   return name;
 }
 

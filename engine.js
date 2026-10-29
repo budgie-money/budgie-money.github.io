@@ -6,7 +6,7 @@
   else root.Budgie = factory();
 })(this, function () {
   "use strict";
-  var VERSION = "1.5.4";
+  var VERSION = "1.5.6";
 
   // ---------- dates ----------
   function D(s) { var p = String(s).split("-"); return new Date(Date.UTC(+p[0], +p[1] - 1, +p[2])); }
@@ -813,6 +813,14 @@
   // lines: {kind: in|bill|spend|save|topup|remainder, name, amount, account, date, id}
   // a yearly cost adds {kind: "save", setAside: true, bill, name: "Set aside for …", amount, account, due} each pay
   // period until it's due, and {kind: "in", setAside: true, bill, name: "Saved up for …"} when it lands
+  function savingFlexible(db,p,date) {
+    var history=[]; try{history=JSON.parse(setting(db,p,"saving.flexHistory","[]"));}catch(e){}
+    if(!Array.isArray(history))history=[];
+    var old=setting(db,p,"saving.flexFrom","");
+    if(!history.length&&isIso(old))history=[{from:old,on:true}];
+    var result={from:"",on:false}; history.filter(function(x){return x&&isIso(x.from)&&x.from<=date;}).sort(function(a,b){return a.from<b.from?-1:a.from>b.from?1:0;}).forEach(function(x){result={from:x.from,on:x.on===true};});
+    return result;
+  }
   function planFor(db, p, per, noTopup) { return memo(db, "plan|" + p + "|" + per.start + "|" + per.next + "|" + (noTopup ? 1 : 0), function () { return plan0(db, p, per, noTopup); }, function () { return planFor(db, p, per, true); }); }
   function plan0(db, p, per, noTopup) {
     var lines = [], partner = partnerOf(db, p), main = mainOf(db, p), st = startOf(db, p), from = per.start, to = per.next;
@@ -980,6 +988,19 @@
         else if (left0 < -0.004) lines.push({kind: "bill", name: "Catch up " + accName(db, main), amount: round(-left0), account: main, id: "catchup", catchup: true, estimate: upcoming});
       }
     }
+    // Effective-dated adaptation never rewrites an earlier pay period or reverses a recorded allocation.
+    var adjustments = [], flexible = savingFlexible(db,p,per.start);
+    if (flexible.on && !per.opening) {
+      var deficit = round(lines.reduce(function (n, l) { return n + (l.kind === "in" ? -l.amount : l.amount); }, 0)), allocated = dict(), scheduledMoves = dict();
+      db.bills.forEach(function(b){if(b.person===p&&b.toAccount)occurrences(db,b,per.start,per.next).forEach(function(o){if(o.moveId)scheduledMoves[o.moveId]=true;});});
+      db.moves.forEach(function (m) { if (!m.dup && !scheduledMoves[m.id] && m.person === p && m.date >= per.start && m.date < per.next && m.from === main) allocated[m.to] = round((allocated[m.to] || 0) + m.amount); });
+      lines.slice().reverse().forEach(function (l) {
+        if (!(deficit > 0.004) || l.kind !== "save" || l.direct || l.setAside || l.remainder) return;
+        var floor = Math.min(l.amount, allocated[l.account] || 0); allocated[l.account] = Math.max(0, (allocated[l.account] || 0) - floor);
+        var cut = round(Math.min(deficit, Math.max(0, l.amount - floor)));
+        if (cut > 0.004) { l.requested = l.amount; l.amount = round(l.amount - cut); deficit = round(deficit - cut); adjustments.push({id:l.id, name:l.name, requested:l.requested, amount:l.amount, reduction:cut}); }
+      });
+    }
     lines.forEach(function (l) { if (l.kind === "save" && !l.setAside && potOk(l.account)) reserveOut[l.account] = round((reserveOut[l.account] || 0) + l.amount); });
     Object.keys(reserveOut).forEach(function (id) { if (!potOk(id) || !(reserveOut[id] > 0.004)) delete reserveOut[id]; });
     Object.keys(setOut).forEach(function (id) { if (!(setOut[id] > 0.004)) delete setOut[id]; });
@@ -992,6 +1013,7 @@
     var res = {period: per, lines: lines, totalIn: round(tin), totalOut: round(tout), remainder: Math.max(0, round(left)), shortfall: left < 0 ? round(-left) : 0, remainderBudget: remainder, opening: !!per.opening, reserveOut: reserveOut, setAside: setOut, setAsideShort: saShort, keptMain: est && bal[main] !== undefined ? round(Math.max(0, keepBud(main))) : 0, owe: round(owe || 0)};
     if (remainder) lines.push({kind: remainder.account && (db.byId[remainder.account] || {}).kind !== "main" && /saving|isa|lisa|pension/.test((db.byId[remainder.account] || {}).kind) ? "save" : "spend", name: remainder.name, amount: res.remainder, account: remainder.account || main, id: remainder.id, mode: "remainder", remainder: true});
     var sum = function (k) { var t = 0; lines.forEach(function (l) { if (l.kind === k) t += l.amount; }); return round(t); };
+    res.adjustments = adjustments;
     res.totals = {in: sum("in"), bills: sum("bill"), spend: sum("spend"), save: round(sum("save") + sum("topup"))};
     return res;
   }
@@ -1740,7 +1762,7 @@
     // Finish essential funding before suggesting saving, including pots that need their payday allocation.
     if (todo(db, p, date).some(function (it) { return it.type === "warn" || it.short || (it.type === "move" && !it.direct); })) return out;
     var targets = [];
-    if (cfg.emergency && +cfg.target > 0) targets.push({id: cfg.emergency, need: Math.max(0, +cfg.target - (bal[cfg.emergency] || 0)), name: "Build your emergency fund"});
+    if (cfg.emergency && cfg.emergency !== cfg.savings && +cfg.target > 0) targets.push({id: cfg.emergency, need: Math.max(0, +cfg.target - (bal[cfg.emergency] || 0)), name: "Build your emergency fund"});
     if (cfg.savings) targets.push({id: cfg.savings, need: Infinity, name: "Save what's spare"});
     var used = dict(); targets.forEach(function (t) { var a = db.byId[t.id]; if (used[t.id] || !a || a.owner !== p || a.id === main || !/^(pot|saving|isa)$/.test(a.kind)) return; used[t.id] = true; var amount = round(Math.min(free, t.need)); if (!(amount > 0.004)) return; free = round(free - amount); var key = "sweep:" + date + ":" + a.id; out.moves.push({key: key, keys: [{key: key, amount: amount}], type: "move", from: main, to: a.id, fromName: accName(db, main), toName: a.name, amount: amount, what: "Move " + money(amount) + " to " + a.name, why: t.name + ". Your bills, daily challenge, spending and " + money(out.buffer) + " Main buffer are kept first.", sweep: true}); });
     return out;
@@ -1768,7 +1790,7 @@
       // in: everything the plan has coming in (money carried over too, so the month adds up); fresh: new money in,
       // pay and money paid to you; saved: real saving (not money put by for a yearly bill), as the Money tab counts it
       var kt = kinds(pl.lines);
-      list.push({period: per, in: pl.totals.in, fresh: kt.fresh, bills: pl.totals.bills, spendPlan: pl.totals.spend, spent: round(spent), save: pl.totals.save, saved: kt.save, past: per.next <= date, current: per.start === cur.start});
+      list.push({period: per, in: pl.totals.in, fresh: kt.fresh, bills: pl.totals.bills, spendPlan: pl.totals.spend, spent: round(spent), save: pl.totals.save, saved: per.start <= date ? recordedSaving(db,p,per.start,minS(date,addDays(per.next,-1))) : kt.save, past: per.next <= date, current: per.start === cur.start});
       per = nextPeriod(db, p, per);
     }
     return list;
@@ -1853,12 +1875,24 @@
   // this one (the most recent n, oldest first). Money carried over from last month isn't new money in, and money put
   // by for a yearly bill isn't saving, as on the Money tab. The short first month is left out: it runs on what you
   // had when you started, so it has no saving of its own. [{period, fresh, saved, pct (null with nothing in), current}]
+  function recordedSaving(db,p,from,to) {
+    var ids=dict(), cfg=spareRules(db,p,to), chosen=dict();
+    if(cfg){chosen[cfg.savings]=true;chosen[cfg.emergency]=true;}
+    db.goals.forEach(function(g){if(String(g.owners||"").split(/[,\s]+/).indexOf(p)>=0)goalAccIds(g).forEach(function(id){chosen[id]=true;});});
+    accountsOf(db,p).forEach(function(a){if(savingKind(db,a.id)||chosen[a.id]&&!/^(main|credit)$/.test(a.kind)||db.bills.some(function(b){return b.person===p&&b.toAccount===a.id;})) ids[a.id]=true;});
+    var amount=0;
+    db.moves.forEach(function(m){if(m.dup||m.person!==p||m.date<from||m.date>to||/^lisa:(bonus|fee)/.test(m.key||""))return;if(ids[m.to]&&!ids[m.from])amount+=m.amount;if(ids[m.from]&&!ids[m.to])amount-=m.amount;});
+    db.transactions.forEach(function(x){if(x.person===p&&ids[x.account]&&x.date>=from&&x.date<=to&&!x.isBillPayment)amount-=x.amount;});
+    db.income.forEach(function(i){if(i.person===p&&ids[i.account])occurrences(db,i,from,addDays(to,1)).forEach(function(o){if(o.paid)amount+=o.amount;});});
+    return round(amount);
+  }
   function savingRates(db, p, date, n) {
     var per = periodAt(db, p, date), list = fullBefore(db, p, per, Math.max(0, (n || 6) - 1)).reverse(), st = startOf(db, p);
     if (!per.opening && per.start >= st) list.push(per);
     return list.map(function (pk) {
       var k = kinds(planFor(db, p, pk).lines);
-      return {period: pk, fresh: k.fresh, saved: k.save, pct: k.fresh > 0.004 ? Math.round(k.save / k.fresh * 100) : null, current: pk.start === per.start};
+      var actual=recordedSaving(db,p,pk.start,minS(date,addDays(pk.next,-1)));
+      return {period: pk, fresh: k.fresh, saved: actual, planned: k.save, pct: k.fresh > 0.004 ? Math.round(actual / k.fresh * 100) : null, current: pk.start === per.start};
     });
   }
 
@@ -1945,6 +1979,7 @@
       if (l.kind !== "save" || l.setAside || l.remainder || !mine(l.account)) return;
       var b = db.byId[l.id]; lines.push({kind: l.direct ? "income" : "saving", label: l.direct ? l.name : (b && db.budgets.indexOf(b) >= 0 ? b.name : l.name), amount: round(l.amount)});
     });
+    db.bills.forEach(function (b) { if (b.person === p && mine(b.toAccount)) occurrences(db, b, per.start, per.next).forEach(function (o) { lines.push({kind:"challenge", label:b.name, amount:o.amount, date:o.date, done:!!o.moveId || !!o.paid}); }); });
     var rb = pl.remainderBudget;
     if (rb && mine(rb.account || mainOf(db, p)) && pl.remainder > 0.004) {
       var R = pl.remainder, used = 0, part = function (kind, label, amt, extra) { amt = round(Math.min(amt, R - used)); if (!(amt > 0.004)) return; used = round(used + amt); lines.push(Object.assign({kind: kind, label: label, amount: amt}, extra || {})); };
@@ -1996,6 +2031,72 @@
     if (!out.reached && gs.due && gs.due > date && gs.target > 0) out.needed = round(left / (diff(date, gs.due) / 30.44));
     if (out.eta && gs.due) out.dueGap = diff(gs.due, out.eta);
     return out;
+  }
+  // A dated scenario, separate from actual balances. Full period commitments are reserved before
+  // saving a surplus; no interest, unspent-budget windfalls, possible sales or unconfirmed loans.
+  function goalForecast(db, p, goalId, date, deadline) {
+    var g = db.byId[goalId], actual = goals(db, p, date).filter(function (x) { return x.id === goalId; })[0];
+    if (!g || !actual || !isIso(deadline) || deadline < date || diff(date, deadline) > 730) return null;
+    var accs = goalAccIds(g), mine = function (a) { return accs.indexOf(a) >= 0 && (db.byId[a] || {}).owner === p; }, rows = [], warnings = [], total = actual.saved;
+    var cfg = spareRules(db, p, date), routed = !cfg || mine(cfg.savings), bufferNeed=cfg?Math.max(0,+cfg.buffer||0):0, emergencyNeed=cfg&&cfg.emergency?Math.max(0,(+cfg.target||0)-accountValue(db,cfg.emergency,date)):0;
+    if (cfg && !routed) warnings.push("Spare money goes to " + accName(db, cfg.savings) + ", outside this goal.");
+    if (String(g.owners || "").split(/[,\s]+/).filter(Boolean).length > 1) warnings.push("Only your future contributions are included.");
+    // Scheduled direct income, saving transfers and withdrawals have their own dates. Each bank
+    // move suppresses its corresponding scheduled transfer in flows(), so it cannot count twice.
+    flows(db, date, deadline).forEach(function (f) { if (mine(f.account)) rows.push({date:f.date, name:f.what, amount:f.amount, kind:"scheduled"}); });
+    var current = periodAt(db,p,date), currentPlan=planFor(db,p,current);
+    if(currentPlan.shortfall>0.004) { warnings.push("Current pay period is short; its remaining scheduled additions are excluded."); rows=rows.filter(function(r){return !(r.amount>0&&r.date<current.next);}); }
+    var per = nextPeriod(db, p, current), firstFuture=per.start, loops = 0;
+    while (per.start <= deadline && loops++ < 50) {
+      var pl = planFor(db, p, per), incoming = 0, outgoing = 0, ready = per.start, late = 0, contribution = 0;
+      pl.lines.forEach(function (l) {
+        if (l.remainder || l.id === "opening") return;
+        // Existing money earmarked in non-goal pots funds the next period once. Ignoring
+        // it would charge salary again for an already-funded credit statement or rent.
+        if (l.already || l.leftover) { if(per.start===firstFuture && !mine(l.account)) incoming+=l.amount; return; }
+        if (l.kind === "in") { incoming += l.amount; if (l.account === mainOf(db,p) && l.date > per.start) { late += l.amount; if (l.date > ready) ready = l.date; } }
+        else outgoing += l.amount;
+        if (l.kind === "save" && !l.direct && !l.setAside && mine(l.account)) contribution += l.amount;
+      });
+      if(per.start===firstFuture) unseenBills(db,p,date).forEach(function(r){outgoing+=r.amount;});
+      var gap = round(Math.max(0, outgoing - incoming));
+      if (gap > 0.004) { warnings.push(per.name + " is " + money(gap) + " short before savings cover; contributions are excluded."); rows = rows.filter(function (r) { return !(r.amount > 0 && r.kind === "scheduled" && r.date >= per.start && r.date < per.next); }); }
+      if (gap <= 0.004) {
+        var rb = pl.remainderBudget, useRules=cfg && per.start >= (cfg.replaceFrom || cfg.since), spare=Math.max(0,incoming-outgoing);
+        if(useRules) {
+          if(!cfg.repayments) pl.lines.forEach(function(l){if(l.kind==="in"&&l.loan)spare=Math.max(0,spare-l.amount);});
+          var hold=Math.min(spare,bufferNeed);bufferNeed=round(bufferNeed-hold);spare=round(spare-hold);
+          var emergency=Math.min(spare,emergencyNeed);emergencyNeed=round(emergencyNeed-emergency);spare=round(spare-emergency);
+          if(mine(cfg.emergency))contribution+=emergency;
+          if(mine(cfg.savings))contribution+=spare;
+        } else if(rb && mine(rb.account)) contribution+=spare;
+        // Already recorded future payday allocations are present in flows above.
+        db.moves.forEach(function(m){if(!m.dup&&m.person===p&&m.from===mainOf(db,p)&&mine(m.to)&&m.date>=per.start&&m.date<per.next&&/^pay:/.test(m.key||""))contribution-=m.amount;});
+        contribution = round(Math.max(0,contribution));
+        var initial = round(Math.max(0, contribution - late)), later = round(contribution - initial);
+        if (initial > 0.004) rows.push({date:per.start, name:"Funded saving plan", amount:initial, kind:"contribution"});
+        if (later > 0.004 && ready <= deadline) rows.push({date:ready, name:"Saving from later income", amount:later, kind:"surplus"});
+      }
+      var next = nextPeriod(db, p, per); if (next.start <= per.start) break; per = next;
+    }
+    rows.sort(function (a,b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : 0; });
+    rows.forEach(function (r) { total = round(total + r.amount); });
+    return {date:date, deadline:deadline, saved:actual.saved, projected:total, target:actual.target, gap:round(Math.max(0, actual.target - total)), rows:rows, warnings:warnings, routed:routed, onTrack:actual.target > 0 && total >= actual.target - 0.004};
+  }
+  function dataAudit(db, p, date) {
+    var issues = [], bankIds = dict(), per = periodAt(db, p, date), add = function (kind, text, id) { issues.push({kind:kind, text:text, id:id || ""}); };
+    db.transactions.forEach(function (x) {
+      if (x.person !== p || x.date > date) return;
+      if (x.bankId) { if (bankIds[x.bankId]) add("duplicate", "Two receipts have the same bank reference", x.id); bankIds[x.bankId] = x.id; }
+      if (x.review && x.date >= startOf(db, p)) add("review", (x.note || "Payment") + " needs checking", x.id);
+      if (x.budget && !db.byId[x.budget]) add("budget", (x.note || "Payment") + " refers to a missing budget", x.id);
+      if (x.refundOf && !db.transactions.some(function (a) { return a.id === x.refundOf; })) add("refund", "A refund refers to a missing purchase", x.id);
+    });
+    unseenBills(db, p, date).filter(function (r) { return r.date >= per.start; }).forEach(function (r) { add("bill", r.name + " · " + nice(r.date) + " · receipt not found", r.item || r.id); });
+    var pl = planFor(db, p, per);
+    if (pl.shortfall > 0.004) add("shortfall", "This period's plan exceeds its funding by " + money(pl.shortfall));
+    accountsOf(db, p).filter(function (a) { return /^(credit|isa|lisa)$/.test(a.kind); }).forEach(function (a) { var latest = db.valuations.filter(function (v) { return v.account === a.id && v.date <= date; }).sort(function (x,y) { return x.date < y.date ? 1 : -1; })[0]; if (!latest || diff(latest.date, date) > 31) add("balance", a.name + " needs a current balance", a.id); });
+    return {issues:issues, adjustments:pl.adjustments || [], period:per};
   }
   function accountValue(db, accId, date) { return round(balances(db, date)[accId] || 0); }
   function goals(db, p, date) {
@@ -2154,16 +2255,8 @@
         loanDue(db, l, lo, end).forEach(function (r) { if (l.lender === p) tin += r.amount; else addBill(l.id, "Pay " + person(db, l.lender).name + " back: " + l.name, r.amount); });
       });
     }
-    // saved: from each pay period that started in the year, less money taken back out of savings
-    var saved = 0, mineSaving = function (acc) { var a = db.byId[acc]; return !!a && a.owner === p && savingKind(db, acc); };
-    if (live) {
-      trackedBefore(db, p, end).forEach(function (pk) {
-        if (pk.start < lo) return;
-        planFor(db, p, pk).lines.forEach(function (l) { if ((l.kind === "save" || l.kind === "topup") && !l.setAside && mineSaving(l.account)) saved += l.amount; });
-      });
-      db.moves.forEach(function (m) { if (!m.dup && m.date >= lo && m.date <= until && !/^lisa:/.test(m.key || "") && mineSaving(m.from) && !mineSaving(m.to)) saved -= +m.amount || 0; });
-      db.transactions.forEach(function (x) { if (x.date >= lo && x.date <= until && mineSaving(x.account)) saved -= +x.amount || 0; });
-    }
+    // Saving actually recorded, including withdrawals; unperformed payday allocations are not assets.
+    var saved = live ? recordedSaving(db,p,lo,until) : 0;
     // spending by budget and by calendar month, and the days you spent nothing
     var spentBy = dict(), spentList = [], months = {}, spendDay = {}, byName = dict();
     db.budgets.forEach(function (b) { if (b.person === p) byName[String(b.name).toLowerCase()] = b; });
@@ -2276,10 +2369,11 @@
     if (share("cats", true)) out.tiles = t.tiles.map(function (x) { return {name: x.name, spent: x.spent, amount: x.amount, left: x.left, pct: x.pct, paceMark: x.paceMark, mode: x.mode}; });
     // Account observations are only shared with the existing full payment/balance permission.
     // A budget remainder is not evidence of that much money in the bank.
-    if (share("payments", false)) {
+    if (share("payments", false) || share("balance", false)) {
       var main = mainOf(db, p), v = db.valuations.filter(function (x) { return x.account === main && x.date <= date; }).sort(function (a, b) { return a.date < b.date ? 1 : a.date > b.date ? -1 : (+b.updated || 0) - (+a.updated || 0); })[0];
       if (v) out.mainBalance = {amount: round(v.amount), date: v.date};
     }
+    if (share("payments", false) || share("bills", false)) out.billDetails = t.plan.lines.filter(function (l) { return l.kind === "bill" && !l.catchup; }).map(function (l) { return {name:l.name, amount:l.amount, date:l.date || "", estimate:!!l.pool || !!l.setAside}; });
     // only how far each goal has got: not the balance of each account in it, or its notes
     if (share("goals", true)) out.goals = goals(db, p, date).filter(function (g) { return String((db.byId[g.id] || {}).owners || "").split(/[,\s]+/).length < 2; })
       .map(function (g) { return {id: g.id, name: g.name, kind: g.kind, target: g.target, saved: g.saved, pct: g.pct, due: g.due}; });
@@ -2309,7 +2403,7 @@
     periods: periods, periodAt: periodAt, prevPeriod: prevPeriod, nextPeriod: nextPeriod, planFor: planFor, payday: payday,
     budgetState: budgetState, balances: balances, flows: flows, todo: todo, between: between, today: today, coming: coming,
     calendar: calendar, pots: pots, monthView: monthView, year: year, kindOf: kindOf, newMoney: newMoney, kinds: kinds,
-    goalFlow: goalFlow, goalProgress: goalProgress, goalDirect: goalDirect, directItems: directItems, spareRules: spareRules, spareMoney: spareMoney,
+    savingFlexible: savingFlexible, recordedSaving: recordedSaving, dataAudit: dataAudit, goalForecast: goalForecast, savingFlexible: savingFlexible, recordedSaving: recordedSaving, dataAudit: dataAudit, goalForecast: goalForecast, goalFlow: goalFlow, goalProgress: goalProgress, goalDirect: goalDirect, directItems: directItems, spareRules: spareRules, spareMoney: spareMoney,
     spendWeek: spendWeek, noSpend: noSpend, savingRates: savingRates, forecast: forecast, goals: goals, lisa: lisa, checks: checks, netWorth: netWorth, loans: loans,
     itemStates: loanItemStates, loanPaid: loanPaid, yearly: yearly, yearReview: yearReview, taxYearStart: taxYearStart,
     summary: summary, shareOf: shareOf, myShare: myShare, owedAt: owedAt, amountAt: amountAt, setting: setting, partnerOf: partnerOf, mainOf: mainOf, fallbackOf: fallbackOf,
