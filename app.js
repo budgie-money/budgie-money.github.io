@@ -1,7 +1,7 @@
 /* Budgie app: screens, syncing and offline queue. The maths lives in engine.js. */
 (function () {
   "use strict";
-  var B = window.Budgie, TH = window.BudgieThemes, APP_VERSION = "1.4.22";
+  var B = window.Budgie, TH = window.BudgieThemes, APP_VERSION = "1.4.23";
   var $ = function (s) { return document.querySelector(s); };
   var esc = function (s) { return String(s === undefined || s === null ? "" : s).replace(/[&<>"']/g, function (c) { return {"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]; }); };
   // wiped: Budgie's copy at the old address has been wiped (it's moving across), so nothing is saved here again
@@ -216,10 +216,13 @@
     outs: ["Payments out", "Everything that goes out in this pay period: bills, regular payments, loan repayments and the payments you've made. Paid means you ticked it or your bank showed it going out. Not seen means its day has gone and your bank hasn't shown it yet. Tap one to change it, tick it or put it right."],
     pace: ["Paced week by week", "Budgets like Food are paced week by week, so a big shop at the start of a week isn't counted as over."],
     between: ["How it's worked out", "Shared bills are split by your rules and settled by month. Split payments count straight away. Money lent between you is paid back as each loan says."],
-    sheet: ["Where your pay goes", "This is your budget for one pay period, payday to payday: what comes in, the bills it pays, what you can spend and what you save. It's the same as your budget tab in the Google Sheet, worked out from the same rules."],
+    sheet: ["Where your pay goes", "This is your budget for one pay period, payday to payday: what comes in, the bills it pays, what you can spend and what you save. It's the same as your budget tab in the Google Sheet, worked out from the same rules. What's left over is carried into next month. If it says Short, more goes out than comes in."],
     bankmap: ["Which is which", "Tell Budgie which of its accounts each one is. Moves between them tick off your payday list by themselves."],
     modes: ["How budgets work", "Day to day builds up each day. Weekly is paced week by week, good for food shops. One-offs have no daily pace. Saving is moved on payday. Whatever is left gets what's left after everything else."],
     rate: ["Saving rate", "How much of what comes in each month is saved. Coming in is your pay and money paid to you, not money carried over from last month. Money put by for yearly bills isn't counted as saved. The month still going is the lighter bar."],
+    carry: ["Unspent on payday", "Keep it: what you don't spend stays in this budget's pot for next month, up to one month's worth. Let it go: on payday it counts as already in the pot, so less is moved in and the same amount more goes to whatever is left."],
+    changes: ["Changes coming", "A change counts from its date. Months before it keep what they had. Budgets are worked out a pay period at a time, so a change counts from the first pay period that is mostly after its date."],
+    direct: ["Straight to this goal", "When this is on, one-off money into your bank (with no budget) and what your partner pays back to you show up in To do, to move into this goal's first account as soon as it lands. Payday then leaves that money out of what's left, so it's never counted twice. It starts from the day you turn it on."],
     pots: ["Where this comes from", "Budgie works out what should be in each one from your rules and what you've logged. Tap one if your bank app shows something different, and tell Budgie what it says."]
   };
   function infoBtn(k) { return '<button type="button" class="info" data-a="info" data-v="' + k + '" aria-label="' + esc(INFO[k][0]) + '">' + icon("info", 18) + "</button>"; }
@@ -347,8 +350,10 @@
     var fn = SCREENS[S.view.s] || SCREENS.today, html = "";
     try { html = fn(S.view.p); } catch (e) { html = card('<h2>Something went wrong</h2><p class="muted small">' + esc(e && e.message) + '</p><button class="btn ghost sm" type="button" data-a="tab" data-v="today">Back to Today</button>'); console.error(e); }
     $("#main").innerHTML = (S.newVersion && !demoOn() ? '<button type="button" class="banner li" data-a="reload" style="padding:10px 14px;border:0"><span class="grow"><span class="what">A new version of Budgie is ready</span><span class="why">Tap to update. It takes a second.</span></span></button>' : "") + (demoOn() ? '<button type="button" class="banner demo li" data-a="demoinfo" style="padding:10px 14px;border:0;color:var(--accent-ink)"><span class="grow"><span class="what">Show and tell is on</span><span class="why" style="color:inherit;opacity:.9">Made-up people and money. Tap to switch person or turn it off.</span></span></button>' : "") + html;
+    // the first time on this phone: a short walkthrough (it comes first; the things to check follow)
+    if (S.view.s === "today" && !S.ui.tourShown && !sheetOpen() && S.lastSync && tourDue()) { S.ui.tourShown = true; setTimeout(function () { if (!sheetOpen() && S.view.s === "today" && tourDue()) { LS.set(tourKey(), true); S.ui.tourI = 0; tourSheet(); } else S.ui.tourShown = false; }, 500); }
     // once a day, until they're all confirmed, pop up the figures Budgie guessed
-    if (S.view.s === "today" && !S.ui.checkShown && !sheetOpen() && S.lastSync && LS.get("budgie.checkSeen", "") !== todayIso() && checkList().length) {
+    if (S.view.s === "today" && !S.ui.checkShown && !sheetOpen() && !tourDue() && S.lastSync && LS.get("budgie.checkSeen", "") !== todayIso() && checkList().length) {
       S.ui.checkShown = true; LS.set("budgie.checkSeen", todayIso()); setTimeout(function () { if (!sheetOpen() && S.view.s === "today") checksSheet(); }, 500);
     }
   }
@@ -380,8 +385,8 @@
     var heroNotes = [];
     if (t.period.opening) heroNotes.push("A short month: you started Budgie on " + esc(B.nice(B.startOf(d, p))) + ".");
     if (t.spare && t.spare.amount > 0.5) heroNotes.push(M(t.spare.amount) + " spare in your " + esc(B.accName(d, B.mainOf(d, p))) + " goes to your " + esc(t.spare.toName) + " on payday.");
-    // tapping it shows where your money is: each pot now, and where Budgie says it should be
-    html += '<button type="button" class="hero card" data-a="go" data-v="pots" style="display:block;width:100%;text-align:left"><div class="row"><span class="small" style="opacity:.92">You can spend today</span><span class="pill">' + pill + "</span></div>" +
+    // tapping it shows how it's worked out: the cash there, what's still to go out, and the days left
+    html += '<button type="button" class="hero card" data-a="herosheet" style="display:block;width:100%;text-align:left"><div class="row"><span class="small" style="opacity:.92">You can spend today</span><span class="pill">' + pill + "</span></div>" +
       '<div class="big">' + M(t.safe) + '</div><div class="small" style="opacity:.92">' + (spendNames.length ? "for " + esc(joinWords(spendNames)) : "") + "</div>" +
       (heroNotes.length ? '<div class="small" style="opacity:.92;margin-top:6px">' + heroNotes.join(" ") + "</div>" : "") +
       '<div class="line"><span>' + (daysTo === 0 ? "Payday is today" : "Payday in " + daysTo + " day" + (daysTo === 1 ? "" : "s") + " · " + esc(B.nice(t.nextPay))) + "</span><span class=\"num\">" + (t.nextPayAmount ? M(t.nextPayAmount) : "") + "</span></div></button>";
@@ -394,18 +399,21 @@
     // to do
     var items = t.todo, payItems = items.filter(function (x) { return x.payday; }), rest = items.filter(function (x) { return !x.payday; });
     last.todo = rest;
-    var rows = "";
+    var rowsA = [];
     var reN = reviewRows().length;
-    if (reN) rows += li(reN + " new payment" + (reN === 1 ? "" : "s") + " from " + esc(bankName()), "Check what " + (reN === 1 ? "it was" : "they were") + " for", "", "go", "review");
-    if (S.bank && S.bank.reapproveBy && B.diff(todayIso(), String(S.bank.reapproveBy).slice(0, 10)) <= 7) rows += li("Approve Budgie again in the Monzo app", "Monzo asks every 90 days. Do it by " + esc(B.nice(String(S.bank.reapproveBy).slice(0, 10))), "", "go", "bank");
-    if (payItems.length) rows += li("Sort your pay into " + esc(potWord(true)), payItems.some(function (x) { return x.waiting; }) ? "Waiting for your pay to arrive" : payItems.length + " " + esc(payItems.length === 1 ? potWord() : potWord(true)) + " still to move", "", "go", "payday");
+    if (reN) rowsA.push(li(reN + " new payment" + (reN === 1 ? "" : "s") + " from " + esc(bankName()), "Check what " + (reN === 1 ? "it was" : "they were") + " for", "", "go", "review"));
+    if (S.bank && S.bank.reapproveBy && B.diff(todayIso(), String(S.bank.reapproveBy).slice(0, 10)) <= 7) rowsA.push(li("Approve Budgie again in the Monzo app", "Monzo asks every 90 days. Do it by " + esc(B.nice(String(S.bank.reapproveBy).slice(0, 10))), "", "go", "bank"));
+    if (payItems.length) rowsA.push(li("Sort your pay into " + esc(potWord(true)), payItems.some(function (x) { return x.waiting; }) ? "Waiting for your pay to arrive" : payItems.length + " " + esc(payItems.length === 1 ? potWord() : potWord(true)) + " still to move", "", "go", "payday"));
     rest.forEach(function (it, i) {
       var right = num(it.type === "warn" ? "" : M(it.amount));
       var why = esc(MT(it.why)) + (it.short ? ' <span class="warn">Only ' + M(Math.max(0, it.amount - it.short)) + " is there right now.</span>" : "");
-      if (it.type === "warn") rows += '<div class="li"><span class="grow"><span class="what warn">' + esc(MT(it.what)) + '</span><span class="why">' + why + '</span></span><button type="button" class="btn ghost sm" data-a="tick" data-v="' + i + '">Got it</button></div>';
-      else if (it.info) rows += '<div class="li"><span class="grow"><span class="what">' + esc(MT(it.what)) + '</span><span class="why">' + why + '</span></span><button type="button" class="btn ghost sm" data-a="tick" data-v="' + i + '">I\'ve paid</button></div>';
-      else rows += '<label class="li" style="cursor:pointer"><input type="checkbox" class="tick" data-c="tick" data-v="' + i + '" aria-label="Done: ' + esc(MT(it.what)) + '"><span class="grow"><span class="what">' + esc(MT(it.what)) + '</span><span class="why">' + why + "</span></span>" + right + "</label>";
+      if (it.type === "warn") rowsA.push('<div class="li"><span class="grow"><span class="what warn">' + esc(MT(it.what)) + '</span><span class="why">' + why + '</span></span><button type="button" class="btn ghost sm" data-a="tick" data-v="' + i + '">Got it</button></div>');
+      else if (it.info) rowsA.push('<div class="li"><span class="grow"><span class="what">' + esc(MT(it.what)) + '</span><span class="why">' + why + '</span></span><button type="button" class="btn ghost sm" data-a="tick" data-v="' + i + '">I\'ve paid</button></div>');
+      else rowsA.push('<label class="li" style="cursor:pointer"><input type="checkbox" class="tick" data-c="tick" data-v="' + i + '" aria-label="Done: ' + esc(MT(it.what)) + '"><span class="grow"><span class="what">' + esc(MT(it.what)) + '</span><span class="why">' + why + "</span></span>" + right + "</label>");
     });
+    // three at a time: the rest are one tap away
+    var TODO_MAX = 3, moreN = Math.max(0, rowsA.length - TODO_MAX), rows = (S.ui.todoAll ? rowsA : rowsA.slice(0, TODO_MAX)).join("");
+    if (moreN) rows += '<button type="button" class="li tmore" data-a="todomore">' + '<span class="grow"><span class="what">' + (S.ui.todoAll ? "Show fewer" : "Show " + moreN + " more") + "</span></span>" + chev() + "</button>";
     var leftN = rest.length + (payItems.length ? 1 : 0) + (reN ? 1 : 0);
     html += card('<div class="row"><h2>To do</h2><span class="small muted">' + (leftN ? leftN + " left" : "") + "</span></div>" + (rows ? '<div class="list">' + rows + "</div>" : '<p class="muted" style="margin:8px 0 0">All done. Everything is where it should be.</p>'));
     // tiles
@@ -426,6 +434,47 @@
     if (now.slice(5) >= "04-06" && now.slice(5) <= "04-30") html += yearCard(taxYearStart(B.addDays(now, -40)), false);
     return html;
   };
+  // ----- Walkthrough
+  // Five short cards the first time someone opens Budgie on a phone (once per person per phone), and any time from More.
+  // Each is one sentence and a small picture made from the same pieces the screens use.
+  function tourKey() { return "budgie.tour." + me(); }
+  function tourDue() { return !!me() && !demoOn() && !LS.get(tourKey(), false); }
+  function tourCards() {
+    var q = partner(), qn = q ? shortName(person(q).name) : "", col = q === "sophie" || q === "sam" ? "#2F7D6D" : "#2E5E8C";
+    var cards = [
+      {t: "Today", s: "See what you can spend today, and a short list of what to do.",
+        m: '<div class="hero card" style="margin:0"><div class="small" style="opacity:.92">You can spend today</div><div class="big">£24.50</div><div class="small" style="opacity:.92">Payday in 9 days</div></div>'},
+      {t: "To do", s: "Tick things off as you do them, and Budgie keeps everything in step.",
+        m: '<div class="card" style="margin:0"><div class="list"><div class="li"><input type="checkbox" class="tick" tabindex="-1" disabled><span class="grow"><span class="what">Move £120 to your Bills pot</span></span></div><div class="li"><input type="checkbox" class="tick" tabindex="-1" checked disabled><span class="grow"><span class="what">Pay the water bill</span></span></div></div></div>'},
+      {t: "Money", s: "See your pay period: what comes in, what goes out and what's left.",
+        m: '<div class="card" style="margin:0"><div class="mstrip"><div class="mc"><div class="n">Money in</div><div class="v">£2,000</div></div><div class="mc"><div class="n">Going out</div><div class="v">£1,700</div></div><div class="mc"><div class="n">Left over</div><div class="v">£300</div></div></div>' + kindBar({in: 2000, bill: 900, spend: 600, save: 200}, "big") + "</div>"}
+    ];
+    if (q) cards.push({t: qn, s: "See how " + qn + " is getting on, and what you owe each other.",
+      m: '<div class="card" style="margin:0"><div style="display:flex;gap:12px;align-items:center"><span class="round avatar" style="background:' + col + ';color:#fff;width:40px;height:40px;border-radius:20px">' + esc((person(q).name || "?").charAt(0)) + '</span><div class="grow"><div style="font-weight:800">' + esc(qn) + ' is on track</div><div class="small muted">All square on shared bills</div></div></div></div>'});
+    cards.push({t: "Goals", s: "Watch your goals grow, and see the date you're on course for.",
+      m: '<div class="card" style="margin:0"><div class="row"><span class="what">Holiday</span><span class="num">60%</span></div><div style="margin:8px 0 6px">' + bar(60, null, "var(--k-save)") + '</div><div class="small muted">On course for Jun 2027</div></div>'});
+    return cards;
+  }
+  function tourSheet() {
+    var cs = tourCards(), i = Math.max(0, Math.min(cs.length - 1, S.ui.tourI || 0)), c = cs[i], last = i === cs.length - 1;
+    var dots = cs.map(function (x, k) { return "<i" + (k === i ? ' class="on"' : "") + "></i>"; }).join("");
+    openSheet("<h2>" + esc(c.t) + '</h2><div class="tourmock" aria-hidden="true">' + c.m + '</div><p class="tourtxt">' + esc(c.s) + '</p><div class="dots" role="img" aria-label="Step ' + (i + 1) + " of " + cs.length + '">' + dots + "</div>" +
+      (last ? '<button type="button" class="btn wide" data-a="tourskip">Got it</button>' : '<div class="two fit"><button type="button" class="btn ghost" data-a="tourskip">Skip</button><button type="button" class="btn" data-a="tournext">Next</button></div>'));
+  }
+  // how "You can spend today" is worked out, from the same figures: cash in the accounts the budgets spend from, what's
+  // still to go out before payday, and the days left. The lower of what the cash allows and what the budgets allow.
+  function heroSheet() {
+    var d = db(), p = me(), t = B.today(d, p, todayIso());
+    var r = function (what, why, v, cls) { return '<div class="li"><span class="grow"><span class="what">' + what + "</span>" + (why ? '<span class="why">' + why + "</span>" : "") + "</span>" + num(v, cls) + "</div>"; };
+    var days = t.daysLeft + (t.daysLeft === 1 ? " day" : " days");
+    openSheet("<h2>You can spend today</h2>" + '<div class="list" style="margin-top:6px">' +
+      r("Cash available", "In the accounts your budgets spend from", M(t.cash)) +
+      r("Still needed before payday", "Bills and payments due, and money put by", M(t.needed)) +
+      r("Free to spend", "Over " + days + " until payday", M(t.cashFree)) +
+      r("Your cash allows", "A day, over " + days, M(t.cashDay)) +
+      r("Your budgets allow", "A day, from what's left in each", M(t.budgetDay)) +
+      r("You can spend today", "The lower of the two", M(t.safe), "good") + '</div><div class="two fit" style="margin-top:12px"><button type="button" class="btn ghost" data-a="go" data-v="pots">Where it is</button><button type="button" class="btn" data-a="sheetclose">Got it</button></div>');
+  }
   // "food, fuel and fun", but "food, fuel, fun and spending" when the last one already has an "and" in it
   function joinWords(a) { if (a.length < 2) return a.join(""); var last = a[a.length - 1]; return a.slice(0, -1).join(", ") + (/ and /.test(last) ? ", " : " and ") + last; }
   // what a payment or money in is called: what you wrote, else what it was for
@@ -480,13 +529,16 @@
     var mv = B.monthView(d, p, per), pl = mv.plan, g = sortPlan(mv.lines), t = g.tot, end = B.addDays(per.next, -1);
     // the first month is short (it starts when you started Budgie): the dates say so
     var dates = per.opening ? "Started " + B.nice(st > per.start ? st : per.start) + " · ends " + B.nice(end) : B.nice(per.start) + " to " + B.nice(end);
-    html += '<div class="row" style="margin:14px 0 0;align-items:center"><button type="button" class="round" data-a="month" data-v="-1" aria-label="Earlier month">' + icon("back", 18) + '</button><div style="text-align:center"><div style="font-weight:800">' + esc(per.name) + '</div><div class="small muted">' + esc(dates) + '</div></div><button type="button" class="round" data-a="month" data-v="1" aria-label="Later month" style="transform:scaleX(-1)">' + icon("back", 18) + "</button></div>";
-    // at a glance: what comes in, and where it goes
-    var item = function (k, label, v) { return '<div class="k-' + k + '"><span class="kdot"></span><span>' + label + "<b>" + M(v) + "</b></span></div>"; };
-    html += card('<div class="row" style="align-items:center"><h2>Where it goes' + infoBtn("sheet") + "</h2></div>" + kindBar(t, "big") +
-      '<div class="legend">' + item("in", "Coming in", t.in) + item("bill", "Bills", t.bill) + item("spend", "Spending", t.spend) + item("save", "Saving", t.save) + "</div>" +
-      (t.left > 0.004 ? '<p class="small muted" style="margin:10px 0 0">' + M(t.left) + " left over, carried into next month.</p>" : "") +
-      (pl.shortfall > 0.004 ? '<p class="small bad" style="margin:10px 0 0;font-weight:700">' + M(pl.shortfall) + " short: more goes out than comes in.</p>" : ""));
+    html += '<div class="row" style="margin:14px 0 0;align-items:center"><button type="button" class="round" data-a="month" data-v="-1" aria-label="Earlier month">' + icon("back", 18) + '</button><div style="text-align:center"><div style="font-weight:800">' + esc(per.name) + infoBtn("sheet") + '</div><div class="small muted">' + esc(dates) + '</div></div><button type="button" class="round" data-a="month" data-v="1" aria-label="Later month" style="transform:scaleX(-1)">' + icon("back", 18) + "</button></div>";
+    // at a glance: what comes in, what goes out, and what's left (or short), then how the going out splits
+    var cell = function (label, v, cls) { return '<div class="mc"><div class="n">' + label + '</div><div class="v' + (cls ? " " + cls : "") + '">' + M0(v) + "</div></div>"; };
+    // "whatever is left" going into savings (a Cash ISA, say) is what's left over, not part of what goes out: the strip
+    // shows it as that, so it's never just £0 because the plan put everything somewhere
+    var remL = (pl.remainderBudget && pl.remainder > 0.004) ? mv.lines.filter(function (l) { return l.remainder && l.kind === "save"; })[0] : null, rem = remL ? B.round(pl.remainder) : 0;
+    var goes = B.round(t.bill + t.spend + t.save - rem), short = pl.shortfall > 0.004;
+    var key = function (k, label) { return '<div class="k-' + k + '"><span class="kdot"></span><span>' + label + "<b>" + M0(t[k]) + "</b></span></div>"; };
+    html += card('<div class="mstrip" role="group" aria-label="This pay period">' + cell("Money in", t.in) + cell("Going out", goes) + (short ? cell("Short", pl.shortfall, "bad") : cell(rem ? "Left to save" : "Left over", rem || Math.max(0, t.left))) + "</div>" + kindBar(t, "big") +
+      '<div class="legend3">' + key("bill", "Bills") + key("spend", "Spending") + key("save", "Saving") + "</div>");
     var row = function (l) {
       var right = num(M(l.amount)), why = "", tbl = l.kind === "in" ? (l.id === "opening" ? "" : (d.byId[l.id] && d.income.indexOf(d.byId[l.id]) >= 0 ? "income" : "transfers")) : l.kind === "bill" ? (l.transfer ? "transfers" : l.loan ? "loans" : "bills") : l.kind === "topup" || l.setAside ? "" : "budgets", name = l.name;
       if (l.kind === "spend" && l.spent !== undefined) {
@@ -511,7 +563,10 @@
       var ls = g.lines[k]; if (!ls.length && !extra) return "";
       return card('<div class="row" style="align-items:center"><span class="khead">' + kchip(k) + "<h2>" + title + "</h2></span>" + num(M(t[k])) + '</div><div class="list" style="margin-top:6px">' + ls.map(row).join("") + (extra || "") + "</div>");
     };
-    html += sec("in", "Coming in") + sec("bill", "Bills to pay") + outCard(d, p, per, now) + sec("spend", "What you can spend") + savedCard(d, p, per, g, now);
+    // what's budgeted for spending, and what's put by for yearly bills, sit with the payments out (they're money going out too)
+    var spendLs = g.lines.spend, putBy = g.lines.bill.filter(function (l) { return l.setAside; }), sub = function (title, tot, ls) { return ls.length ? '<div class="ghead"><span>' + title + "</span>" + num(M(tot)) + '</div><div class="list">' + ls.map(row).join("") + "</div>" : ""; };
+    var extra = sub("Budgets", t.spend, spendLs) + sub("Put by for yearly bills", B.round(putBy.reduce(function (a, l) { return a + l.amount; }, 0)), putBy);
+    html += sec("in", "Coming in") + outCard(d, p, per, now, extra) + potsCard(d, p, per, g, now) + goalsCard(d, p, now);
     return html;
   };
   // Payments out: everything that goes out in the pay period shown (bills, regular payments, loan repayments due and the
@@ -521,7 +576,7 @@
   var OUT_CAT = {home: "Home", subscription: "Subscription", phone: "Phone", car: "Car", health: "Health", work: "Work and fees", insurance: "Insurance", other: "Other"};
   function outSortGet() { var v = LS.get("budgie.outSort", "date"); return v === "amount" || v === "pot" ? v : "date"; }
   function bankSeen() { return (tables().transactions || []).some(function (x) { return x.person === me() && !x.deleted && isBankTx(x); }); }
-  function outCard(d, p, per, now) {
+  function outCard(d, p, per, now, extra) {
     var rows = B.outgoings(d, p, per, now), sort = outSortGet(), seen = bankSeen(), tot = 0;
     last.out = {};
     rows.forEach(function (r) {
@@ -550,28 +605,41 @@
     } else body = '<div class="list">' + rows.sort(sort === "amount" ? function (a, c) { return c.amount - a.amount || byDate(a, c); } : byDate).map(function (r) { return one(r, false); }).join("") + "</div>";
     var seg = function (v, label) { return '<button type="button" data-a="outsort" data-v="' + v + '" aria-pressed="' + (sort === v) + '">' + label + "</button>"; };
     return card('<div class="row" style="align-items:center"><span class="khead"><span class="kchip k-bill" aria-hidden="true">' + icon("out", 18) + "</span><h2>Payments out" + infoBtn("outs") + "</h2></span>" + num(M(B.round(tot))) + "</div>" +
-      (rows.length ? '<div class="seg" role="group" aria-label="Sort payments out" style="margin-top:10px">' + seg("date", "Date") + seg("amount", "Amount") + seg("pot", cap(potWord())) + "</div>" : "") + body);
+      (rows.length ? '<div class="seg" role="group" aria-label="Sort payments out" style="margin-top:10px">' + seg("date", "Date") + seg("amount", "Amount") + seg("pot", cap(potWord())) + "</div>" : "") + body + (extra || ""));
   }
-  // what's saved: each savings account (and any pot a saving goes into) with what it's worth, what goes in this month,
-  // and an Update for when the provider's app says something different
-  function savedCard(d, p, per, g, now) {
-    var date = per.next <= now ? B.addDays(per.next, -1) : now, bal = B.balances(d, date), into = {};
+  // Pots: each account and pot with what's in it, where Budgie says it should be once the To do is done (this pay period),
+  // what goes in this month, and an Update for when the bank's or provider's app says something different
+  function potsCard(d, p, per, g, now) {
+    var cur = per.start <= now && now < per.next, date = per.next <= now ? B.addDays(per.next, -1) : now, bal = B.balances(d, date), into = {};
     g.lines.save.forEach(function (l) { var a = l.account || B.mainOf(d, p); into[a] = (into[a] || 0) + l.amount; });
-    var accs = B.accountsOf(d, p).filter(function (a) { return /saving|isa|lisa|pension/.test(a.kind || "") || into[a.id] !== undefined; });
+    var pots = cur ? B.pots(d, p, now) : [], byPot = {}; pots.forEach(function (x) { byPot[x.id] = x; });
+    var accs = B.accountsOf(d, p).filter(function (a) { return byPot[a.id] || /saving|isa|lisa|pension/.test(a.kind || "") || into[a.id] !== undefined; });
     if (!accs.length) return "";
     var tot = 0, nextPl = null;
     var rows = accs.map(function (a) {
-      var v = bal[a.id] || 0;
+      var v = bal[a.id] || 0, x = byPot[a.id];
       if (a.kind === "lisa" && date === now) { var Mo = lisaModel(a); if (Mo.value) v = Mo.value(now); }
       tot += v;
-      var inn = B.round(into[a.id] || 0), why = "", rl = g.lines.save.filter(function (l) { return l.remainder && l.account === a.id; })[0];
-      if (inn > 0.004) why = "+" + M(inn) + " this month";
-      else if (rl && per.opening) { nextPl = nextPl || B.planFor(d, p, B.nextPeriod(d, p, per)); var nl = nextPl.lines.filter(function (x) { return x.remainder; })[0]; why = "Starts on payday" + (nl && nl.amount > 0.004 ? ": " + M(nl.amount) : ""); }
-      else if (rl) why = "Nothing left over for it this month";
-      else { var lv = d.valuations.filter(function (x) { return x.account === a.id && x.date <= date; }).map(function (x) { return x.date; }).sort().pop(); if (lv) why = "Checked " + esc(B.nice(lv)); }
-      return '<div class="li"><span class="grow"><span class="what">' + esc(a.name) + "</span>" + (why ? '<span class="why">' + why + "</span>" : "") + '</span><span class="valup">' + num(M(v)) + '<button type="button" class="linkbtn" data-a="potcheck" data-v="' + esc(a.id) + '" aria-label="Update ' + esc(a.name) + '">Update</button></span></div>';
+      var inn = B.round(into[a.id] || 0), bits = [], rl = g.lines.save.filter(function (l) { return l.remainder && l.account === a.id; })[0];
+      if (a.purpose) bits.push(esc(a.purpose));
+      if (x && x.fallback) bits.push("covers going over");
+      if (x && Math.abs(x.pending) > 0.004) bits.push('<span class="' + (x.pending > 0 ? "warn" : "muted") + '">Should be ' + M(x.should) + "</span>");
+      if (inn > 0.004) bits.push("+" + M(inn) + " this month");
+      else if (rl && per.opening) { nextPl = nextPl || B.planFor(d, p, B.nextPeriod(d, p, per)); var nl = nextPl.lines.filter(function (y) { return y.remainder; })[0]; bits.push("Starts on payday" + (nl && nl.amount > 0.004 ? ": " + M(nl.amount) : "")); }
+      else if (rl) bits.push("Nothing left over for it this month");
+      else if (!x) { var lv = d.valuations.filter(function (y) { return y.account === a.id && y.date <= date; }).map(function (y) { return y.date; }).sort().pop(); if (lv) bits.push("Checked " + esc(B.nice(lv))); }
+      return '<div class="li"><span class="grow"><span class="what">' + esc(a.name) + "</span>" + (bits.length ? '<span class="why">' + bits.join(" · ") + "</span>" : "") + '</span><span class="valup">' + num(M(v)) + '<button type="button" class="linkbtn" data-a="potcheck" data-v="' + esc(a.id) + '" aria-label="Update ' + esc(a.name) + '">Update</button></span></div>';
     }).join("");
-    return card('<div class="row" style="align-items:center"><span class="khead">' + kchip("save") + "<h2>What's saved</h2></span>" + num(M(tot)) + '</div><div class="list" style="margin-top:6px">' + rows + "</div>");
+    return card('<div class="row" style="align-items:center"><span class="khead">' + kchip("save") + "<h2>" + esc(cap(potWord(true))) + infoBtn("pots") + "</h2></span>" + num(M(tot)) + '</div><div class="list" style="margin-top:6px">' + rows + "</div>");
+  }
+  // Goals: how far each has got, and the date it's on course for; tap one to open it
+  function goalsCard(d, p, now) {
+    var gs = B.goals(d, p, now); if (!gs.length) return "";
+    var rows = gs.map(function (g) {
+      var pr = B.goalProgress(d, p, g.id, now), sub = pr && pr.reached ? "Reached" : pr && pr.eta ? "On course for " + monthYear(pr.eta) : g.due ? "By " + monthYear(String(g.due).slice(0, 10)) : "";
+      return '<button type="button" class="li" style="display:block" data-a="edit" data-v="goals:' + esc(g.id) + '"><div class="row" style="flex-wrap:wrap;row-gap:2px"><span class="what">' + esc(g.name) + "</span>" + num(M0(g.saved) + " of " + M0(g.target)) + '</div><div style="margin-top:6px">' + bar(g.pct, null, "var(--k-save)") + "</div>" + (sub ? '<div class="small muted" style="margin-top:4px">' + esc(sub) + "</div>" : "") + "</button>";
+    }).join("");
+    return card('<div class="row" style="align-items:center"><span class="khead">' + kchip("save") + "<h2>Goals</h2></span>" + '<button type="button" class="linkbtn" data-a="go" data-v="goals">See all</button></div><div class="list" style="margin-top:6px">' + rows + "</div>");
   }
   function yearView(d, p, now) {
     var ys = B.year(d, p, now).map(function (y) { return Object.assign({k: B.kinds(B.planFor(d, p, y.period).lines)}, y); }), cur = 0;
@@ -687,11 +755,7 @@
     html += '<h2 class="h2">Between you two' + infoBtn("between") + "</h2>" + card('<div class="row"><span style="font-weight:800;font-size:18px">' + line + "</span></div>" + loanLines +
       (mo && (mo.bills || mo.paidIn || mo.paidOut) ? '<div class="banner small">This month so far: shared bills ' + M(mo.bills) + ". " + (mo.theirShare ? esc(qp.name) + "'s share " + M(mo.theirShare) + ", paid " + M(mo.paidIn) + ". " : "") + (mo.myShare ? "Your share " + M(mo.myShare) + ", paid " + M(mo.paidOut) + "." : "") + "</div>" : "") +
       (bt.owedToMe > 0.004 ? '<button type="button" class="btn ghost sm" style="margin-top:10px" data-a="settle" data-v="in">' + esc(shortName(qp.name)) + " has paid me</button>" : bt.iOwe > 0.004 ? '<button type="button" class="btn ghost sm" style="margin-top:10px" data-a="settle" data-v="out">I\'ve paid ' + esc(shortName(qp.name)) + "</button>" : ""));
-    B.loans(d, p, now).forEach(function (l) {
-      if (l.left <= 0.004) return;
-      var next = l.plan[0];
-      html += card('<div class="row"><span style="font-weight:700">' + esc(l.name) + "</span>" + num(M(l.left) + " left") + '</div><div class="small muted">' + (l.lender === p ? esc(qp.name) + " pays you" : "You pay " + esc(qp.name)) + (next ? " " + M(next.amount) + " on " + esc(B.nice(next.date)) : "") + '</div><div style="margin-top:8px">' + bar(l.pct) + "</div>");
-    });
+    B.loans(d, p, now).forEach(function (l) { if (l.left > 0.004) html += loanCard(l, false); });
     var shared = d.bills.filter(function (b) { return b.split; });
     if (shared.length) html += card('<h2>Shared bills</h2><div class="list" style="margin-top:6px">' + shared.map(function (b) {
       // (an estimate the real bills count against: how far this bills month has got, and how the last one settled)
@@ -709,8 +773,8 @@
   SCREENS.more = function () {
     var items = [["payday", "pay", "Payday", "Sort your pay into " + potWord(true)], ["pots", "pot", cap(potWord(true)), "What should be where"], ["bills", "cal", "Bills", "Calendar and subscriptions"], ["goals", "target", "Goals", "House, car, holidays"],
       ["lisa", "lisa", "LISA tracker", "Balance, bonus, allowance"], ["house", "house", "House", "Deposit and mortgage"], ["networth", "scale", "Net worth", "Own minus owe"], ["debts", "debt", "Debts and IOUs", "Who owes what"],
-      ["insights", "spark", "Insights", "Trends and nudges"], ["gifts", "gift", "Gifts", "Christmas and birthdays"], ["settings", "gear", "Settings", "Bills, pay, budgets, themes"]];
-    return '<div class="more">' + items.map(function (x) { return '<button type="button" data-a="go" data-v="' + x[0] + '"><span class="ic">' + icon(x[1], 20) + '</span><span style="font-weight:700">' + esc(x[2]) + '</span><span class="tiny muted">' + esc(x[3]) + "</span></button>"; }).join("") + "</div>";
+      ["insights", "spark", "Insights", "Trends and nudges"], ["gifts", "gift", "Gifts", "Christmas and birthdays"], ["settings", "gear", "Settings", "Bills, pay, budgets, themes"], ["tour", "info", "How Budgie works", "A quick tour"]];
+    return '<div class="more">' + items.map(function (x) { return '<button type="button" data-a="' + (x[0] === "tour" ? "tour" : "go") + '" data-v="' + x[0] + '"><span class="ic">' + icon(x[1], 20) + '</span><span style="font-weight:700">' + esc(x[2]) + '</span><span class="tiny muted">' + esc(x[3]) + "</span></button>"; }).join("") + "</div>";
   };
 
   // ----- Payday
@@ -913,10 +977,25 @@
   var isPoolBill = function (id) { var b = db().byId[id]; return !!b && db().bills.indexOf(b) >= 0 && B.poolOn(db(), b); };
 
   // ----- Goals
-  function goalCard(g) {
-    var extra = "";
+  // a goal: how far it's got, the date it's on course for at the current pace, and where this pay period's money for it comes from
+  function monthsWord(days) { var m = Math.round(Math.abs(days) / 30.44); return m < 1 ? "a few weeks" : m === 1 ? "1 month" : m < 24 ? m + " months" : Math.round(m / 12 * 10) / 10 + " years"; }
+  function goalBody(g) {
+    var d = db(), p = me(), now = todayIso(), pr = B.goalProgress(d, p, g.id, now), fl = B.goalFlow(d, p, g.id, now), extra = "";
     if (g.kind === "emergency") { var ess = essentials(); if (ess) extra = '<div class="small muted">Three months of essentials would be about ' + M0(ess * 3) + ".</div>"; }
-    return '<button type="button" class="card li" style="display:block;text-align:left;padding:16px" data-a="edit" data-v="goals:' + esc(g.id) + '"><div class="row"><span style="font-weight:700">' + esc(g.name) + "</span>" + num(g.pct + "%") + '</div><div style="margin:8px 0 6px">' + bar(g.pct, null, "var(--k-save)") + '</div><div class="row small"><span class="num" style="font-weight:600">' + M0(g.saved) + " of " + M0(g.target) + '</span><span class="muted">' + (g.due ? "by " + esc(new Date(String(g.due).slice(0, 10) + "T12:00:00").toLocaleDateString("en-GB", {month: "short", year: "numeric"})) : "") + "</span></div>" + extra + "</button>";
+    var course = "";
+    if (pr) {
+      if (pr.reached) course = '<span class="good" style="font-weight:600">Reached</span>';
+      else if (pr.eta) course = "On course for " + esc(monthYear(pr.eta)) + " at " + M0(pr.perMonth) + " a month" + (pr.dueGap !== null ? (pr.dueGap <= 0 ? ", in time" : ", " + monthsWord(pr.dueGap) + " after your date") : "");
+      else if (g.target > 0) course = "No date yet: nothing is going in at the moment";
+      if (pr.needed !== null && pr.dueGap !== null && pr.dueGap > 0) course += '<br><span class="muted">Needs ' + M0(pr.needed) + " a month to be there by " + esc(monthYear(g.due)) + "</span>";
+    }
+    var joint = fl && String((d.byId[g.id] || {}).owners || "").split(/[,\s]+/).filter(Boolean).length > 1;
+    var flow = fl && fl.lines.length ? '<div class="row small" style="margin-top:10px;font-weight:600"><span>' + (joint ? "Your part this pay period" : "This pay period") + "</span>" + num(M0(fl.total) + " in") + "</div>" + fl.lines.map(function (l) { return '<div class="row tiny muted" style="padding-top:2px"><span>' + esc(l.label) + (l.names && l.names.length ? " (" + esc(l.names.join(", ")) + ")" : "") + (l.kind === "direct-repaid" || l.kind === "direct-oneoff" ? (l.done ? "" : " · to move") : "") + "</span><span>" + M(l.amount) + "</span></div>"; }).join("") : "";
+    return '<div class="row"><span style="font-weight:700">' + esc(g.name) + "</span>" + num(g.pct + "%") + '</div><div style="margin:8px 0 6px">' + bar(g.pct, null, "var(--k-save)") + '</div><div class="row small"><span class="num" style="font-weight:600">' + M0(g.saved) + " of " + M0(g.target) + '</span><span class="muted">' + (g.due ? "by " + esc(monthYear(String(g.due).slice(0, 10))) : "") + "</span></div>" +
+      (course ? '<div class="small" style="margin-top:6px">' + course + "</div>" : "") + extra + flow;
+  }
+  function goalCard(g) {
+    return '<button type="button" class="card li" style="display:block;text-align:left;padding:16px" data-a="edit" data-v="goals:' + esc(g.id) + '">' + goalBody(g) + "</button>";
   }
   function essentials() {
     var d = db(), p = me(), per = B.periodAt(d, p, todayIso()), pl = B.planFor(d, p, per), t = 0;
@@ -1078,14 +1157,7 @@
   // ----- Debts
   SCREENS.debts = function () {
     var d = db(), p = me(), now = todayIso(), html = "", ls = B.loans(d, p, now);
-    ls.forEach(function (l) {
-      var who = l.lender === p ? esc(person(l.borrower).name) + " owes you" : "You owe " + esc(person(l.lender).name);
-      // what it's made of, when the notes list it ("Dress £30; Shoes £20", or a line each)
-      var parts = l.notes.split(/\s*[;\n]\s*/).filter(Boolean);
-      html += '<button type="button" class="card li" style="display:block;text-align:left;padding:16px" data-a="edit" data-v="loans:' + esc(l.id) + '"><div class="row"><span style="font-weight:700">' + esc(l.name) + "</span>" + num(M(l.left)) + '</div><div class="small muted">' + who + " · " + M(l.paid) + " paid so far</div>" +
-        (parts.length ? '<div class="tiny muted" style="margin-top:4px">' + parts.map(esc).join("<br>") + "</div>" : "") + '<div style="margin:8px 0">' + bar(l.pct) + "</div>" +
-        l.plan.slice(0, 4).map(function (r) { return '<div class="row small" style="padding:4px 0"><span>' + esc(B.nice(r.date)) + "</span>" + num(M(r.amount)) + "</div>"; }).join("") + "</button>";
-    });
+    ls.forEach(function (l) { html += loanCard(l, true); });
     B.accountsOf(d, p).filter(function (a) { return a.kind === "credit"; }).forEach(function (a) { var v = B.balances(d, now)[a.id] || 0; html += card('<div class="row"><span style="font-weight:700">' + esc(a.name) + "</span>" + num(M(-v)) + '</div><div class="small muted">' + esc(a.purpose || "") + "</div>"); });
     return (html || '<p class="empty">No debts or IOUs. Nice.</p>') + '<button type="button" class="btn dash" data-a="new" data-v="loans">Add money owed</button>';
   };
@@ -1373,6 +1445,73 @@
     var fixed = txt.match(/([a-z]+)\s*=\s*([\d.]+)/i); if (fixed) return names(fixed[1].toLowerCase()) + " pays " + M(+fixed[2]) + ", the rest by the other";
     var parts = []; txt.replace(/([a-z]+)\s*:\s*([\d.]+)/gi, function (_, a, b) { parts.push(names(a.toLowerCase()) + " " + b); }); return parts.length ? parts.join(" : ") + " parts" : "Half each";
   }
+  // ----- dated changes: what a bill, pay, payment or budget will be from a date, listed and changed in one place
+  function changesComing() { var now = todayIso(); return (tables().amounts || []).filter(function (x) { return x.item === EDIT.id && !x.deleted && x.amount !== "" && x.amount !== undefined && x.amount !== null && !x.shares && x.start > now; }).sort(function (a, b) { return a.start < b.start ? -1 : 1; }); }
+  function changesBlock() {
+    var list = changesComing();
+    return (list.length ? '<div class="row" style="margin-top:14px"><span style="font-size:13px;font-weight:600;color:var(--muted)">Changes coming</span>' + infoBtn("changes") + '</div><div class="list">' + list.map(function (x) { return li(esc(B.nice(x.start)), "", num(M(x.amount)), "chgedit", x.id); }).join("") + "</div>" : "") +
+      '<button type="button" class="btn dash" data-a="chgnew">Change from a date</button>';
+  }
+  function chgSheet(id) {
+    var x = id ? changesComing().filter(function (c) { return c.id === id; })[0] : null, tomorrow = B.addDays(todayIso(), 1);
+    S.ui.chg = x ? x.id : "";
+    openSheet('<h2>Change from a date</h2><label class="f">From<input type="date" id="chgDate" min="' + tomorrow + '" value="' + esc(x ? x.start : "") + '"></label><label class="f">New amount<input type="text" inputmode="decimal" id="chgAmt" placeholder="£" value="' + esc(x ? x.amount : "") + '"></label>' +
+      '<button type="button" class="btn wide" style="margin-top:14px" data-a="chgsave">Save</button>' + (x ? '<button type="button" class="btn danger wide" style="margin-top:10px" data-a="chgdel">Remove this change</button>' : ""));
+  }
+
+  // ----- IOUs: what one is made of
+  // who the IOU is owed by, as the form or the engine says it (direction: "in" means your partner owes you)
+  function iouBorrower(direction) { var mine = direction === "out", q = person(partner()); return {mine: mine, name: mine ? "You" : shortName(q.name)}; }
+  // one item: its name and share, then the date, the full cost and how it is shared, then how much of it has been paid off
+  function itemRow(x, bw, act) {
+    var how = x.how === "half" ? "half " + M(x.share) : x.how === "all" ? "all " + (bw.mine ? "yours" : esc(bw.name) + "'s") : x.cost !== null && x.cost !== "" ? M(x.share) + " of it" : "";
+    var det = [x.date ? esc(B.nice(x.date)) : "", x.cost !== null && x.cost !== "" ? M(x.cost) : "", how].filter(Boolean).join(" · ");
+    var st = x.state === "paid" ? '<span class="why good">Paid off</span>' : x.state === "part" ? '<span class="why">' + M(x.left) + " of " + M(x.share) + " left</span>" : x.state === "credit" ? '<span class="why">Takes off ' + M(-x.share) + "</span>" : '<span class="why">Not started</span>';
+    var inner = '<span class="grow"><span class="what">' + esc(x.name || "Item") + "</span>" + (det ? '<span class="why">' + det + "</span>" : "") + st + "</span>" + num(M(x.share));
+    return act ? '<button type="button" class="li" data-a="' + act + '" data-v="' + esc(x.id) + '">' + inner + chev() + "</button>" : '<div class="li" style="padding:8px 0">' + inner + "</div>";
+  }
+  // an IOU as a card (Debts and Between you two): who owes whom, how much is left, what it's made of, what's next
+  function loanCard(l, full) {
+    var d = db(), p = me(), now = todayIso(), qp = person(l.lender === p ? l.borrower : l.lender), bw = {mine: l.borrower === p, name: shortName(person(l.borrower).name)};
+    var who = l.lender === p ? esc(qp.name) + " owes you" : "You owe " + esc(qp.name), next = l.plan[0];
+    var parts = l.items.length ? [] : l.notes.split(/\s*[;\n]\s*/).filter(Boolean);
+    return '<button type="button" class="card li" style="display:block;text-align:left;padding:16px" data-a="edit" data-v="loans:' + esc(l.id) + '"><div class="row"><span style="font-weight:700">' + esc(l.name) + "</span>" + num(M(l.left)) + '</div><div class="small muted">' +
+      (full ? who + " · " + M(l.paid) + " paid so far" : (l.lender === p ? esc(qp.name) + " pays you" : "You pay " + esc(qp.name)) + (next ? " " + M(next.amount) + " on " + esc(B.nice(next.date)) : "")) + "</div>" +
+      (parts.length ? '<div class="tiny muted" style="margin-top:4px">' + parts.map(esc).join("<br>") + "</div>" : "") + '<div style="margin:8px 0">' + bar(l.pct) + "</div>" +
+      (l.items.length ? '<div class="list">' + l.items.map(function (x) { return itemRow(x, bw); }).join("") + '</div><div class="row small" style="padding-top:8px;border-top:1px solid var(--line2);font-weight:700"><span>Total ' + M(l.amount) + '</span><span class="muted" style="font-weight:600">' + M(l.paid) + " of " + M(l.amount) + " paid back</span></div>" : "") +
+      (full ? l.plan.slice(0, 4).map(function (r) { return '<div class="row small" style="padding:4px 0"><span>' + esc(B.nice(r.date)) + "</span>" + num(M(r.amount)) + "</div>"; }).join("") : "") + "</button>";
+  }
+  // add, change or take off one item of the IOU being edited (kept in the draft until the IOU is saved)
+  function itemSheet(id, draft) {
+    var x = draft || null, bw = iouBorrower(EDIT.row.direction), its = EDIT.items;
+    if (!x) {
+      var old = id ? its.filter(function (i) { return i.id === id; })[0] : null;
+      if (old) x = {id: old.id, name: old.name, date: old.date || "", cost: old.cost === "" ? "" : String(old.cost), share: String(old.share), note: old.note || "", mode: B.itemStates([old], 0)[0].how};
+      // the first item of an IOU that has an amount already: it starts as that amount, under the IOU's name
+      else x = {id: "", name: its.length ? "" : EDIT.row.name || "", date: "", cost: "", share: !its.length && +EDIT.row.amount > 0 ? String(EDIT.row.amount) : "", note: "", mode: "custom"};
+    }
+    S.ui.item = x;
+    var cost = +String(x.cost).replace(/[£,\s]/g, "") || 0, shown = x.mode === "half" ? B.round(cost / 2) : x.mode === "all" ? B.round(cost) : null;
+    var owes = bw.mine ? "What you owe for it" : "What " + esc(bw.name) + " owes for it", seg = function (m, t) { return '<button type="button" data-a="itemmode" data-v="' + m + '" aria-pressed="' + (x.mode === m) + '">' + t + "</button>"; };
+    openSheet("<h2>" + (id || x.id ? "Change item" : "Add an item") + '</h2><label class="f">What it was<input type="text" id="liName" value="' + esc(x.name) + '"></label>' +
+      '<div class="two"><label class="f">Date (optional)<input type="date" id="liDate" value="' + esc(x.date) + '"></label><label class="f">Full cost (optional)<input type="text" inputmode="decimal" id="liCost" placeholder="£" value="' + esc(x.cost) + '"></label></div>' +
+      '<div class="seg fit" style="margin-top:14px" role="group" aria-label="How it is shared">' + seg("half", "Split half") + seg("all", bw.mine ? "All mine" : "All theirs") + seg("custom", "Custom") + "</div>" +
+      (shown === null ? '<label class="f">' + owes + '<input type="text" inputmode="decimal" id="liShare" placeholder="£, or -£ if it takes off" value="' + esc(x.share) + '"></label>' : '<div class="row" style="margin-top:12px"><span class="small muted">' + owes + '</span><span class="num" id="liPrev">' + M(shown) + "</span></div>") +
+      '<label class="f">Note (optional)<input type="text" id="liNote" value="' + esc(x.note) + '"></label>' +
+      '<button type="button" class="btn wide" style="margin-top:14px" data-a="itemsave">Save item</button>' + (id || x.id ? '<button type="button" class="btn danger wide" style="margin-top:10px" data-a="itemdel">Remove item</button>' : ""));
+  }
+  function itemRead() {
+    var x = S.ui.item || {}, g = function (i) { var el = $("#" + i); return el ? el.value : null; };
+    ["Name", "Date", "Cost", "Share", "Note"].forEach(function (k) { var v = g("li" + k); if (v !== null) x[k.toLowerCase()] = v; });
+    return x;
+  }
+  function loanItemsSave(loanId) {
+    EDIT.items.forEach(function (x) {
+      var was = EDIT.itemsOrig.filter(function (o) { return o.id === x.id; })[0];
+      if (!was || JSON.stringify(was) !== JSON.stringify(x)) put("loanItems", {id: x.id, loan: loanId, name: x.name, date: x.date || "", cost: x.cost === "" ? "" : x.cost, share: x.share, note: x.note || ""}, true);
+    });
+    EDIT.removed.forEach(function (id) { del("loanItems", id, true); });
+  }
   SCREENS.list = function (p) {
     var L = LISTS[p.table], rows = (db()[p.table] || []).filter(L.filter);
     S.view.p.title = L.title.replace("pots", potWord(true));
@@ -1383,12 +1522,12 @@
   var FORMS = {
     bills: {title: "Bill", fields: function () { return [{k: "name", t: "text", l: "Name"}, {k: "amount", t: "money", l: "Amount"}].concat(SCHED()).concat([{k: "account", t: "account", l: "Comes out of"}, {k: "category", t: "select", l: "Type", o: [["home", "Home and flat bills"], ["subscription", "Subscription"], ["phone", "Phone"], ["car", "Car"], ["health", "Health"], ["work", "Work and fees"], ["insurance", "Insurance"], ["other", "Other"]]}, {k: "split", t: "split", l: "Shared with your partner?"}, {k: "variable", t: "check", l: "The amount changes each time (like energy)"}, {k: "pool", t: "pool"}, {k: "setAside", t: "setaside"}, {k: "notes", t: "text", l: "Notes"}]); }, owner: "person"},
     income: {title: "Money coming in", fields: function () { return [{k: "name", t: "text", l: "Name"}, {k: "amount", t: "money", l: "Amount (after tax)"}].concat(SCHED()).concat([{k: "account", t: "account", l: "Goes into"}, {k: "isPay", t: "check", l: "This is my pay (it sets my pay periods)"}, {k: "notes", t: "text", l: "Notes"}]); }, owner: "person"},
-    budgets: {title: "Budget", fields: function () { return [{k: "name", t: "text", l: "Name"}, {k: "amount", t: "money", l: "Amount each pay period (leave empty for whatever is left)"}, {k: "mode", t: "select", l: "How it works", info: "modes", o: [["daily", "Day to day"], ["weekly", "Weekly (food shops)"], ["oneoff", "One-offs"], ["saving", "Saving on payday"], ["remainder", "Whatever is left"]]}, {k: "account", t: "account", l: "Kept in", all: true}, {k: "carry", t: "check", l: "Carry anything unspent into next month"}, {k: "start", t: "date", l: "Starts (optional)"}, {k: "end", t: "date", l: "Ends (optional)"}]; }, owner: "person"},
+    budgets: {title: "Budget", fields: function () { return [{k: "name", t: "text", l: "Name"}, {k: "amount", t: "money", l: "Amount each pay period (leave empty for whatever is left)"}, {k: "mode", t: "select", l: "How it works", info: "modes", o: [["daily", "Day to day"], ["weekly", "Weekly (food shops)"], ["oneoff", "One-offs"], ["saving", "Saving on payday"], ["remainder", "Whatever is left"]]}, {k: "account", t: "account", l: "Kept in", all: true}, {k: "carry", t: "unspent"}, {k: "start", t: "date", l: "Starts (optional)"}, {k: "end", t: "date", l: "Ends (optional)"}]; }, owner: "person"},
     accounts: {title: "Account", fields: function () { return [{k: "name", t: "text", l: "Name"}, {k: "kind", t: "select", l: "Kind", o: [["main", "Main account"], ["pot", "Pot or Space"], ["saving", "Savings pot"], ["isa", "ISA"], ["lisa", "Lifetime ISA"], ["pension", "Pension"], ["credit", "Credit or overdraft"]]}, {k: "purpose", t: "text", l: "What it's for"}, {k: "fallback", t: "check", l: "Covers going over budget (only one should)"}, {k: "order", t: "number", l: "Order on screen"}]; }, owner: "owner"},
-    goals: {title: "Goal", fields: function () { return [{k: "name", t: "text", l: "Name"}, {k: "target", t: "money", l: "Target"}, {k: "due", t: "date", l: "Target date (optional)"}, {k: "kind", t: "select", l: "Kind", o: [["savings", "Saving for something"], ["house", "House deposit"], ["emergency", "Emergency fund"], ["car", "Car"], ["holiday", "Holiday"], ["other", "Other"]]}, {k: "accounts", t: "accounts", l: "Which accounts count towards it"}, {k: "extra", t: "money", l: "Plus money kept elsewhere (optional)"}, {k: "owners", t: "owners", l: "Whose goal"}, {k: "price", t: "money", l: "House price you're aiming for (house goals)"}, {k: "notes", t: "text", l: "Notes"}]; }, owner: "owners"},
+    goals: {title: "Goal", fields: function () { return [{k: "name", t: "text", l: "Name"}, {k: "target", t: "money", l: "Target"}, {k: "due", t: "date", l: "Target date (optional)"}, {k: "kind", t: "select", l: "Kind", o: [["savings", "Saving for something"], ["house", "House deposit"], ["emergency", "Emergency fund"], ["car", "Car"], ["holiday", "Holiday"], ["other", "Other"]]}, {k: "accounts", t: "accounts", l: "Which accounts count towards it"}, {k: "extra", t: "money", l: "Plus money kept elsewhere (optional)"}, {k: "owners", t: "owners", l: "Whose goal"}, {k: "price", t: "money", l: "House price you're aiming for (house goals)"}, {k: "directOn", t: "directgoal"}, {k: "notes", t: "text", l: "Notes"}]; }, owner: "owners"},
     splits: {title: "Split", fields: function () { return [{k: "name", t: "text", l: "Name (for example Flat bills)"}, {k: "shares", t: "shares", l: "How it's shared"}]; }, owner: null},
     transfers: {title: "Regular payment", fields: function () { return [{k: "name", t: "text", l: "Name (for example Rent share)"}, {k: "amount", t: "money", l: "Amount"}].concat(SCHED()).concat([{k: "fromAccount", t: "account", l: "From your"}, {k: "toAccount", t: "account", l: "Into their", owner: partner()}, {k: "notes", t: "text", l: "Notes"}]); }, owner: "from"},
-    loans: {title: "Money owed", fields: function () { return [{k: "name", t: "text", l: "What for"}, {k: "amount", t: "money", l: "Total"}, {k: "direction", t: "select", l: "Who owes who", o: [["in", shortName(person(partner()).name) + " owes me"], ["out", "I owe " + shortName(person(partner()).name)]]}, {k: "date", t: "date", l: "Date"}, {k: "account", t: "account", l: "Paid from (optional)", optional: true}, {k: "repay", t: "money", l: "Paid back each month"}, {k: "repayFrom", t: "date", l: "First repayment"}, {k: "repayDay", t: "number", l: "Day of the month"}, {k: "notes", t: "text", l: "Notes"}]; }, owner: "loan"},
+    loans: {title: "Money owed", fields: function () { return [{k: "name", t: "text", l: "What for"}, {k: "amount", t: "loanitems", l: "Total"}, {k: "direction", t: "select", l: "Who owes who", o: [["in", shortName(person(partner()).name) + " owes me"], ["out", "I owe " + shortName(person(partner()).name)]]}, {k: "date", t: "date", l: "Date"}, {k: "account", t: "account", l: "Paid from (optional)", optional: true}, {k: "repay", t: "money", l: "Paid back each month"}, {k: "repayFrom", t: "date", l: "First repayment"}, {k: "repayDay", t: "number", l: "Day of the month"}, {k: "notes", t: "text", l: "Notes"}]; }, owner: "loan"},
     gifts: {title: "Gift", fields: function () { return [{k: "name", t: "text", l: "Who for"}, {k: "idea", t: "text", l: "Idea"}, {k: "occasion", t: "text", l: "Occasion (for example Christmas)"}, {k: "date", t: "date", l: "When"}, {k: "limit", t: "money", l: "Spend up to"}, {k: "bought", t: "check", l: "Bought"}, {k: "cost", t: "money", l: "What it cost"}, {k: "notes", t: "text", l: "Notes"}]; }, owner: "person"}
   };
   var EDIT = {};
@@ -1401,15 +1540,24 @@
     if (table === "splits" && id) row.shares = B.sharesAt(db(), id, todayIso());
     if (id && !canEditRow(table, row)) { toast("That belongs to " + (person(row.person || row.from || row.owner).name || "your partner") + ", so only they can change it"); return; }
     if (table === "loans" && row.id) row.direction = row.lender === me() ? "in" : "out";
+    // what an IOU is made of is edited as a draft and saved with it
+    var iou = table === "loans" && id ? B.loans(db(), me(), todayIso()).filter(function (l) { return l.id === id; })[0] : null;
+    if (iou) row.amount = iou.amount;
+    if (table === "goals" && id) row.directOn = !!B.parseDate(getSetting("goal.direct." + id, ""));
     // show what it costs today, which may come from a dated price change rather than the first amount
     var nowAmt = null;
     if (id && DATED.test(table) && row.amount !== "" && row.amount !== undefined) { var live = db().byId[id]; nowAmt = live ? B.amountAt(db(), live, todayIso()) : +row.amount; row.amount = nowAmt; }
     EDIT = {table: table, id: id, row: row, orig: JSON.parse(JSON.stringify(row)), nowAmt: nowAmt}; S.ui.onTouched = false;
+    if (table === "loans") {
+      EDIT.items = iou ? iou.items.map(function (x) { return {id: x.id, name: x.name, date: x.date, cost: x.cost === null ? "" : x.cost, share: x.share, note: x.note}; }) : [];
+      EDIT.itemsOrig = JSON.parse(JSON.stringify(EDIT.items)); EDIT.paid = iou ? iou.paid : 0; EDIT.removed = [];
+    }
     go("edit", {title: (id ? "Change " : "New ") + FORMS[table].title.toLowerCase()});
   }
   SCREENS.edit = function () {
     var F = FORMS[EDIT.table], r = EDIT.row, html = "";
-    F.fields().forEach(function (f) { html += field(f, r); });
+    if (EDIT.table === "goals" && EDIT.id) { var gg = B.goals(db(), me(), todayIso()).filter(function (x) { return x.id === EDIT.id; })[0]; if (gg) html += '<div style="padding-bottom:6px;border-bottom:1px solid var(--line2);margin-bottom:4px">' + goalBody(gg) + "</div>"; }
+    F.fields().forEach(function (f) { html += field(f, r); if (f.k === "amount" && EDIT.id && DATED.test(EDIT.table) && !(EDIT.table === "budgets" && r.mode === "remainder")) html += changesBlock(); });
     var canStop = EDIT.id && /bills|income|transfers|budgets/.test(EDIT.table);
     html += '<button type="button" class="btn wide" style="margin-top:18px" data-a="editsave">Save</button>';
     if (EDIT.id) html += '<div class="two fit" style="margin-top:10px">' + (canStop ? '<button type="button" class="btn line" data-a="editstop">' + (EDIT.table === "budgets" ? "Stop at next payday" : "Stop from today") + "</button>" : "") + '<button type="button" class="btn danger" data-a="editdelete">Delete</button></div>';
@@ -1423,6 +1571,21 @@
       case "number": return input("number", ' inputmode="numeric"');
       case "money": return input("text", ' inputmode="decimal" placeholder="£"');
       case "date": return input("date");
+      case "directgoal":
+        // only when one of the goal's accounts is yours and isn't your main account (that's where it would be sent)
+        var mineAcc = String(r.accounts || "").split(/[,\s]+/).some(function (id) { var a = db().byId[id]; return a && a.owner === me() && a.kind !== "main" && a.kind !== "credit"; });
+        if (!mineAcc) return "";
+        return '<label class="check"><input type="checkbox" data-f="directOn"' + (v === true ? " checked" : "") + ">Send one-off money and repayments here straight away" + "</label>" + '<div style="margin:-6px 0 0 36px">' + infoBtn("direct") + "</div>";
+      case "unspent":
+        // only for budgets that can have something left: day to day and weekly. Where it goes is the "whatever is left" budget
+        if (!/^(daily|weekly)$/.test(r.mode || "daily")) return "";
+        var rem = B.budgetsIn(db(), me(), B.periodAt(db(), me(), todayIso())).filter(function (b) { return b.person === me() && b.mode === "remainder"; })[0], keeps = v === true || /^true$/i.test(String(v));
+        return '<label class="f">Unspent on payday' + infoBtn("carry") + '<select data-f="carry"><option value="true"' + (keeps ? " selected" : "") + '>Keep it for next month</option><option value="false"' + (keeps ? "" : " selected") + ">Let it go to " + esc(rem ? budName(rem) : "what\'s left") + "</option></select></label>";
+      case "loanitems":
+        var its = EDIT.items || [], sts = B.itemStates(its, EDIT.paid || 0), bw = iouBorrower(r.direction), tot = B.round(its.reduce(function (t, x) { return t + (+x.share || 0); }, 0));
+        return (sts.length ? '<div class="f" style="font-size:13px;font-weight:600;color:var(--muted);margin-top:12px">What it\'s made of</div><div class="list">' + sts.map(function (x) { return itemRow(x, bw, "itemedit"); }).join("") + "</div>" : "") +
+          (sts.length ? '<div class="row" style="margin-top:8px;padding-top:10px;border-top:1px solid var(--line2);font-weight:800"><span>Total</span><span class="num" id="iouTotal">' + M(tot) + "</span></div>" : input("text", ' inputmode="decimal" placeholder="£"')) +
+          '<button type="button" class="btn dash" data-a="itemnew">Add an item</button>';
       case "pool":
         // an estimate the real bills count against (the flat bills): settled up each bills month, which starts on the day
         // chosen. Turned on (or the day changed), it counts from the bills month going now: never back over months paid
@@ -1481,6 +1644,7 @@
     Object.keys(multi).forEach(function (k) { r[k] = multi[k].join(", "); });
     var sh = root.querySelector('[data-sh="mode"]');
     if (sh) { var fixed = sh.value === "fixed", bits = []; root.querySelectorAll("[data-sh]").forEach(function (el) { if (el.dataset.sh !== "mode" && el.value.trim()) bits.push(el.dataset.sh + (fixed ? "=" : ":") + el.value.trim().replace(/[£,]/g, "")); }); r.shares = bits.join(", "); }
+    if (EDIT.table === "budgets" && r.carry !== undefined) r.carry = r.carry === true || r.carry === "true";
     ["amount", "target", "extra", "limit", "cost", "repay", "price"].forEach(function (k) { if (r[k] !== undefined && r[k] !== "") r[k] = B.round(+String(r[k]).replace(/[£,\s]/g, "") || 0); });
     return r;
   }
@@ -1511,10 +1675,16 @@
       openSheet('<h2>From when?</h2><p class="muted">From today, earlier months keep the split they had. If it was a mistake, it\'s corrected ' + (curS ? "from " + esc(B.nice(curS.start)) : "for every month") + '.</p><button type="button" class="btn wide" data-a="amtwhen" data-v="today">From today</button><button type="button" class="btn ghost wide" style="margin-top:10px" data-a="amtwhen" data-v="always">It was a mistake</button>');
       return;
     }
+    if (t === "goals") {
+      var dKey = "goal.direct." + r.id, dNow = !!B.parseDate(getSetting(dKey, ""));
+      if (r.directOn && !dNow) setting(dKey, now); else if (!r.directOn && dNow) setting(dKey, "off");
+      delete r.directOn;
+    }
     if (F.owner === "person") r.person = r.person || me();
     if (F.owner === "owner") r.owner = r.owner || me();
     if (F.owner === "owners") r.owners = r.owners || me();
     if (F.owner === "from" && !EDIT.id) { r.from = me(); r.to = partner(); }
+    if (t === "loans" && EDIT.items.length) r.amount = B.round(EDIT.items.reduce(function (a, x) { return a + (+x.share || 0); }, 0));
     if (t === "loans") { if (r.direction === "out") { r.lender = partner(); r.borrower = me(); } else { r.lender = me(); r.borrower = partner(); } delete r.direction; if (r.account && (db().byId[r.account] || {}).owner !== r.lender) r.account = ""; }
     if (/bills|income|transfers/.test(t) && !r.start) r.start = now;
     if (/bills|income|transfers/.test(t) && r.unit === "month" && (!r.on || (!EDIT.id && !S.ui.onTouched))) r.on = String(+r.start.slice(8, 10));
@@ -1534,7 +1704,7 @@
         else if (current) put("amounts", Object.assign({}, current, {amount: newAmt}), true);
         else r.amount = newAmt;
       }
-      put(t, r, true); markChecked(r.id); toast("Saved" + (fromToday ? ": the new amount counts from today" : "")); leave();
+      put(t, r, true); if (t === "loans") loanItemsSave(r.id); markChecked(r.id); toast("Saved" + (fromToday ? ": the new amount counts from today" : "")); leave();
     };
     if (amountChanged) {
       openSheet('<h2>From when?</h2><p class="muted">You changed it from ' + M(was) + " to " + M(r.amount) + ". From today, earlier months keep " + M(was) + ". If " + M(was) + " was a mistake, it\'s corrected " + (current ? "from " + esc(B.nice(current.start)) : "for every month") + '.</p><button type="button" class="btn wide" data-a="amtwhen" data-v="today">From today</button><button type="button" class="btn ghost wide" style="margin-top:10px" data-a="amtwhen" data-v="always">It was a mistake</button>');
@@ -1642,6 +1812,11 @@
     connect: function () { var v = ($("#connectLink") || {}).value || ""; connectFrom(v); },
     connectswitch: function () { closeSheet(); S.ui.connectOk = true; connectFrom(S.ui.pendingLink || ""); },
     moneyview: function (v) { S.ui.money = v; render(); }, moneyjump: function (v) { S.ui.money = "month"; S.ui.monthOff = +v || 0; render(); window.scrollTo(0, 0); }, month: function (v) { S.ui.monthOff += +v; render(); }, cal: function (v) { S.ui.calOff += +v; render(); },
+    herosheet: function () { heroSheet(); },
+    tour: function () { S.ui.tourI = 0; tourSheet(); },
+    tournext: function () { S.ui.tourI = (S.ui.tourI || 0) + 1; if (S.ui.tourI >= tourCards().length) closeSheet(); else tourSheet(); },
+    tourskip: function () { closeSheet(); },
+    todomore: function () { S.ui.todoAll = !S.ui.todoAll; render(); },
     outsort: function (v) { LS.set("budgie.outSort", v === "amount" || v === "pot" ? v : "date"); render(); },
     outrow: function (v) {
       var r = (last.out || {})[v], d = db(); if (!r) return;
@@ -1738,6 +1913,37 @@
     lisapaidsave: function () { var raw = ($("#lisaPaid") || {}).value || "", a = +String(raw).replace(/[£,\s]/g, ""); if (raw === "" || isNaN(a)) return; setting("lisa.paidBefore." + S.ui.lisaAcc, B.round(a)); markChecked("lisapaid-" + S.ui.lisaAcc); closeSheet(); toast("Saved"); render(); },
     edit: function (v) { var k = v.split(":"); openEditor(k[0], k[1]); }, "new": function (v) { openEditor(v, null); },
     editsave: function () { saveEditor(); },
+    chgnew: function () { chgSheet(""); }, chgedit: function (v) { chgSheet(v); },
+    chgsave: function () {
+      var d = ($("#chgDate") || {}).value, raw = String(($("#chgAmt") || {}).value || "").replace(/[£,\s]/g, ""), a = +raw;
+      if (!B.isIso(d) || d <= todayIso()) { toast("Pick a date after today. To change it from today, change the amount above."); return; }
+      if (raw === "" || isNaN(a) || a < 0) { toast("Type the new amount"); return; }
+      // one change a day: a second on the same day replaces the first
+      var same = changesComing().filter(function (c) { return c.start === d && c.id !== S.ui.chg; })[0], id = S.ui.chg || (same && same.id) || newId("amt");
+      if (same && S.ui.chg) del("amounts", same.id, true);
+      put("amounts", {id: id, item: EDIT.id, start: d, amount: B.round(a)}, true); closeSheet(); toast("Saved: " + M(a) + " from " + B.nice(d)); render();
+    },
+    chgdel: function () { if (S.ui.chg) del("amounts", S.ui.chg, true); closeSheet(); toast("Change removed"); render(); },
+    itemnew: function () { itemSheet(""); }, itemedit: function (v) { itemSheet(v); },
+    itemmode: function (v) { var x = itemRead(); x.mode = v; itemSheet(x.id, x); },
+    itemsave: function () {
+      var x = itemRead(), num2 = function (v) { var n = +String(v).replace(/[£,\s]/g, ""); return isNaN(n) ? NaN : n; };
+      if (!String(x.name || "").trim()) { toast("Say what it was first"); return; }
+      var cost = String(x.cost).trim() === "" ? "" : num2(x.cost); if (cost !== "" && (isNaN(cost) || cost < 0)) { toast("Check the full cost"); return; }
+      var share;
+      if (x.mode === "half" || x.mode === "all") { if (cost === "" || !(cost > 0)) { toast("Type the full cost first"); return; } share = x.mode === "half" ? B.round(cost / 2) : B.round(cost); }
+      else { share = String(x.share).trim() === "" ? NaN : num2(x.share); if (isNaN(share)) { toast("Type what is owed for it"); return; } share = B.round(share); }
+      var row = {id: x.id || newId("li"), name: String(x.name).trim(), date: B.isIso(x.date) ? x.date : "", cost: cost === "" ? "" : B.round(cost), share: share, note: String(x.note || "").trim()}, at = EDIT.items.findIndex(function (i) { return i.id === row.id; });
+      if (at >= 0) EDIT.items[at] = row; else EDIT.items.push(row);
+      closeSheet(); render();
+    },
+    itemdel: function () {
+      var x = S.ui.item || {}, at = EDIT.items.findIndex(function (i) { return i.id === x.id; }); if (at < 0) { closeSheet(); return; }
+      // the last one taken off leaves the IOU as the total it was, to type over
+      if (EDIT.items.length === 1) EDIT.row.amount = B.round(+EDIT.items[0].share || 0);
+      if (EDIT.itemsOrig.some(function (o) { return o.id === x.id; })) EDIT.removed.push(x.id);
+      EDIT.items.splice(at, 1); closeSheet(); render();
+    },
     amtwhen: function (v) { if (S.ui.amtFinish) S.ui.amtFinish(v === "today"); },
     editstop: function () {
       var stored = (tables()[EDIT.table] || []).filter(function (x) { return x.id === EDIT.id; })[0] || EDIT.orig, end = todayIso();
@@ -1892,11 +2098,12 @@
   document.addEventListener("change", function (e) {
     var el = e.target, c = el.dataset && el.dataset.c;
     // the editor's fields (data-f): picking a day yourself, and the questions that follow "How often"
+    if (!c && el.dataset && el.dataset.fm === "accounts" && EDIT.table === "goals") { render(); return; }
     if (!c && el.dataset && el.dataset.f) {
       if (el.dataset.f === "on") S.ui.onTouched = true;
       // a new bill's day follows its start date until you pick a day yourself
       if (el.dataset.f === "start" && !EDIT.id && !S.ui.onTouched && B.isIso(el.value)) { var onEl = $("#main").querySelector('[data-f="on"]'); if (onEl) onEl.value = String(+el.value.slice(8, 10)); }
-      if (el.dataset.f === "how" || el.dataset.f === "poolOn" || (el.dataset.f === "direction" && EDIT.table === "loans")) render();   // render reads the form first, so nothing typed is lost
+      if (el.dataset.f === "how" || el.dataset.f === "poolOn" || (el.dataset.f === "direction" && EDIT.table === "loans") || (el.dataset.f === "mode" && EDIT.table === "budgets")) render();   // render reads the form first, so nothing typed is lost
       return;
     }
     if (!c) return;
@@ -1931,6 +2138,7 @@
   // the "how often" control re-draws the form so the right questions show
   document.addEventListener("input", function (e) {
     var c = e.target.dataset && e.target.dataset.c;
+    if (e.target.id === "liCost" && S.ui.item && /^(half|all)$/.test(S.ui.item.mode) && $("#liPrev")) { var cc = +String(e.target.value).replace(/[£,\s]/g, "") || 0; $("#liPrev").textContent = M(S.ui.item.mode === "half" ? B.round(cc / 2) : B.round(cc)); }
     if (c === "addnote") S.ui.add.note = e.target.value;
     if (c === "addamt") { var v = e.target.value.replace(/[^\d.]/g, "").replace(/(\..*)\./g, "$1").replace(/^(\d*\.\d{0,2}).*$/, "$1").slice(0, 9); if (v !== e.target.value) e.target.value = v; S.ui.keys = v; }
   });

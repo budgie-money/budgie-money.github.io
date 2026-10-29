@@ -10,7 +10,7 @@ const fails = [], check = (name, cond, extra) => { if (cond) console.log("ok", n
   const newPage = async (date) => {
     const ctx = await browser.newContext({...devices["Pixel 7"], locale: "en-GB", timezoneId: "Europe/London", serviceWorkers: "block"});
     // (the once-a-day "things to check" pop-up is marked as seen, so it can't land on top of a tap half a second in)
-    await ctx.addInitScript(d => { try { localStorage.setItem("budgie.checkSeen", JSON.stringify(d)); } catch (e) {} }, date || "2026-10-26");
+    await ctx.addInitScript(d => { try { ["ethan", "sophie", "alex", "sam"].forEach(n => localStorage.setItem("budgie.tour." + n, "true")); localStorage.setItem("budgie.checkSeen", JSON.stringify(d)); } catch (e) {} }, date || "2026-10-26");
     const page = await ctx.newPage();
     page.on("pageerror", e => errs.push("pageerror: " + e.message));
     page.on("console", m => { if (m.type() === "error" && !/fonts\.g/.test(m.text())) errs.push("console: " + m.text()); });
@@ -38,7 +38,10 @@ const fails = [], check = (name, cond, extra) => { if (cond) console.log("ok", n
     }
     return "";
   };
-  const shot = (page, n, full) => page.screenshot({path: OUT + n + ".png", fullPage: !!full});
+  // (screenshots are all taken at 384px wide, then the page goes back to its own size)
+  // (To do shows three things at a time: open the rest before reading all of it)
+  const allTodo = async pg => { const b = await pg.$('[data-a="todomore"]'); if (b && /Show \d+ more/.test(T(await b.textContent()))) { await b.click(); await pg.waitForTimeout(60); } };
+  const shot = async (page, n, full) => { const vs = page.viewportSize(); if (vs) { await page.setViewportSize({width: 384, height: 854}); await page.waitForTimeout(80); } await page.evaluate(() => { const el = document.querySelector("#toast"); if (el) el.innerHTML = ""; if (!/sheet/.test(document.querySelector("#sheets").innerHTML)) window.scrollTo(0, 0); }).catch(() => {}); await page.screenshot({path: OUT + n + ".png", fullPage: !!full}); if (vs) await page.setViewportSize(vs); };
   const visitAll = async (page, tag) => {
     for (const tab of ["today", "money", "add", "partner", "more"]) { await page.click(`nav [data-v="${tab}"]`); await page.waitForTimeout(80); const t = T(await page.textContent("main")); if (/Something went wrong/.test(t)) errs.push(tag + " " + tab + ": " + t.slice(0, 200)); }
     await page.click('nav [data-v="money"]'); await page.click('[data-a="moneyview"][data-v="year"]'); await page.waitForTimeout(50); await page.click('[data-a="moneyview"][data-v="month"]');
@@ -599,9 +602,14 @@ const fails = [], check = (name, cond, extra) => { if (cond) console.log("ok", n
     await page.setViewportSize({width: 360, height: 800}); await page.waitForTimeout(100);
     const vals = await page.$$eval(".tile .v", els => els.map(v => [v.textContent, Math.round(v.getBoundingClientRect().height), parseFloat(getComputedStyle(v).fontSize)]));
     check("each Today tile's value is on one line", vals.length && vals.every(v => v[1] < v[2] * 1.6), vals);
+    const heroAmt = T(await page.textContent(".hero .big"));
     await page.click(".hero"); await page.waitForTimeout(150);
+    const hs0 = T(await page.textContent("#sheets"));
+    check("tapping the hero opens a short breakdown: cash, what's still needed, days left", ["Cash available", "Still needed before payday", "Free to spend", "Your cash allows", "Your budgets allow", "You can spend today"].every(w => hs0.includes(w)) && /Over \d+ days? until payday/.test(hs0), hs0);
+    check("and it ends on the same figure as the hero", hs0.replace(/\s/g, "").includes("Thelowerofthetwo" + heroAmt.replace(/\s/g, "")), [heroAmt, hs0.slice(-120)]);
+    await page.click('#sheets [data-a="go"][data-v="pots"]'); await page.waitForTimeout(150);
     const pots = T(await page.textContent("main"));
-    check("tapping the hero opens the pots", /What should be where|Should be across/.test(T(await page.textContent("#top")) + pots), pots.slice(0, 120));
+    check("its Where it is button opens the pots", /What should be where|Should be across/.test(T(await page.textContent("#top")) + pots), pots.slice(0, 120));
     check("each pot says how far it is from where it should be", /Should be £[\d,]+\.\d\d: £[\d,]+\.\d\d (below|above), see To do|Where it should be/.test(pots) && (await page.$$('[data-a="potcheck"]')).length === (pots.match(/Should be £[\d,]+\.\d\d: |Where it should be/g) || []).length, pots.slice(0, 600));
     await page.context().close();
   }
@@ -622,26 +630,37 @@ const fails = [], check = (name, cond, extra) => { if (cond) console.log("ok", n
       const t17 = T(await page.textContent("main"));
       const heads = await page.$$eval("main .card h2", hs => hs.map(h => h.textContent.trim()));
       check("Money says what it's for (" + scheme + ")", /Your plan, payday to payday/.test(T(await page.textContent("#top"))), T(await page.textContent("#top")));
-      check("each section says what it answers (" + scheme + ")", ["Where it goes", "Coming in", "What you can spend", "What's saved"].every(h => heads.includes(h)), heads);
+      check("each section says what it answers (" + scheme + ")", ["Coming in", "Payments out", "Pots"].every(h => heads.includes(h)), heads);
+      {
+        // the pay period at a glance first (Money in, Going out, Left over), then Coming in, Payments out, Pots (and Goals): in that order
+        const stripCells = await page.$$eval("main .mstrip .mc .n", ns => ns.map(n => n.textContent.trim()));
+        check("Money opens with a strip: Money in, Going out, then Left over or Left to save (" + scheme + ")", ["Money in", "Going out"].every((x, i) => stripCells[i] === x) && /^(Left over|Left to save|Short)$/.test(stripCells[2]), stripCells);
+        const order = await page.evaluate(() => [...document.querySelectorAll("main .mstrip, main .card h2")].map(e => e.classList.contains("mstrip") ? "strip" : e.textContent.trim()));
+        const names = order.filter(x => ["strip", "Coming in", "Payments out", "Pots", "Spaces", "Goals"].includes(x)).map(x => x === "Spaces" ? "Pots" : x).join(">");
+        check("then Coming in, Payments out, Pots, and Goals last, in that order (" + scheme + ")", names === "strip>Coming in>Payments out>Pots" || names === "strip>Coming in>Payments out>Pots>Goals", order);
+        check("the period's dates and the Month / Year switch sit above the strip (" + scheme + ")", await page.evaluate(() => { const m = document.querySelector("main"), seg = m.querySelector('[data-a="moneyview"]'), st = m.querySelector(".mstrip"); return !!seg && !!st && (seg.compareDocumentPosition(st) & 4) > 0 && /\d/.test((m.querySelector('[data-a="month"]').parentElement.textContent)); }));
+        check("what you can spend and what's put by moved into Payments out, not lost (" + scheme + ")", await page.evaluate(() => { const c = [...document.querySelectorAll("main .card")].find(x => /Payments out/.test(x.querySelector("h2") ? x.querySelector("h2").textContent : "")); return !!c && /Budgets/.test(c.textContent); }));
+      }
       check("the short first month's dates say why it's short", /Started Tue 27 Oct · ends Wed 28 Oct|Started Mon 26 Oct · ends Wed 28 Oct/.test(t17), t17.slice(0, 200));
-      check("the Cash ISA's nothing this month says when it starts, and what it's worth", /Cash ISA ?Starts on payday: £[\d,]+\.\d\d ?£[\d,]+\.\d\d ?Update/.test(t17), t17.slice(t17.indexOf("What's saved"), t17.indexOf("What's saved") + 300));
+      check("the Cash ISA's nothing this month says when it starts, and what it's worth", /Cash ISA ?Starts on payday: £[\d,]+\.\d\d ?£[\d,]+\.\d\d ?Update/.test(t17), t17.slice(t17.indexOf("Pots"), t17.indexOf("Pots") + 300));
       check("no short-first-month sentence to puzzle over", !/short first month/.test(t17));
       // the colours: four different ones, from the theme, the same on each section's chip and in the key
       const ks = await page.evaluate(kinds), want = scheme === "light" ? ["#1F7A4D", "#6B4FBB", "#2369A8", "#B07A12"] : ["#6FD39C", "#B8A3F2", "#7DB8EE", "#EBC064"];
       check("each kind of money has its own colour (" + scheme + ")", JSON.stringify(ks) === JSON.stringify(want), ks);
       const chips = await page.evaluate(() => [...document.querySelectorAll("main .kchip")].map(c => [c.className.replace("kchip ", ""), getComputedStyle(c).color]));
       check("each section's chip is its kind's colour (" + scheme + ")", chips.length >= 3 && chips.every(([k, c]) => c === ({"k-in": rgb(want[0]), "k-bill": rgb(want[1]), "k-spend": rgb(want[2]), "k-save": rgb(want[3])})[k]), chips);
-      const dots = await page.evaluate(() => [...document.querySelectorAll("main .legend .kdot")].map(d => getComputedStyle(d).backgroundColor));
-      check("the key uses the same colours (" + scheme + ")", JSON.stringify(dots) === JSON.stringify(want.map(rgb)), dots);
-      const spendBars = await page.evaluate(() => [...document.querySelectorAll("main .card .bar > i")].map(i => getComputedStyle(i).backgroundColor));
+      const dots = await page.evaluate(() => [...document.querySelectorAll("main .legend3 .kdot")].map(d => getComputedStyle(d).backgroundColor));
+      check("the key uses the same colours (" + scheme + ")", JSON.stringify(dots) === JSON.stringify(want.slice(1).map(rgb)), dots);
+      const spendBars = await page.evaluate(() => [...document.querySelectorAll("main .card .bar > i")].filter(i => !/^Goals/.test(i.closest(".card").textContent.trim())).map(i => getComputedStyle(i).backgroundColor));
       check("spending's bars are spending's colour (" + scheme + ")", spendBars.length >= 2 && spendBars.every(c => c === rgb(want[2])), spendBars);
       // the key adds up: what comes in is what goes out plus what's left over
-      const leg = await page.$$eval("main .legend > div b", ns => ns.map(n => n.textContent)), left = (t17.match(/£([\d,]+\.\d\d) left over/) || [0, "0"])[1];
-      check("where it goes adds up", Math.abs(pounds(leg[0]) - pounds(leg[1]) - pounds(leg[2]) - pounds(leg[3]) - pounds(left)) < 0.011, [leg, left]);
+      const strip = await page.$$eval("main .mstrip .v", ns => ns.map(n => n.textContent)), leg = await page.$$eval("main .legend3 > div b", ns => ns.map(n => n.textContent));
+      check("the strip adds up: money in is going out plus what's left (whole pounds)", Math.abs(pounds(strip[0]) - pounds(strip[1]) - pounds(strip[2])) < 1.01, strip);
+      check("and the key adds up to what goes out", Math.abs(pounds(leg[0]) + pounds(leg[1]) + pounds(leg[2]) - pounds(strip[1])) < 2.01, [leg, strip]);
       if (scheme === "light") {
         // next month has bills, coloured as bills, and the year view jumps to a month
         await page.click('[data-a="month"][data-v="1"]'); await page.waitForTimeout(100);
-        check("next month has its bills to pay", (await page.$$eval("main .card h2", hs => hs.map(h => h.textContent.trim()))).includes("Bills to pay"));
+        check("next month has its payments out", (await page.$$eval("main .card h2", hs => hs.map(h => h.textContent.trim()))).includes("Payments out") && !!(await page.$("main .mstrip")));
         await page.click('[data-a="moneyview"][data-v="year"]'); await page.waitForTimeout(100);
         check("the year view says what it's for", /Your plan for the year/.test(T(await page.textContent("#top"))));
         await page.click('[data-a="moneyjump"][data-v="2"]'); await page.waitForTimeout(100);
@@ -657,7 +676,7 @@ const fails = [], check = (name, cond, extra) => { if (cond) console.log("ok", n
     await page.goto(links.sophie); await page.waitForFunction(() => /Hi Sophie/.test(document.querySelector("#top").textContent), null, {timeout: 8000});
     await page.evaluate(() => { document.querySelector("#sheets").innerHTML = ""; window.BudgieApp.S.ui.monthOff = 0; window.BudgieApp.go("money"); }); await page.waitForTimeout(150);
     const hs = await page.$$eval("main .card h2", h => h.map(x => x.textContent.trim()));
-    check("Sophie's Money has the same sections", ["Where it goes", "Coming in", "Bills to pay", "What you can spend", "What's saved"].every(h => hs.includes(h)), hs);
+    check("Sophie's Money has the same sections", ["Coming in", "Payments out"].every(h => hs.includes(h)) && (hs.includes("Pots") || hs.includes("Spaces")) && !!(await page.$("main .mstrip")), hs);
     await page.context().close();
     // the Cash ISA's Update asks what it's worth and shows it straight away (in Show and tell, so nothing is saved)
     page = await newPage("2026-10-28");
@@ -676,7 +695,7 @@ const fails = [], check = (name, cond, extra) => { if (cond) console.log("ok", n
     const rgb = hex => { const n = parseInt(hex.slice(1), 16); return "rgb(" + (n >> 16) + ", " + (n >> 8 & 255) + ", " + (n & 255) + ")"; };
     for (const [who, scheme] of [["ethan", "light"], ["ethan", "dark"], ["sophie", "light"]]) {
       const ctx = await browser.newContext({...devices["Pixel 7"], locale: "en-GB", timezoneId: "Europe/London", serviceWorkers: "block", colorScheme: scheme});
-      await ctx.addInitScript(() => { try { localStorage.setItem("budgie.checkSeen", JSON.stringify("2026-12-10")); } catch (e) {} });
+      await ctx.addInitScript(() => { try { ["ethan", "sophie", "alex", "sam"].forEach(n => localStorage.setItem("budgie.tour." + n, "true")); localStorage.setItem("budgie.checkSeen", JSON.stringify("2026-12-10")); } catch (e) {} });
       page = await ctx.newPage(); await page.clock.install({time: new Date("2026-12-10T19:30:00")});
       await page.goto(links[who]); await page.waitForFunction(() => /Hi /.test(document.querySelector("#top").textContent), null, {timeout: 8000});
       await page.waitForFunction(() => !window.BudgieApp.S.syncing && window.BudgieApp.S.lastSync, null, {timeout: 8000}); await page.waitForTimeout(300);
@@ -732,10 +751,11 @@ const fails = [], check = (name, cond, extra) => { if (cond) console.log("ok", n
     await page.evaluate(() => { document.querySelector("#sheets").innerHTML = ""; window.BudgieApp.go("today"); }); await page.waitForTimeout(150);
     check("over a budget and not covered yet: Over budget", T(await page.textContent(".hero .pill")) === "Over budget", T(await page.textContent(".hero .pill")));
     const covSel = 'input[data-c="tick"][aria-label*="from Emergency pot to Main account"]'; // (by selector: a sync can re-draw To do in between)
+    await allTodo(page);
     if (await page.$(covSel)) { await page.click(covSel); await page.waitForTimeout(400); }
     await page.evaluate(() => { document.querySelector("#sheets").innerHTML = ""; });
     check("once covered, it names what went over instead", T(await page.textContent(".hero .pill")) === "Fun covered", T(await page.textContent(".hero .pill")));
-    await page.click(".hero"); await page.waitForTimeout(150);
+    await page.click(".hero"); await page.waitForTimeout(150); await page.click('#sheets [data-a="go"][data-v="pots"]'); await page.waitForTimeout(150);
     check("and the pots say what it was and what covered it", /You went £[\d,]+\.\d\d over your Fun budget\. Your Emergency pot covered it/.test(T(await page.textContent("main"))), T(await page.textContent("main")).slice(0, 300));
     await page.context().close();
   }
@@ -814,6 +834,7 @@ const fails = [], check = (name, cond, extra) => { if (cond) console.log("ok", n
     page = await newPage("2026-11-16");
     await page.goto(links.ethan); await hiE(page);
     await page.evaluate(() => { document.querySelector("#sheets").innerHTML = ""; window.BudgieApp.go("today"); }); await page.waitForTimeout(150);
+    await allTodo(page);
     const td = T(await page.textContent("main"));
     check("Ethan's To do: Sophie's share back to her, and nothing to move to savings (it goes through payday)", /Pay Sophie £81\.06\s*Sophie's share of what's left of household bills/.test(td) && !/Cash ISA\s*Your share/.test(td), td.slice(0, 900));
     // a split with a dated change: renaming it changes only the name; changing its shares asks from when
@@ -913,7 +934,7 @@ const fails = [], check = (name, cond, extra) => { if (cond) console.log("ok", n
     check("Amount puts the biggest first", byAmt.length === rows.length && byAmt.every((r, i) => !i || byAmt[i - 1].amt >= r.amt) && JSON.stringify(byAmt.map(r => r.id)) !== JSON.stringify(rows.map(r => r.id)), byAmt.map(r => r.amt));
     // by pot, with a subtotal for each
     await page.click('[data-a="outsort"][data-v="pot"]'); await page.waitForTimeout(80);
-    const pot = await page.evaluate(() => [...document.querySelectorAll("main section.card .ghead")].map(h => ({name: h.children[0].textContent.trim(), sub: +h.children[1].textContent.replace(/[£,]/g, ""), rows: [...h.nextElementSibling.querySelectorAll(".outrow")].filter(r => r.querySelector(".st").textContent.trim() !== "Skipped").map(r => +r.querySelector(".num").textContent.replace(/[£,]/g, ""))})));
+    const pot = await page.evaluate(() => [...document.querySelectorAll("main section.card .ghead")].filter(h => h.nextElementSibling && h.nextElementSibling.querySelector(".outrow")).map(h => ({name: h.children[0].textContent.trim(), sub: +h.children[1].textContent.replace(/[£,]/g, ""), rows: [...h.nextElementSibling.querySelectorAll(".outrow")].filter(r => r.querySelector(".st").textContent.trim() !== "Skipped").map(r => +r.querySelector(".num").textContent.replace(/[£,]/g, ""))})));
     check("Pot groups them by account, each with its subtotal", pot.length >= 3 && pot.every(g => Math.abs(g.sub - g.rows.reduce((a, b) => a + b, 0)) < 0.011) && pot.some(g => /Food pot/.test(g.name)) && pot.some(g => /Bills & Rent pot/.test(g.name)), pot);
     check("the pots keep their usual order (Main account first)", /Main account/.test(pot[0].name), pot.map(g => g.name));
     check("the sort buttons are Date, Amount and Pot in one segmented row", JSON.stringify(await page.$$eval('main [data-a="outsort"]', els => els.map(e => e.textContent.trim()))) === JSON.stringify(["Date", "Amount", "Pot"]));
@@ -970,6 +991,226 @@ const fails = [], check = (name, cond, extra) => { if (cond) console.log("ok", n
     const sr = await rowsOf();
     check("Sophie's Payments out is her own: her gym and what she pays Ethan, none of his bills", sr.some(r => r.name === "Gym") && sr.some(r => /to Ethan/.test(r.name)) && !sr.some(r => /Streaming|Broadband|Insurance/.test(r.name)), sr.map(r => r.name));
     check("(and her Pot sort says Space)", (await page.$$eval('main [data-a="outsort"]', els => els.map(e => e.textContent.trim()))).join() === "Date,Amount,Space");
+    await page.context().close();
+  }
+
+
+  // ===== itemised IOUs: made on the form, shared half / all / custom, shown on Debts and Between you two, and worked out as it's paid back
+  {
+    const kS = JSON.parse(Buffer.from(links.sophie.split("#connect=")[1], "base64url").toString()).k, ex = (key, ops) => page.request.post("http://localhost:" + PORT + "/exec", {data: JSON.stringify({key, ops})});
+    const dump = async t => (await (await page.request.get("http://localhost:" + PORT + "/dump?" + t)).json());
+    page = await newPage("2026-11-02");
+    await page.goto(links.ethan); await hiE(page);
+    await page.evaluate(() => { document.querySelector("#sheets").innerHTML = ""; window.BudgieApp.go("debts"); }); await page.waitForTimeout(100);
+    await page.click('[data-a="new"][data-v="loans"]'); await page.waitForTimeout(80);
+    await page.fill('[data-f="name"]', "Flat things");
+    check("IOU: a new IOU has a Total to type and an Add an item button", !!(await page.$('[data-f="amount"]')) && !!(await page.$('[data-a="itemnew"]')));
+    // 1. a half-split item
+    await page.click('[data-a="itemnew"]'); await page.waitForTimeout(60);
+    await page.fill("#liName", "Sofa"); await page.fill("#liDate", "2026-10-20"); await page.fill("#liCost", "230");
+    await page.click('[data-a="itemmode"][data-v="half"]'); await page.waitForTimeout(40);
+    check("IOU: split half shows what Sophie owes: half the cost", /£115\.00/.test(await page.textContent("#liPrev")), await page.textContent("#sheets"));
+    await page.fill("#liCost", "231"); check("IOU: and follows the cost as you type (half of £231 is £115.50)", /£115\.50/.test(await page.textContent("#liPrev")));
+    await page.fill("#liCost", "230");
+    await shot(page, "iou-1-item-sheet");
+    await page.click('[data-a="itemsave"]'); await page.waitForTimeout(60);
+    // 2. an item that is all hers
+    await page.click('[data-a="itemnew"]'); await page.fill("#liName", "Dress"); await page.fill("#liDate", "2026-10-22"); await page.fill("#liCost", "18.40");
+    await page.click('[data-a="itemmode"][data-v="all"]'); await page.click('[data-a="itemsave"]'); await page.waitForTimeout(60);
+    // 3. custom, and a negative one (something Ethan owes her)
+    await page.click('[data-a="itemnew"]'); await page.fill("#liName", "Takeaway"); await page.fill("#liDate", "2026-10-25");
+    await page.click('[data-a="itemmode"][data-v="custom"]'); await page.fill("#liShare", "-20"); await page.fill("#liNote", "her half of my order"); await page.click('[data-a="itemsave"]'); await page.waitForTimeout(60);
+    let t1 = T(await page.textContent("main"));
+    check("IOU: the form lists the items with how each is shared and the total at the bottom", /Sofa.*half £115\.00.*Dress.*all Sophie's.*Takeaway.*Takes off £20\.00.*Total£113\.40/.test(t1) && !(await page.$('[data-f="amount"]')), t1.slice(0, 600));
+    await shot(page, "iou-2-form", true);
+    await page.click('[data-a="editsave"]'); await page.waitForTimeout(500);
+    const ln = (await dump("loans")).find(r => r.name === "Flat things"), its = (await dump("loanItems")).filter(r => r.loan === ln.id && !r.deleted);
+    check("IOU: saved as one IOU of the total, with its three items", ln && +ln.amount === 113.4 && its.length === 3 && its.some(r => r.name === "Sofa" && +r.share === 115 && +r.cost === 230) && its.some(r => r.name === "Takeaway" && +r.share === -20), {ln, its});
+    await page.evaluate(() => { document.querySelector("#sheets").innerHTML = ""; window.BudgieApp.go("debts"); }); await page.waitForTimeout(100);
+    const card = await page.innerText('[data-v="loans:' + ln.id + '"]');
+    check("IOU: Debts shows the items, their state and the total", /Flat things/.test(card) && /Sofa/.test(card) && /Not started/.test(card) && /Total £113\.40/.test(card) && /£0\.00 of £113\.40 paid back/.test(card), card);
+    await shot(page, "iou-3-debts", true);
+    // paid back £100: oldest first, the £20 taken off counts too
+    await ex(kS, [{op: "put", table: "settlements", row: {id: "set-iou1", date: "2026-11-02", from: "sophie", to: "ethan", amount: 100, loan: ln.id, note: "Flat things"}}]);
+    await page.evaluate(() => window.BudgieApp.sync && window.BudgieApp.sync(true)); await page.waitForTimeout(800);
+    const card2 = await page.innerText('[data-v="loans:' + ln.id + '"]');
+    check("IOU: £100 paid back pays the oldest item off and part of the next", /Dress[\s\S]*£13\.40 of £18\.40 left/.test(card2) && /Paid off/.test(card2) && /£100\.00 of £113\.40 paid back/.test(card2), card2);
+    // Sophie sees the same, from Between you two, and taps through to it
+    await page.context().close();
+    page = await newPage("2026-11-02");
+    await page.goto(links.sophie); await page.waitForFunction(() => /Hi Sophie/.test(document.querySelector("#top").textContent), null, {timeout: 8000});
+    await page.click('nav [data-v="partner"]'); await page.waitForTimeout(100);
+    const card3 = await page.innerText('[data-v="loans:' + ln.id + '"]');
+    check("IOU: Sophie sees the same breakdown in Between you two (the amount she owes, her state)", /Sofa/.test(card3) && /half £115\.00/.test(card3) && /all yours/.test(card3) && /Paid off/.test(card3) && /£13\.40 of £18\.40 left/.test(card3), card3);
+    await shot(page, "iou-4-between", true);
+    await page.click('[data-v="loans:' + ln.id + '"]'); await page.waitForTimeout(100);
+    check("IOU: and tapping it opens it to change", /Change money owed/i.test(await page.textContent("#top")) && /Sofa/.test(await page.textContent("main")));
+    // remove an item (the middle one) and edit another; the total follows
+    await page.click('[data-a="itemedit"]'); await page.waitForTimeout(60);
+    check("IOU: a saved item opens with its name, cost and split", (await page.inputValue("#liName")) === "Sofa" && (await page.inputValue("#liCost")) === "230" && (await page.getAttribute('[data-a="itemmode"][data-v="half"]', "aria-pressed")) === "true");
+    await page.click('[data-a="itemdel"]'); await page.waitForTimeout(60);
+    check("IOU: removing an item takes it off the total (the Dress and the £20 are left: -£1.60)", /Total-?£/.test(T(await page.textContent("main"))) && !/Sofa/.test(await page.textContent("main")), T(await page.textContent("main")).slice(0, 500));
+    await page.click('[data-a="editsave"]'); await page.waitForTimeout(500);
+    const after = (await dump("loans")).find(r => r.id === ln.id);
+    check("IOU: and saving keeps the loan's amount at the new total", +after.amount === -1.6, after);
+    await page.context().close();
+  }
+
+
+  // ===== budgets: changes coming (listed, added, changed, removed) and what happens to unspent money
+  {
+    const dump = async t => (await (await page.request.get("http://localhost:" + PORT + "/dump?" + t)).json());
+    page = await newPage("2026-11-02");
+    await page.goto(links.ethan); await hiE(page);
+    await page.evaluate(() => { document.querySelector("#sheets").innerHTML = ""; window.BudgieApp.go("list", {table: "budgets"}); }); await page.waitForTimeout(100);
+    await page.click('[data-a="edit"][data-v="budgets:e-food-b"]'); await page.waitForTimeout(80);
+    const sel = await page.$eval('[data-f="carry"]', el => [...el.options].map(o => o.textContent + (o.selected ? "*" : "")));
+    check("Unspent on payday is a clear choice, saying where it goes", sel.join("|") === "Keep it for next month*|Let it go to Cash ISA", sel);
+    check("and there is no bare tickbox for it", !(await page.$('input[type="checkbox"][data-f="carry"]')));
+    await page.click('[data-a="chgnew"]'); await page.waitForTimeout(60);
+    await page.fill("#chgDate", "2026-11-26"); await page.fill("#chgAmt", "250"); await page.click('[data-a="chgsave"]'); await page.waitForTimeout(80);
+    let t = T(await page.textContent("main"));
+    check("Changes coming lists the date and the amount, under the budget's amount", /Changes coming.*Thu 26 Nov£250\.00/.test(t), t.slice(0, 400));
+    await shot(page, "budget-1-changes-coming", true);
+    await page.click('[data-a="chgedit"]'); await page.waitForTimeout(60);
+    check("tapping one opens it with its date and amount", (await page.inputValue("#chgDate")) === "2026-11-26" && (await page.inputValue("#chgAmt")) === "250");
+    await page.fill("#chgAmt", "260"); await page.click('[data-a="chgsave"]'); await page.waitForTimeout(80);
+    check("and it can be changed", /Thu 26 Nov£260\.00/.test(T(await page.textContent("main"))));
+    await page.click('[data-a="chgnew"]'); await page.fill("#chgDate", "2026-12-26"); await page.fill("#chgAmt", "275"); await page.click('[data-a="chgsave"]'); await page.waitForTimeout(80);
+    await page.click('[data-a="chgnew"]'); await page.fill("#chgDate", "2026-11-02"); await page.fill("#chgAmt", "1"); await page.click('[data-a="chgsave"]'); await page.waitForTimeout(60);
+    check("a date that is today or earlier is turned down", /after today/.test(await page.textContent("#toast")) && !!(await page.$("#chgDate")));
+    await page.click('[data-a="sheetclose"], .sheet-bg'); await page.waitForTimeout(40);
+    await page.evaluate(() => { document.querySelector("#sheets").innerHTML = ""; });
+    const dated = (await dump("amounts")).filter(r => r.item === "e-food-b" && !r.deleted);
+    check("they are saved as dated amounts, nothing else touched", dated.length === 2 && dated.some(r => r.start === "2026-11-26" && +r.amount === 260), dated);
+    await page.evaluate(() => { document.querySelector("#sheets").innerHTML = ""; });
+    await page.click('[data-a="chgedit"][data-v="' + dated.find(r => r.start === "2026-12-26").id + '"]'); await page.click('[data-a="chgdel"]'); await page.waitForTimeout(80);
+    check("a change can be removed", !/26 Dec/.test(T(await page.textContent("main"))) && /26 Nov/.test(T(await page.textContent("main"))));
+    // choose to let unspent money go, save
+    await page.selectOption('[data-f="carry"]', "false"); await page.click('[data-a="editsave"]'); await page.waitForTimeout(500);
+    const food = (await dump("budgets")).find(r => r.id === "e-food-b");
+    check("choosing 'Let it go' is saved (carry off)", food.carry === false || /^false$/i.test(String(food.carry)) || food.carry === "", food.carry);
+    // not for one-offs, saving or what's left; and bills and pay have changes coming too
+    await page.evaluate(() => window.BudgieApp.go("list", {table: "budgets"})); await page.click('[data-a="edit"][data-v="budgets:e-isa-b"]'); await page.waitForTimeout(80);
+    check("a 'whatever is left' budget has no unspent choice and no changes coming", !(await page.$('[data-f="carry"]')) && !(await page.$('[data-a="chgnew"]')));
+    await page.evaluate(() => window.BudgieApp.go("list", {table: "income"})); await page.click('[data-a="edit"][data-v="income:e-pay"]'); await page.waitForTimeout(80);
+    check("pay has Change from a date", !!(await page.$('[data-a="chgnew"]')));
+    await page.evaluate(() => window.BudgieApp.go("bills")); await page.waitForTimeout(40);
+    await page.context().close();
+  }
+
+
+  // ===== goals: progress, the date it's on course for, where this pay period's money comes from, and straight-away money
+  {
+    page = await newPage("2026-11-02");
+    const ex = (key, ops) => page.request.post("http://localhost:" + PORT + "/exec", {data: JSON.stringify({key, ops})});
+    const dump = async t => (await (await page.request.get("http://localhost:" + PORT + "/dump?" + t)).json());
+    await ex(kE12, [{op: "put", table: "goals", row: {id: "g-rainy", owners: "ethan", name: "Rainy day", target: 5000, due: "2027-12-31", accounts: "e-isa", kind: "savings"}}]);
+    await page.goto(links.ethan); await hiE(page);
+    await page.evaluate(() => { document.querySelector("#sheets").innerHTML = ""; window.BudgieApp.go("goals"); }); await page.waitForTimeout(100);
+    const gc = await page.innerText('[data-v="goals:g-rainy"]');
+    check("a goal card says how far it's got, the date it's on course for and what goes in this pay period", /Rainy day/.test(gc) && /£0 of £5,000/.test(gc) && /On course for \w{3} 20\d\d at £[\d,]+ a month/.test(gc) && /This pay period\s*£[\d,]+ in/.test(gc) && /What's left on payday/.test(gc), gc);
+    await shot(page, "goal-1-card", true);
+    await page.click('[data-v="goals:g-rainy"]'); await page.waitForTimeout(100);
+    check("the goal's own page shows the same, and the straight-away choice (off)", /On course for/.test(await page.textContent("main")) && (await page.isChecked('[data-f="directOn"]')) === false && /Send one-off money and repayments here straight away/.test(await page.textContent("main")));
+    await page.check('[data-f="directOn"]'); await page.click('[data-a="editsave"]'); await page.waitForTimeout(500);
+    const st = (await dump("settings")).find(r => r.key === "goal.direct.g-rainy" && r.person === "ethan");
+    check("turning it on is saved as the person's setting, from today", st && st.value === "2026-11-02", st);
+    // one-off money in: To do suggests moving it into the goal's first account
+    await ex(kE12, [{op: "put", table: "transactions", row: {id: "t-in1", date: "2026-11-02", person: "ethan", amount: -75, budget: "", account: "e-main", note: "Sold a bike"}}]);
+    await page.evaluate(() => window.BudgieApp.sync(true)); await page.waitForTimeout(700);
+    await page.evaluate(() => window.BudgieApp.go("today")); await page.waitForTimeout(100);
+    const td = T(await page.textContent("main"));
+    check("To do suggests moving the one-off money into the goal's account", /Move £75\.00 from Main account to Cash ISA/.test(td) && /Rainy day/.test(td), td.slice(0, 500));
+    await page.evaluate(() => window.BudgieApp.go("goals")); await page.waitForTimeout(80);
+    const gc2 = (await page.innerText('[data-v="goals:g-rainy"]')).replace(/\s+/g, " ");
+    check("and the goal says it was sent straight there, still to move", /One-off money in, sent straight here · to move/.test(gc2), gc2);
+    await page.evaluate(() => window.BudgieApp.go("today")); await page.waitForTimeout(80);
+    await allTodo(page);
+    await page.click('label.li:has-text("Move £75.00 from Main account to Cash ISA") input[data-c="tick"]'); await page.waitForTimeout(1200);
+    check("ticking it moves the money and To do stops asking", !/Move £75\.00 from Main account to Cash ISA/.test(T(await page.textContent("main"))));
+    const mvd = (await dump("moves")).find(r => /^goal:g-rainy:/.test(r.key));
+    check("as a move into the goal's account", mvd && mvd.to === "e-isa" && mvd.from === "e-main" && +mvd.amount === 75, mvd);
+    await page.context().close();
+  }
+
+  // ===== Today and Money made coherent; the walkthrough
+  {
+    // Today: the hero, then To do (three at a time), then each day until payday, then Recent
+    page = await newPage("2026-11-02");
+    await page.goto(links.ethan); await hiE(page); await page.waitForFunction(() => !window.BudgieApp.S.syncing && window.BudgieApp.S.lastSync, null, {timeout: 8000}); await page.waitForTimeout(300);
+    const order = await page.evaluate(() => [...document.querySelectorAll("main .hero, main .card h2, main h2.h2")].map(e => e.classList.contains("hero") ? "hero" : e.textContent.trim()));
+    check("Today runs hero, To do, Each day until payday, Recent", JSON.stringify(order.filter(x => ["hero", "To do", "Each day until payday", "Recent"].includes(x))) === JSON.stringify(["hero", "To do", "Each day until payday", "Recent"]), order);
+    const nTodo = (await page.$$('main [data-c="tick"], main [data-a="tick"], main .li[data-a="go"]')).length;
+    const moreBtn = await page.$('[data-a="todomore"]');
+    if (moreBtn) {
+      const shown = await page.$$eval('main .card:has([data-a="todomore"]) .list > .li:not(.tmore)', ns => ns.length), label = T(await moreBtn.textContent());
+      check("To do shows three at a time, with a Show N more row", shown === 3 && /^Show \d+ more$/.test(label), [shown, label]);
+      await moreBtn.click(); await page.waitForTimeout(80);
+      const all = await page.$$eval('main .card:has([data-a="todomore"]) .list > .li:not(.tmore)', ns => ns.length);
+      check("tapping it shows the rest, and Show fewer puts them back", all > 3 && /Show fewer/.test(T(await page.textContent('[data-a="todomore"]'))), all);
+      await page.click('[data-a="todomore"]'); await page.waitForTimeout(80);
+    } else check("To do never shows more than three before the rest", (await page.$$eval('main .card:has(> .row h2) .list > .li', ns => ns.length)) <= 3, nTodo);
+    await shot(page, "today-1-hero-todo");
+    await page.click(".hero"); await page.waitForTimeout(120);
+    await shot(page, "today-2-hero-breakdown");
+    await page.click('#sheets [data-a="sheetclose"]'); await page.waitForTimeout(60);
+    // Money: period, then the strip, then Coming in, Payments out, Pots
+    await page.click('nav [data-v="money"]'); await page.waitForTimeout(150);
+    await shot(page, "money-1-top");
+    await shot(page, "money-2-full", true);
+    // Sophie sees the same layout
+    await page.context().close();
+    page = await newPage("2026-11-02");
+    await page.goto(links.sophie); await page.waitForFunction(() => /Hi Sophie/.test(document.querySelector("#top").textContent), null, {timeout: 8000}); await page.waitForTimeout(400);
+    await page.click('nav [data-v="money"]'); await page.waitForTimeout(150);
+    const sh = await page.$$eval("main .mstrip .n, main .card h2", ns => ns.map(n => n.textContent.trim()));
+    check("Sophie's Money has the strip and the sections in the same order", sh.indexOf("Money in") === 0 && sh.indexOf("Coming in") > 0 && sh.indexOf("Payments out") > sh.indexOf("Coming in"), sh);
+    await page.click('nav [data-v="partner"]'); await page.waitForTimeout(100);
+    check("and her partner tab keeps Between you two", /Between you two/.test(T(await page.textContent("main"))));
+    await page.context().close();
+  }
+  {
+    // the walkthrough: shown once per person per phone, skippable, and back from More
+    const fresh = async who => {
+      const ctx = await browser.newContext({...devices["Pixel 7"], locale: "en-GB", timezoneId: "Europe/London", serviceWorkers: "block"});
+      await ctx.addInitScript(() => { try { localStorage.setItem("budgie.checkSeen", JSON.stringify("2026-11-02")); } catch (e) {} });
+      const pg = await ctx.newPage(); await pg.clock.install({time: new Date("2026-11-02T19:30:00")});
+      pg.on("pageerror", e => errs.push("pageerror: " + e.message));
+      await pg.goto(links[who]); await pg.waitForFunction(() => window.BudgieApp.S.lastSync, null, {timeout: 8000}); await pg.waitForTimeout(500);
+      return pg;
+    };
+    const titleOf = async pg => T(await pg.textContent("#sheets h2"));
+    page = await fresh("ethan");
+    check("the first time, the walkthrough opens on Today with five dots", (await page.$("#sheets .sheet")) && (await titleOf(page)) === "Today" && /Step 1 of 5/.test(await page.getAttribute("#sheets .dots", "aria-label")), await titleOf(page).catch(() => ""));
+    check("a card is one sentence and a picture", (await page.$$("#sheets .tourmock")).length === 1 && (T(await page.textContent("#sheets .tourtxt")).match(/\./g) || []).length === 1);
+    check("Skip and Next sit side by side", await page.evaluate(() => { const b = [...document.querySelectorAll("#sheets .btn")].map(x => x.getBoundingClientRect()); return b.length === 2 && Math.abs(b[0].top - b[1].top) < 2; }));
+    await shot(page, "walk-1-today");
+    const titles = [await titleOf(page)];
+    for (let i = 0; i < 4; i++) { await page.click('#sheets [data-a="tournext"]'); await page.waitForTimeout(60); titles.push(await titleOf(page)); if (i === 3) await shot(page, "walk-5-goals"); if (i === 2) await shot(page, "walk-4-partner"); }
+    check("the cards are Today, To do, Money, the partner by name, Goals", JSON.stringify(titles) === JSON.stringify(["Today", "To do", "Money", "Sophie", "Goals"]), titles);
+    check("the last card has just Got it, and closes", !(await page.$('#sheets [data-a="tourskip"]:not(.wide)')) && !!(await page.$('#sheets .btn.wide[data-a="tourskip"]')));
+    await page.click('#sheets .btn.wide'); await page.waitForTimeout(80);
+    check("closed", !(await page.$("#sheets .sheet")));
+    check("remembered for this person on this phone", await page.evaluate(() => localStorage.getItem("budgie.tour.ethan") === "true" && localStorage.getItem("budgie.tour.sophie") === null));
+    await page.reload(); await page.waitForFunction(() => window.BudgieApp.S.lastSync, null, {timeout: 8000}); await page.waitForTimeout(600);
+    check("and it doesn't come back", !(await page.$("#sheets .sheet")) || (await titleOf(page)) !== "Today");
+    // from More
+    await page.click('nav [data-v="more"]'); await page.waitForTimeout(80);
+    check("More has How Budgie works", /How Budgie works/.test(T(await page.textContent("main"))));
+    await page.click('main [data-a="tour"]'); await page.waitForTimeout(80);
+    check("which opens it again from the start", (await titleOf(page)) === "Today");
+    await page.click('#sheets [data-a="tourskip"]'); await page.waitForTimeout(60);
+    check("Skip closes it", !(await page.$("#sheets .sheet")));
+    await page.context().close();
+    // Skip on the very first time stops it for good; the partner sees their own, naming Ethan
+    page = await fresh("sophie");
+    check("Sophie gets it too, and her partner card names Ethan", (await titleOf(page)) === "Today");
+    await page.click('#sheets [data-a="tournext"]'); await page.click('#sheets [data-a="tournext"]'); await page.click('#sheets [data-a="tournext"]'); await page.waitForTimeout(60);
+    check("her fourth card is Ethan", (await titleOf(page)) === "Ethan", await titleOf(page));
+    await page.click('#sheets [data-a="tourskip"]'); await page.waitForTimeout(60);
+    await page.reload(); await page.waitForFunction(() => window.BudgieApp.S.lastSync, null, {timeout: 8000}); await page.waitForTimeout(600);
+    check("skipping counts as seen", !(await page.$("#sheets .sheet")));
     await page.context().close();
   }
 
@@ -1035,14 +1276,14 @@ const fails = [], check = (name, cond, extra) => { if (cond) console.log("ok", n
     const screens = ["today", "money", "add", "partner", "more", "payday", "pots", "bills", "goals", "lisa", "house", "networth", "debts", "insights", "gifts", "settings", "themes", "bank", "review", "linked", "emailset", "sharing", "sync", "importcsv", "list:income", "list:budgets", "list:accounts", "list:splits"];
     // [screen, what to tap for a sheet or form] (each tap is a data-a, and data-v if given)
     const taps = [["add", "adddatepick"], ["add", "addsplit2"], ["add", "addmode:bill"], ["today", "who"], ["payday", "payedit"], ["pots", "potcheck"], ["partner", "settle"], ["lisa", "lisapaid"], ["bank", "bankoff"], ["review", "revmore"], ["linked", "applink:peckish"],
-      ["list:budgets", "edit"], ["list:income", "new:income"], ["bills", "new:bills"], ["bills", "edit"], ["list:accounts", "new:accounts"], ["list:splits", "new:splits"], ["list:transfers", "new:transfers"], ["debts", "new:loans"], ["goals", "new:goals"], ["gifts", "new:gifts"], ["list:budgets", "new:budgets"], ["money", "outsort:pot"], ["money", "outrow"]];
+      ["list:budgets", "edit"], ["list:income", "new:income"], ["bills", "new:bills"], ["bills", "edit"], ["list:accounts", "new:accounts"], ["list:splits", "new:splits"], ["list:transfers", "new:transfers"], ["debts", "new:loans"], ["debts", "new:loans>itemnew"], ["debts", "edit>itemedit"], ["debts", "edit>itemedit>itemmode:custom"], ["goals", "new:goals"], ["goals", "edit"], ["gifts", "new:gifts"], ["list:budgets", "new:budgets"], ["money", "outsort:pot"], ["money", "outrow"], ["today", "herosheet"], ["today", "todomore"], ["more", "tour"], ["more", "tour>tournext>tournext>tournext"], ["more", "tour>tournext>tournext>tournext>tournext"]];
     const found = {};
     for (const [w, size, z] of [[320, "normal", 1], [320, "larger", 1], [384, "normal", 1], [384, "larger", 1], [412, "normal", 1], [412, "larger", 1], [384, "normal", 1.3], [412, "normal", 1.3], [295, "normal", 1]]) {
       const tag = w + "px " + size + (z !== 1 ? " text " + z * 100 + "%" : "");
       for (const who of ["ethan", "sophie", "demo"]) {
         const ctx = await browser.newContext({viewport: {width: w, height: 760}, deviceScaleFactor: 2, isMobile: true, hasTouch: true, locale: "en-GB", timezoneId: "Europe/London", serviceWorkers: "block"});
         await ctx.route("**/exec", r => /"bank\.status"/.test(r.request().postData() || "") ? r.fulfill({contentType: "application/json", body: JSON.stringify({ok: true, bank})}) : r.continue());
-        await ctx.addInitScript(textScale, z); await ctx.addInitScript(() => { try { localStorage.setItem("budgie.checkSeen", JSON.stringify("2027-03-02")); } catch (e) {} });
+        await ctx.addInitScript(textScale, z); await ctx.addInitScript(() => { try { ["ethan", "sophie", "alex", "sam"].forEach(n => localStorage.setItem("budgie.tour." + n, "true")); localStorage.setItem("budgie.checkSeen", JSON.stringify("2027-03-02")); } catch (e) {} });
         page = await ctx.newPage(); await page.clock.install({time: new Date("2027-03-02T19:30:00")});
         if (who === "demo") { await page.goto("http://localhost:" + PORT + "/"); await page.waitForSelector("main"); (found[tag + " connect"] = await page.evaluate(problems)); await page.click('[data-a="demo"][data-v="on"]'); }
         else { await page.goto(links[who]); await page.waitForFunction(() => /Hi /.test(document.querySelector("#top").textContent), null, {timeout: 8000}); }
@@ -1052,10 +1293,14 @@ const fails = [], check = (name, cond, extra) => { if (cond) console.log("ok", n
         await goTo("money"); await page.click('[data-a="moneyview"][data-v="year"]'); found[tag + " " + who + " money year"] = await page.evaluate(problems);
         for (const [s, t] of taps) {
           await goTo(s); await page.waitForTimeout(s === "bank" || s === "linked" ? 150 : 20);
-          const [a, v] = t.split(":"), sel = '[data-a="' + a + '"]' + (v ? '[data-v="' + v + '"]' : "");
-          if (!(await page.$("#main " + sel + ", #sheets " + sel))) continue;
-          await page.evaluate(sel => document.querySelector("#main " + sel + ", #sheets " + sel).click(), sel); await page.waitForTimeout(a === "applink" ? 300 : 40);
-          found[tag + " " + who + " " + s + " > " + t] = await page.evaluate(problems);
+          // (a > b taps one thing, then another: a form, then a sheet on it)
+          let went = true;
+          for (const step of t.split(">")) {
+            const [a, v] = step.split(":"), sel = '[data-a="' + a + '"]' + (v ? '[data-v="' + v + '"]' : "");
+            if (!(await page.$("#main " + sel + ", #sheets " + sel))) { went = false; break; }
+            await page.evaluate(sel => document.querySelector("#main " + sel + ", #sheets " + sel).click(), sel); await page.waitForTimeout(a === "applink" ? 300 : 40);
+          }
+          if (went) found[tag + " " + who + " " + s + " > " + t] = await page.evaluate(problems);
         }
         await ctx.close();
       }

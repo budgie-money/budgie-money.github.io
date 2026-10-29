@@ -22,7 +22,8 @@ function webAppUrl_() {
 }
 var NO_URL_ = "Add a Script Property WEB_APP_URL (Project Settings > Script Properties) with your Web app URL, ending /exec (Deploy > Manage deployments), and run again.";
 var APP_URL = "https://budgie-money.github.io/";
-var SCHEMA_VERSION = 1;
+// 2: loanItems (what an IOU is made of). Raised whenever a table or column is added: the sheet gets it by itself (ensureSchema_)
+var SCHEMA_VERSION = 2;
 var COMMON = ["deleted", "updated", "by"];
 var SCHEMA = {
   people: ["id", "name", "bank", "potWord", "partner", "colour"],
@@ -36,6 +37,7 @@ var SCHEMA = {
   moves: ["id", "date", "person", "from", "to", "amount", "key", "note", "review"],
   settlements: ["id", "date", "from", "to", "amount", "fromAccount", "toAccount", "loan", "key", "note"],
   loans: ["id", "lender", "borrower", "name", "amount", "date", "account", "repay", "repayFrom", "repayDay", "notes"],
+  loanItems: ["id", "loan", "name", "date", "cost", "share", "note"],
   goals: ["id", "owners", "name", "target", "due", "accounts", "kind", "extra", "price", "notes"],
   valuations: ["id", "account", "date", "amount", "note"],
   amounts: ["id", "item", "start", "amount", "shares", "note"],
@@ -52,7 +54,7 @@ var HELP = {
   income: "Money that comes in on a schedule. isPay = TRUE for your salary (it sets your pay periods).", bills: "Money that goes out on a schedule. split: a row id from splits if you share it. pool: for an estimate that the real bills count against (flat bills), when its first bills month starts (its day is the day each one starts), then any change (\"2026-10-16, off 2027-01-16\"); set it in the app.",
   budgets: "mode: daily, weekly, oneoff, saving or remainder (gets whatever is left).", splits: "shares: \"ethan:2, sophie:1\" for parts, or \"sophie=500\" for a fixed amount.",
   transfers: "One of you paying the other on a schedule, like a rent share.", transactions: "Every payment you log.", moves: "Pot moves you ticked off in the app.",
-  settlements: "One-off payments between you two. loan: a row id from loans if it repays one.", loans: "Money one of you owes the other. repay: amount each month from repayFrom.",
+  settlements: "One-off payments between you two. loan: a row id from loans if it repays one.", loans: "Money one of you owes the other. repay: amount each month from repayFrom. With items, amount is their total.", loanItems: "What a loan is made of: one row per thing. share is what the borrower owes for it (it can be negative); cost is the full price, if you want it kept.",
   goals: "owners: who it belongs to. accounts: which accounts count towards it.", valuations: "A balance you checked. Everything after its date is worked out.",
   amounts: "A price or pay change for a bill, income or budget, from the start date. Or a split's new shares (item: the split's id).", exceptions: "A change to one date: skip, move (newDate), amount (what it really was) or paid (it went out).",
   settings: "Settings for each person.", gifts: "Gift ideas and what you bought. Only you see your own list.", prices: "Fund prices for the LISA tracker, filled in by the script.", meta: "Housekeeping."
@@ -141,6 +143,15 @@ function newAppKey(personId, app) {
   Logger.log("New " + APPS_[app].name + " key made for " + personId + ".");
   try { return appLink(personId, app); } catch (e) { Logger.log(String(e.message || e)); return ""; }
 }
+// A new table or column in SCHEMA reaches the live sheet by itself: the first request after the new code is deployed (or the
+// next hourly refresh) adds the tab or the column, once, and notes the schema version in meta. Nothing is ever removed or moved.
+function ensureSchema_() {
+  var meta = readTable_("meta").rows.filter(function (r) { return r.key === "schemaVersion"; })[0];
+  if (meta && +meta.value >= SCHEMA_VERSION) return false;
+  var ss = ss_(); Object.keys(SCHEMA).forEach(function (t) { ensureTab_(ss, t); });
+  CACHE_ = {}; setMeta_("schemaVersion", SCHEMA_VERSION);
+  return true;
+}
 function ensureTab_(ss, t) {
   var cols = SCHEMA[t].concat(t === "meta" ? [] : COMMON), sh = ss.getSheetByName(t);
   if (!sh) { sh = ss.insertSheet(t); sh.getRange(1, 1, 1, cols.length).setValues([cols]).setFontWeight("bold").setBackground("#E3ECF5"); sh.setFrozenRows(1); sh.getRange(1, 1).setNote(HELP[t] || ""); return sh; }
@@ -195,6 +206,7 @@ function handle_(b) {
     // the lock covers writing and taking a copy of the tables, the working out happens after it's released
     lock.waitLock(25000); locked = true;
     try {
+      ensureSchema_();
       if (Array.isArray(b.ops) && b.ops.length) { var res = applyOps_(me, b.ops, app); applied = res.applied; rejected = res.rejected; if (applied.length) SpreadsheetApp.flush(); }
       dateUndated_(Date.now());
       snap = snapshot_();
@@ -281,6 +293,8 @@ function owner_(t, r) {
     case "income": case "bills": case "budgets": case "transactions": case "moves": case "settings": case "gifts": return [r.person];
     case "transfers": case "settlements": return [r.from, r.to];
     case "loans": return [r.lender, r.borrower];
+    // what a loan is made of is seen and changed by the same two people as the loan itself
+    case "loanItems": var ln = r.loan ? byId_("loans", r.loan) : null; return ln ? [ln.lender, ln.borrower] : [];
     case "goals": return String(r.owners || "").split(/[,\s]+/);
     case "valuations": var a = byId_("accounts", r.account); return a ? [a.owner] : [];
     case "amounts": case "exceptions": var it = itemOwner_(r.item); return it;
@@ -304,7 +318,7 @@ var ITEM_TABS_ = ["income", "bills", "budgets", "transfers", "loans", "splits"];
 // The same holds for every other tab (payments, moves, balances...): nothing looks those up across tabs today, but
 // one id is one thing, so nothing added later can be fooled by a row that shares it.
 var ID_TABS_ = ["people", "accounts", "income", "bills", "budgets", "splits", "transfers", "loans", "goals"];
-var ID_ANY_TABS_ = ID_TABS_.concat(["transactions", "moves", "settlements", "valuations", "amounts", "exceptions", "settings", "gifts"]);
+var ID_ANY_TABS_ = ID_TABS_.concat(["transactions", "moves", "settlements", "valuations", "amounts", "exceptions", "settings", "gifts", "loanItems"]);
 function idUsedElsewhere_(t, id) { for (var i = 0; i < ID_ANY_TABS_.length; i++) if (ID_ANY_TABS_[i] !== t && byId_(ID_ANY_TABS_[i], id)) return ID_ANY_TABS_[i]; return ""; }
 // an id in more than one item tab (only possible by typing into the sheet) belongs to nobody: its changes can't be
 // seen or made by either of you
@@ -473,7 +487,7 @@ function applyOne_(me, op, now, by, opts) {
   // the bank feed): when To do no longer asks for anything under its key, it's kept but marked as a copy, as for a
   // payday move, so neither the balances nor To do change. (A key To do still asks for, say more to move back after
   // another shop, is a new tick.)
-  if (!existing && !sys && t === "moves" && /^(back|cover|fill|lent|late|refund):/.test(String(row.key || "")) && !toBoolCell_(row.deleted) && Budgie.isIso(String(row.date || ""))) {
+  if (!existing && !sys && t === "moves" && /^(back|cover|fill|lent|late|refund|goal):/.test(String(row.key || "")) && !toBoolCell_(row.deleted) && Budgie.isIso(String(row.date || ""))) {
     var before = tab.rows.filter(function (r) { return String(r.key) === String(row.key) && r.person === row.person && !toBoolCell_(r.deleted); })[0];
     if (before) {
       var mdb = Budgie.load(allTables_(), String(row.date));
@@ -537,6 +551,7 @@ function applyOne_(me, op, now, by, opts) {
   tab.head = head;
   var line = head.map(function (h) { return cell_(row[h]); });
   // keep the copy of the tab in step, rather than reading the whole tab again after every change
+  var wasLoan = t === "loanItems" && existing ? String(existing.loan || "") : "";
   if (existing && HIDE_ROWS_[t]) noteHidden_(t, existing, row);
   if (existing) {
     sh.getRange(existing._row, 1, 1, line.length).setValues([line]);
@@ -546,6 +561,16 @@ function applyOne_(me, op, now, by, opts) {
     var added = {_row: sh.getLastRow()}; Object.keys(row).forEach(function (k) { added[k] = row[k]; });
     tab.rows.push(added); if (tab.idx) tab.idx[id] = added;
   }
+  // a loan with items is worth what its items add up to: its own amount is kept in step (the engine adds them up too)
+  if (t === "loanItems") [String(row.loan || ""), wasLoan].forEach(function (lid, i, all) { if (lid && all.indexOf(lid) === i) loanTotal_(lid, now); });
+}
+// the loan's amount follows its items (their shares added up) as long as it has any; with none it keeps the amount it has
+function loanTotal_(loanId, now) {
+  var ln = byId_("loans", loanId); if (!ln) return;
+  var sum = 0, any = false;
+  readTable_("loanItems").rows.forEach(function (r) { if (String(r.loan) === String(loanId) && !toBoolCell_(r.deleted)) { any = true; sum += +String(r.share === undefined || r.share === null ? 0 : r.share).replace(/[£,\s]/g, "") || 0; } });
+  sum = Math.round(sum * 100) / 100;
+  if (any && Math.abs((+ln.amount || 0) - sum) > 0.004) applyOne_(String(ln.lender), {op: "put", table: "loans", row: {id: loanId, amount: sum}}, now, "sheet", {sys: true});
 }
 
 // which person each account column belongs to: a payment, pot move, bill, income or budget uses its person's own
@@ -854,6 +879,7 @@ function poolFreeze_(db, today) {
 }
 function refreshBudgetTabs() {
   CACHE_ = {};
+  try { ensureSchema_(); } catch (e) { Logger.log("Updating the tabs failed: " + (e && e.message || e)); }
   var today = Utilities.formatDate(new Date(), tz_(), "yyyy-MM-dd"), db = Budgie.load(allTables_(), today), ss = ss_();
   try { if (poolFreeze_(db, today)) { CACHE_ = {}; db = Budgie.load(allTables_(), today); } } catch (e) { Logger.log("Recording settled bills months failed: " + (e && e.message || e)); }
   db.people.forEach(function (p) {

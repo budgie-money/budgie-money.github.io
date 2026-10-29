@@ -490,7 +490,7 @@ const savedUp = (pl, id) => lineAmt(pl, l => l.setAside && l.bill === id && l.ki
   const bs = B.budgetState(c, me, per);
   eq("compat: budgetState(db, me, per)", ["amount", "spent", "left", "avail", "carryIn", "carryOut", "over"].every(k => k in bs["e-fun"]) && bs["e-fun"].period.start === per.start, true);
   eq("compat: still exported", ["load", "coming", "periodAt", "planFor", "budgetState", "today", "checks", "lisa", "yearly", "yearReview"].every(k => typeof B[k] === "function"), true);
-  eq("compat: version", B.VERSION, "1.4.22");
+  eq("compat: version", B.VERSION, "1.4.23");
 })();
 
 // C3: a payday move ticked in the app and by the bank feed counts once (the latest)
@@ -1519,6 +1519,185 @@ const tickPay11 = (t, p, d) => { const L0 = B.load(t, d), per = B.periodAt(L0, p
   // a late pay: still waiting two days on, until the bank sees it
   eq("Z5: a late pay is still waited for on the 31st, and no top-up", [B.payPending(B.load(mk(), "2026-10-31"), "ethan", B.periodAt(B.load(mk(), "2026-10-31"), "ethan", "2026-10-31"), "2026-10-31"), topUps(td(mk(), "2026-10-31"))], [true, []]);
   eq("Z5: after a week it isn't waited for any more", B.payPending(B.load(mk(), "2026-11-06"), "ethan", B.periodAt(B.load(mk(), "2026-11-06"), "ethan", "2026-11-06"), "2026-11-06"), false);
+}
+
+// --- itemised IOUs (loanItems): a loan with items is worth the sum of their shares; one without behaves as before
+{
+  const items = (t) => { t.loanItems = [
+    {id: "i1", loan: "sofa", name: "Sofa", date: "2026-10-20", cost: 700, share: 350, note: "half"},
+    {id: "i2", loan: "sofa", name: "Delivery", date: "2026-10-22", cost: 60, share: 60},
+    {id: "i3", loan: "sofa", name: "Her half of the takeaway", date: "2026-10-25", cost: 40, share: -20},
+    {id: "i4", loan: "sofa", name: "Gone", share: 999, deleted: true}]; };
+  const L = db(items), l = B.loans(L, "ethan", "2026-11-01")[0];
+  near("IOU items: the loan is the sum of its shares (a negative one takes off)", l.amount, 390);
+  eq("IOU items: listed oldest first, deleted ones left out, cost kept", l.items.map(x => [x.name, x.share, x.cost]), [["Sofa", 350, 700], ["Delivery", 60, 60], ["Her half of the takeaway", -20, 40]]);
+  eq("IOU items: an item with no cost has none", db(t => { items(t); t.loanItems.push({id: "i5", loan: "sofa", name: "Tip", share: 5}); }).loans[0].items.slice(-1)[0].name, "Tip");
+  eq("IOU items: no cost reads as none", B.loans(db(t => { items(t); t.loanItems.push({id: "i5", loan: "sofa", name: "Tip", share: 5}); }), "ethan", "2026-11-01")[0].items.slice(-1)[0].cost, null);
+  // repayments follow the new total: £200 a month of £390 is £200 then £190
+  eq("IOU items: repayments are worked out from the total, one schedule", l.plan.map(r => [r.date, r.amount]), [["2026-12-28", 200], ["2027-01-28", 190]]);
+  near("IOU items: paid back so far still counts against it", B.loans(db(t => { items(t); t.settlements.push({id: "s1", date: "2026-12-28", from: "sophie", to: "ethan", amount: 200, loan: "sofa", key: "loan:sofa:2026-12-28"}); }), "ethan", "2026-12-29")[0].left, 190);
+  near("IOU items: net worth owed uses the total", B.netWorth(L, "ethan", "2026-11-01").rows.find(r => /owes you/.test(r.name)).amount, 390);
+  near("IOU items: so does Sophie's side", B.netWorth(L, "sophie", "2026-11-01").rows.find(r => /You owe/.test(r.name)).amount, -390);
+  near("IOU items: the plan's repayment due is the same", B.loans(L, "sophie", "2026-11-01")[0].plan[0].amount, 200);
+  // no items: exactly as before
+  near("IOU items: a loan without items keeps its own amount", B.loans(db(), "ethan", "2026-11-01")[0].amount, 600);
+  eq("IOU items: and has an empty list", B.loans(db(), "ethan", "2026-11-01")[0].items, []);
+  near("IOU items: items that are all taken off leave the loan's own amount", B.loans(db(t => { t.loanItems = [{id: "i4", loan: "sofa", name: "Gone", share: 999, deleted: true}]; }), "ethan", "2026-11-01")[0].amount, 600);
+  near("IOU items: an item of a loan that isn't there changes nothing", B.loans(db(t => { t.loanItems = [{id: "i9", loan: "nothing", name: "x", share: 5}]; }), "ethan", "2026-11-01")[0].amount, 600);
+  // an item typed into the sheet as text with a pound sign is still a number
+  near("IOU items: a share typed as £1,234.50 is a number", B.loans(db(t => { t.loanItems = [{id: "i6", loan: "sofa", name: "x", share: "£1,234.50"}]; }), "ethan", "2026-11-01")[0].amount, 1234.5);
+}
+
+// --- itemised IOUs: what each item has paid off (derived from the repayments, oldest item first)
+{
+  const mk = (extra, pay, mut) => db(t => { t.loanItems = [
+    {id: "a", loan: "sofa", name: "Sofa", date: "2026-10-20", cost: 230, share: 115},
+    {id: "b", loan: "sofa", name: "Dress", date: "2026-10-22", cost: 18.4, share: 18.4},
+    {id: "c", loan: "sofa", name: "Takeaway", date: "2026-10-25", cost: 40, share: -20}].concat(extra || []);
+    if (pay) t.settlements.push({id: "p1", date: "2026-11-02", from: "sophie", to: "ethan", amount: pay, loan: "sofa", key: "loan:sofa:2026-11-02"}); if (mut) mut(t); });
+  const st = (L, d) => B.loans(L, "ethan", d || "2026-11-03")[0];
+  const sum = (x) => x.items.map(i => i.name + ":" + i.state + ":" + i.left).join(" ");
+  eq("IOU paid: how each is shared is told from the cost and the share", st(mk()).items.map(i => i.how), ["half", "all", "custom"]);
+  near("IOU paid: total £113.40", st(mk()).amount, 113.4);
+  eq("IOU paid: nothing paid back: the £20 the lender owes back already takes off the oldest, and says credit", sum(st(mk())), "Sofa:part:95 Dress:none:18.4 Takeaway:credit:0");
+  eq("IOU paid: with no negative item nothing is started", sum(st(mk(null, 0, t => { t.loanItems.pop(); }))), "Sofa:none:115 Dress:none:18.4");
+  // £100 paid back, plus the £20 the lender owes back, used up oldest first
+  eq("IOU paid: a part payment pays the oldest first and part of the next", sum(st(mk(null, 100))), "Sofa:paid:0 Dress:part:13.4 Takeaway:credit:0");
+  near("IOU paid: what's left on the items adds up to what's left on the IOU", st(mk(null, 100)).items.reduce((t, i) => t + i.left, 0), st(mk(null, 100)).left);
+  near("IOU paid: and the IOU still says £100 paid and £13.40 left", st(mk(null, 100)).paid + st(mk(null, 100)).left, 113.4);
+  eq("IOU paid: paid back in full: everything paid", sum(st(mk(null, 113.4))), "Sofa:paid:0 Dress:paid:0 Takeaway:credit:0");
+  eq("IOU paid: a small payment leaves the first part-paid", sum(st(mk(null, 50))), "Sofa:part:45 Dress:none:18.4 Takeaway:credit:0");
+  // the allocation is the same for both of them
+  eq("IOU paid: Sophie sees the same", sum(B.loans(mk(null, 100), "sophie", "2026-11-03")[0]), sum(st(mk(null, 100))));
+  // an item dated earlier is paid first, whatever order they were added in
+  eq("IOU paid: dated earlier means paid first", B.loans(db(t => { t.loanItems = [{id: "x", loan: "sofa", name: "Later", date: "2026-10-30", share: 100}, {id: "y", loan: "sofa", name: "Earlier", date: "2026-10-01", share: 100}]; t.settlements.push({id: "p", date: "2026-11-02", from: "sophie", to: "ethan", amount: 100, loan: "sofa"}); }), "ethan", "2026-11-03")[0].items.map(i => i.name + ":" + i.state).join(" "), "Earlier:paid Later:none");
+  eq("IOU paid: no date: after dated ones, in the order added", B.loans(db(t => { t.loanItems = [{id: "x", loan: "sofa", name: "First", share: 10}, {id: "y", loan: "sofa", name: "Second", share: 10}, {id: "z", loan: "sofa", name: "Dated", date: "2026-10-01", share: 10}]; }), "ethan", "2026-11-03")[0].items.map(i => i.name).join(" "), "Dated First Second");
+  // editing an item after payments works it out again
+  const edited = mk(null, 100, t => { t.loanItems.find(i => i.id === "a").share = 150; });
+  eq("IOU paid: raising an item's share after payments re-works it", sum(st(edited)), "Sofa:part:30 Dress:none:18.4 Takeaway:credit:0");
+  near("IOU paid: and the IOU is £48.40 left", st(edited).left, 48.4);
+  const gone = mk(null, 100, t => { t.loanItems.find(i => i.id === "a").deleted = true; });
+  eq("IOU paid: taking an item off works it out again too", sum(st(gone)), "Dress:paid:0 Takeaway:credit:0");
+  // a repayment as of an earlier date only counts what had been paid by then
+  eq("IOU paid: as it was before the payment (only the £20 the lender owes back has been used)", sum(st(mk(null, 100), "2026-11-01")), "Sofa:part:95 Dress:none:18.4 Takeaway:credit:0");
+  // an odd penny: half of £18.41 is £9.21, and says half
+  eq("IOU paid: half of an odd penny rounds up and still says half", B.loans(db(t => { t.loanItems = [{id: "x", loan: "sofa", name: "Odd", cost: 18.41, share: 9.21}]; }), "ethan", "2026-11-03")[0].items[0].how, "half");
+  eq("IOU paid: an item with no cost is custom", B.loans(db(t => { t.loanItems = [{id: "x", loan: "sofa", name: "Odd", share: 9.21}]; }), "ethan", "2026-11-03")[0].items[0].how, "custom");
+  // overpaid: nothing goes below paid
+  eq("IOU paid: more than it comes to leaves everything paid", sum(st(mk(null, 500))), "Sofa:paid:0 Dress:paid:0 Takeaway:credit:0");
+  // a loan with no items is untouched
+  eq("IOU paid: no items, no states", B.loans(db(), "ethan", "2026-11-03")[0].items, []);
+}
+
+// --- unspent money on payday: a budget that keeps it holds it back; one that lets it go counts it as already there, so
+// less is moved in and the same amount more goes to whatever is left (Ethan's Cash ISA)
+{
+  const at = (carry) => { const d = db(t => { t.budgets.find(b => b.id === "e-food-b").carry = carry; t.budgets.find(b => b.id === "e-fun").carry = carry; });
+    d.today = "2026-11-26"; const pl = B.planFor(d, "ethan", B.periodAt(d, "ethan", "2026-11-26")); return {pl, d}; };
+  const keep = at(true).pl, go = at(false).pl, line = (pl, acc) => (pl.lines.find(l => l.already && l.account === acc) || {amount: 0}).amount;
+  near("unspent kept: the food pot only counts what is beyond the carried money", line(keep, "e-food"), 21.43);
+  near("unspent let go: all the unspent food money counts as already in the pot", line(go, "e-food"), 200);
+  near("so what is left (the Cash ISA) is more by exactly the unspent money", go.remainder - keep.remainder, (200 - 21.43) + (150 - 16.07));
+  near("and the payday move into the food pot is smaller by the same", B.payday(at(true).d, "ethan", B.periodAt(at(true).d, "ethan", "2026-11-26")).moves.concat([{to: "e-food", amount: 0}]).find(m => m.to === "e-food").amount - (B.payday(at(false).d, "ethan", B.periodAt(at(false).d, "ethan", "2026-11-26")).moves.concat([{to: "e-food", amount: 0}]).find(m => m.to === "e-food").amount), 178.57);
+  eq("the budget that gets what's left is the Cash ISA", go.remainderBudget.name, "Cash ISA");
+}
+
+// --- goals: where the money comes from, progress and the date it is on course for
+{
+  const mk = (mut) => { const t = fixture(); t.goals.push({id: "g-isa", owners: "ethan", name: "Rainy day", target: 5000, due: "2027-12-31", accounts: "e-isa"}); if (mut) mut(t); return t; };
+  const sum = (f) => f.lines.reduce((t, l) => t + l.amount, 0);
+  const d1 = B.load(mk(), "2026-11-05"), house = B.goalFlow(d1, "ethan", "house", "2026-11-05"), isa = B.goalFlow(d1, "ethan", "g-isa", "2026-11-05");
+  eq("goal flow: the house goal gets the Lifetime ISA saving, and what's left goes elsewhere", house.lines.map(l => [l.kind, l.label, l.amount]), [["saving", "Lifetime ISA", 300]]);
+  const plan1 = B.planFor(d1, "ethan", B.periodAt(d1, "ethan", "2026-11-05"));
+  near("goal flow: the goal the remainder goes into gets all of what's left", isa.lines.filter(l => l.kind === "left" || l.kind === "leftover").reduce((t, l) => t + l.amount, 0), plan1.remainder);
+  eq("goal flow: split into what is left over from last month and what's left on payday", isa.lines.map(l => l.kind), ["leftover", "left"]);
+  near("goal flow: the total is what goes in", isa.total, sum(isa));
+  // a repayment due in the period is part of what's left, and says so; a bill that ended frees its amount
+  const d2 = B.load(mk(), "2026-12-30"), f2 = B.goalFlow(d2, "ethan", "g-isa", "2026-12-30");
+  eq("goal flow: money paid back to you is named", f2.lines.map(l => [l.kind, l.amount]).slice(0, 1), [["repaid", 200]]);
+  near("goal flow: and the lines add up to what's left on payday", sum(f2), B.planFor(d2, "ethan", f2.period).remainder);
+  const d3 = B.load(mk(t => { t.bills.push({id: "e-klarna", person: "ethan", name: "Klarna", amount: 45, account: "e-main", unit: "month", on: "5", start: "2026-06-05", end: "2026-12-31"}); }), "2026-12-30");
+  const f3 = B.goalFlow(d3, "ethan", "g-isa", "2026-12-30"), fr = f3.lines.find(l => l.kind === "freed");
+  eq("goal flow: a bill that ended in the last period shows what it freed", fr && [fr.amount, fr.names], [45, ["Klarna"]]);
+  near("goal flow: and the lines still add up to what's left", sum(f3), B.planFor(d3, "ethan", f3.period).remainder);
+  eq("goal flow: a bill still going frees nothing", B.goalFlow(d2, "ethan", "g-isa", "2026-12-30").lines.some(l => l.kind === "freed"), false);
+  // one-off money in last period, not yet used, is named inside what is left over
+  const d4 = B.load(mk(t => { t.transactions.push({id: "bk-in", date: "2026-11-10", person: "ethan", amount: -60, budget: "", account: "e-main", note: "Sold a chair", bankId: "9", source: "monzo"}); }), "2026-11-30");
+  const f4 = B.goalFlow(d4, "ethan", "g-isa", "2026-11-30"), oo = f4.lines.find(l => l.kind === "oneoff");
+  eq("goal flow: one-off money in that landed last period is named", oo && oo.amount, 60);
+  near("goal flow: and the lines still add up", sum(f4), B.planFor(d4, "ethan", f4.period).remainder);
+  eq("goal flow: a refund for a budget isn't one-off money", B.goalFlow(B.load(mk(t => { t.transactions.push({id: "bk-rf", date: "2026-11-10", person: "ethan", amount: -60, budget: "e-fun", account: "e-main", note: "Refund"}); }), "2026-11-30"), "ethan", "g-isa", "2026-11-30").lines.some(l => l.kind === "oneoff"), false);
+  eq("goal flow: nor one still to be checked", B.goalFlow(B.load(mk(t => { t.transactions.push({id: "bk-rf", date: "2026-11-10", person: "ethan", amount: -60, budget: "", review: true, account: "e-main", note: "Refund"}); }), "2026-11-30"), "ethan", "g-isa", "2026-11-30").lines.some(l => l.kind === "oneoff"), false);
+  // progress: with no history, this pay period's plan is the pace
+  const pr = B.goalProgress(d1, "ethan", "g-isa", "2026-11-05");
+  eq("progress: with under four weeks of history the plan is the pace", [pr.basis, pr.perMonth], ["plan", B.round(isa.total)]);
+  near("progress: the date follows from the pace", B.diff("2026-11-05", pr.eta), Math.ceil(5000 / pr.perMonth * 30.44));
+  eq("progress: and says how it stands against the due date (days early, minus)", pr.dueGap, B.diff("2027-12-31", pr.eta));
+  near("progress: what's needed a month to be on time", pr.needed, 5000 / (B.diff("2026-11-05", "2027-12-31") / 30.44));
+  // with history: the last whole pay periods' growth, a month
+  const dh = B.load(mk(t => { t.moves.push({id: "m1", date: "2026-10-30", person: "ethan", from: "e-main", to: "e-isa", amount: 500, key: "pay:2026-10-29:e-isa"}, {id: "m2", date: "2026-11-27", person: "ethan", from: "e-main", to: "e-isa", amount: 600, key: "pay:2026-11-26:e-isa"}); }), "2027-01-10");
+  const ph = B.goalProgress(dh, "ethan", "g-isa", "2027-01-10");
+  eq("progress: with history, how much the accounts grew a month", [ph.basis, ph.saved, Math.round(ph.perMonth)], ["history", 1100, Math.round(1100 / 56 * 30.44)]);
+  near("progress: the date it's on course for", B.diff("2027-01-10", ph.eta), Math.ceil(3900 / ph.perMonth * 30.44));
+  // a goal that has been reached, and one with no pace
+  eq("progress: reached", B.goalProgress(B.load(mk(t => { t.goals[1].target = 500; t.valuations.push({id: "vi", account: "e-isa", date: "2026-10-26", amount: 900}); }), "2026-11-05"), "ethan", "g-isa", "2026-11-05").reached, true);
+  eq("progress: no pace, no date", [B.goalProgress(d1, "ethan", "house", "2026-11-05").perMonth > 0, B.goalProgress(B.load(mk(t => { t.budgets = t.budgets.filter(b => b.id !== "e-isa-b"); }), "2026-11-05"), "ethan", "g-isa", "2026-11-05").eta], [true, ""]);
+}
+
+// --- goals: "Send one-off money and repayments here straight away"
+{
+  const mk = (on, mut) => { const t = fixture(); t.goals.push({id: "g-isa", owners: "ethan", name: "Rainy day", target: 5000, due: "2027-12-31", accounts: "e-isa"}); if (on) t.settings.push({person: "ethan", key: "goal.direct.g-isa", value: on}); if (mut) mut(t); return t; };
+  const repaid = t => t.settlements.push({id: "s1", date: "2026-12-28", from: "sophie", to: "ethan", amount: 200, loan: "sofa", key: "loan:sofa:2026-12-28"});
+  const oneoff = t => t.transactions.push({id: "bk-1", date: "2026-12-10", person: "ethan", amount: -50, budget: "", account: "e-main", note: "Sold a bike", bankId: "1", source: "monzo"});
+  const rem = (t, d, p) => B.planFor(B.load(t, d), "ethan", B.periodAt(B.load(t, d), "ethan", p || d)).remainder;
+  const goalItems = (t, d) => B.todo(B.load(t, d), "ethan", d).filter(x => x.direct);
+  eq("straight away: off by default: nothing is asked for", goalItems(mk("", t => { repaid(t); oneoff(t); }), "2026-12-30"), []);
+  eq("straight away: 'off' is off", goalItems(mk("off", t => { repaid(t); oneoff(t); }), "2026-12-30"), []);
+  const on = goalItems(mk("2026-10-26", t => { repaid(t); oneoff(t); }), "2026-12-30");
+  eq("straight away: one-off money in and a repayment received are moved to the goal's account", on.map(x => [x.from, x.to, x.amount, x.key]), [["e-main", "e-isa", 50, "goal:g-isa:bk-1"], ["e-main", "e-isa", 200, "goal:g-isa:s1"]]);
+  eq("straight away: and say why", [/came in/.test(on[0].why), /Rainy day/.test(on[0].why), /paid back/.test(on[1].why)], [true, true, true]);
+  eq("straight away: only from the day it was turned on", goalItems(mk("2026-12-20", t => { repaid(t); oneoff(t); }), "2026-12-30").map(x => x.amount), [200]);
+  eq("straight away: a payment for a budget (a refund) isn't one-off money", goalItems(mk("2026-10-26", t => t.transactions.push({id: "r", date: "2026-12-10", person: "ethan", amount: -9, budget: "e-fun", account: "e-main"})), "2026-12-30"), []);
+  eq("straight away: a repayment of someone else's loan to you is only yours when you lent it", goalItems(mk("2026-10-26", t => { t.loans.push({id: "back", lender: "sophie", borrower: "ethan", name: "Back", amount: 100, date: "2026-10-26"}); t.settlements.push({id: "s9", date: "2026-12-12", from: "ethan", to: "sophie", amount: 50, loan: "back"}); }), "2026-12-30"), []);
+  eq("straight away: a goal with no account of yours apart from the main one can't take it", B.goalDirect(B.load(mk("2026-10-26", t => { t.goals[1].accounts = "e-main"; }), "2026-12-30"), "ethan").length, 0);
+  // ticking it: asked for no more
+  const ticked = goalItems(mk("2026-10-26", t => { repaid(t); oneoff(t); t.moves.push({id: "mv1", date: "2026-12-30", person: "ethan", from: "e-main", to: "e-isa", amount: 200, key: "goal:g-isa:s1"}); }), "2026-12-30");
+  eq("straight away: one that's been ticked isn't asked for again", ticked.map(x => x.amount), [50]);
+  eq("straight away: and a part-ticked one only for the rest", goalItems(mk("2026-10-26", t => { repaid(t); t.moves.push({id: "mv1", date: "2026-12-30", person: "ethan", from: "e-main", to: "e-isa", amount: 120, key: "goal:g-isa:s1"}); }), "2026-12-30").map(x => x.amount), [80]);
+  // a move already made in the bank counts as done
+  eq("straight away: a move already made in the bank is done", goalItems(mk("2026-10-26", t => { repaid(t); t.moves.push({id: "bk-mv", date: "2026-12-29", person: "ethan", from: "e-main", to: "e-isa", amount: 200, key: "bank:1"}); }), "2026-12-30").length, 0);
+  // payday doesn't count it twice
+  near("straight away: the expected repayment isn't in the plan (what's left is £200 less)", rem(mk("2026-10-26"), "2026-12-30") - rem(mk(""), "2026-12-30"), -200);
+  // (a loan of just the one repayment, so the next payday has none of its own)
+  const one = t => { t.loans[0].amount = 200; };
+  const jan = (on, mut) => rem(mk(on, t => { one(t); if (mut) mut(t); }), "2027-01-28");
+  near("straight away: next payday counts the same as without it, whether or not the money has been moved on yet", jan("2026-10-26", t => { repaid(t); oneoff(t); }), jan("", t => { repaid(t); oneoff(t); }));
+  const moved = [{id: "m1", date: "2026-12-30", person: "ethan", from: "e-main", to: "e-isa", amount: 200, key: "goal:g-isa:s1"}, {id: "m2", date: "2026-12-30", person: "ethan", from: "e-main", to: "e-isa", amount: 50, key: "goal:g-isa:bk-1"}];
+  near("straight away: and once it has been", jan("2026-10-26", t => { repaid(t); oneoff(t); t.moves.push(...moved); }), jan("2026-10-26", t => { repaid(t); oneoff(t); }));
+  near("straight away: moved on the day itself (payday morning) is the same too", jan("2026-10-26", t => { repaid(t); oneoff(t); t.moves.push(...moved.map(m => Object.assign({}, m, {date: "2027-01-28"}))); }), jan("2026-10-26", t => { repaid(t); oneoff(t); }));
+  // and a goal flow shows what was sent straight there
+  const fl = B.goalFlow(B.load(mk("2026-10-26", t => { repaid(t); }), "2026-12-30"), "ethan", "g-isa", "2026-12-30");
+  eq("straight away: the goal says what was sent straight to it, and that it's not moved yet", fl.lines.filter(l => /^direct/.test(l.kind)).map(l => [l.kind, l.amount, l.done]), [["direct-repaid", 200, false]]);
+  eq("straight away: and which account it goes to", fl.direct && fl.direct.account, "e-isa");
+  // money still counts for the balances either way
+  eq("straight away: the other person's money isn't touched: Sophie has no such goal", B.goalDirect(B.load(mk("2026-10-26"), "2026-12-30"), "sophie").length, 0);
+}
+
+// ================= Today's hero: how "You can spend today" is worked out =================
+{
+  for (const day of ["2026-10-28", "2026-11-05", "2026-11-20"]) {
+    const r = B.today(B.load(fixture(), day), "ethan", day);
+    // what's still needed is what's due out before payday (never the cash itself), and cash less that is what's free
+    // (free is never below nothing: when the cash doesn't cover what's needed, nothing is free)
+    eq("hero " + day + ": what's still needed is never less than nothing", r.needed >= 0, true);
+    near("hero " + day + ": cash less what is needed is what is free", Math.max(0, r.cash - r.needed), r.cashFree);
+    near("hero " + day + ": the cash allows free over the days left", r.cashDay, r.cashFree / r.daysLeft);
+    near("hero " + day + ": you can spend the lower of what the cash and the budgets allow", r.safe, Math.min(r.cashDay, r.budgetDay));
+  }
+  // the cash doesn't cover what's due: "still needed" is what's due, not the cash again
+  const t2 = fixture(); t2.valuations.push({id: "v-low", account: "e-main", date: "2026-11-05", amount: 5});
+  const r2 = B.today(B.load(t2, "2026-11-05"), "ethan", "2026-11-05");
+  eq("hero: with little cash, still needed isn't just the cash again", r2.cashFree === 0 && Math.abs(r2.needed - Math.abs(r2.cash)) > 0.01 ? true : r2.cashFree > 0, true);
 }
 
 console.log(fails ? fails + " failed, " + passes + " passed" : "All " + passes + " passed");

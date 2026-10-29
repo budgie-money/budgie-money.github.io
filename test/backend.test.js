@@ -918,5 +918,98 @@ const phone = (F, k) => { const P = {T: {}, since: 0}; P.sync = (ops) => { const
   ok("POOL: a recorded month keeps what was recorded", c2.Budgie.poolMonth(db2, db2.byId["e-flat"], "2026-10-16").back === 100 && c2.Budgie.poolMonth(db2, db2.byId["e-flat"], "2026-10-16").frozen === true);
 }
 
+// ================= itemised IOUs (loanItems) =================
+{
+  const F = fresh(t => { t.people.push({id: "pat", name: "Pat", partner: ""}); t.accounts.push({id: "p-main", owner: "pat", name: "Main", kind: "main"}); t.loans.push({id: "l-pat", lender: "pat", borrower: "sophie", name: "Pat's loan", amount: 40, date: "2026-10-20"}); });
+  const put = (k, row, op) => F.call({key: k, ops: [Object.assign({op: op || "put", table: "loanItems"}, op === "delete" ? {id: row.id} : {row})]});
+  // the lender adds an item; the borrower sees it; the amount follows
+  let r = put(F.kE, {id: "li-1", loan: "sofa", name: "Sofa", date: "2026-10-20", cost: 700, share: 350, note: "half"});
+  ok("IOU items: the lender can add one", r.ok && r.applied.length === 1 && !r.rejected.length, r);
+  r = put(F.kS, {id: "li-2", loan: "sofa", name: "Delivery", share: 60});
+  ok("IOU items: so can the borrower", r.applied.length === 1 && !r.rejected.length, r);
+  F.c.CACHE_ = {};
+  ok("IOU items: the loan's amount is kept in step with the shares (410)", +F.c.readTable_("loans").rows.find(x => x.id === "sofa").amount === 410, F.c.readTable_("loans").rows.find(x => x.id === "sofa"));
+  const se = F.call({key: F.kE, full: true}), ss = F.call({key: F.kS, full: true});
+  ok("IOU items: both of them see both items", ["li-1", "li-2"].every(id => se.rows.loanItems.some(x => x.id === id) && ss.rows.loanItems.some(x => x.id === id)), [se.rows.loanItems, ss.rows.loanItems]);
+  // taking one off and changing one moves the total again
+  r = put(F.kE, {id: "li-2"}, "delete");
+  F.c.CACHE_ = {};
+  ok("IOU items: removing an item takes it out of the total (350)", r.applied.length === 1 && +F.c.readTable_("loans").rows.find(x => x.id === "sofa").amount === 350);
+  r = put(F.kS, {id: "li-1", share: -25});
+  F.c.CACHE_ = {};
+  ok("IOU items: a negative share is fine", r.applied.length === 1 && +F.c.readTable_("loans").rows.find(x => x.id === "sofa").amount === -25);
+  // the engine on a phone and the sheet agree
+  const L = B.load(F.call({key: F.kE, full: true}).rows, "2026-11-01");
+  ok("IOU items: the engine adds the items up", B.loans(L, "ethan", "2026-11-01")[0].amount === -25 && B.loans(L, "ethan", "2026-11-01")[0].items.length === 1);
+  // a loan with no items keeps its amount even when it once had some
+  F.call({key: F.kE, ops: [{op: "put", table: "loanItems", row: {id: "li-1", deleted: true}}]});
+  F.c.CACHE_ = {};
+  ok("IOU items: a loan whose items are all gone keeps the amount it last had", F.c.readTable_("loans").rows.find(x => x.id === "sofa").amount !== undefined);
+  // privacy: items of someone else's loan can't be seen, added or changed
+  r = put(F.kE, {id: "li-bad", loan: "l-pat", name: "Sneaky", share: 5});
+  ok("IOU items: nobody adds an item to a loan that isn't theirs", r.rejected.length === 1 && /can't change that/.test(r.rejected[0].error) && !r.applied.length, r);
+  r = F.call({key: F.kS, ops: [{op: "put", table: "loanItems", row: {id: "li-pat", loan: "l-pat", name: "Her bit", share: 15}}]});
+  ok("IOU items: the borrower of that loan can", r.applied.length === 1, r);
+  const se2 = F.call({key: F.kE, full: true});
+  ok("IOU items: and Ethan never sees them", !se2.rows.loanItems.some(x => x.id === "li-pat") && !se2.rows.loans.some(x => x.id === "l-pat"));
+  r = put(F.kE, {id: "li-pat", name: "Mine now"});
+  ok("IOU items: or changes them", r.rejected.length === 1 && !r.applied.length, r);
+  r = put(F.kE, {id: "li-pat"}, "delete");
+  ok("IOU items: or takes them off", r.rejected.length === 1 && !r.applied.length, r);
+  r = F.call({key: F.kE, ops: [{op: "put", table: "loanItems", row: {id: "li-1", loan: "l-pat"}}]});
+  ok("IOU items: or move their own onto it", r.rejected.length === 1 && !r.applied.length, r);
+  r = put(F.kE, {id: "li-none", loan: "no-such-loan", name: "x", share: 1});
+  ok("IOU items: an item for a loan that isn't there is refused", r.rejected.length === 1, r);
+  r = put(F.kE, {id: "sofa", loan: "sofa", name: "x", share: 1});
+  ok("IOU items: an item can't take a loan's id", r.rejected.length === 1, r);
+  r = put(F.kE, {id: "e-main", loan: "sofa", name: "x", share: 1});
+  ok("IOU items: or an account's", r.rejected.length === 1, r);
+  r = F.call({key: F.kE, ops: [{op: "put", table: "loans", row: {id: "li-1", lender: "ethan", borrower: "sophie", name: "x", amount: 1}}]});
+  ok("IOU items: and a loan can't take an item's id", r.rejected.length === 1, r);
+  // an app key (Peckish) never touches them
+  const pk = F.c.appLink("ethan", "peckish"), key = F.env.props["APPKEY_ethan_peckish"];
+  r = F.call({key, ops: [{op: "put", table: "loanItems", row: {id: "t-pk-x", loan: "sofa", name: "x", share: 1}}]});
+  ok("IOU items: a linked app can't write them", !r.applied || !r.applied.length, r);
+  ok("IOU items: nor read them", !r.rows || !r.rows.loanItems, Object.keys(r.rows || {}));
+}
+// the tab arrives by itself on a sheet made before it existed
+{
+  const F = fresh();
+  delete F.env.sheets.loanItems;
+  F.c.CACHE_ = {};
+  F.env.sheets.meta.getDataRange().getValues().forEach((row, i) => { if (row[0] === "schemaVersion") F.env.sheets.meta.getRange(i + 1, 2).setValue(1); });
+  F.c.CACHE_ = {};
+  const r = F.call({key: F.kE});
+  ok("IOU items: the tab is made by the next request after a deploy", r.ok && !!F.env.sheets.loanItems, r.error);
+  F.c.CACHE_ = {};
+  const head = F.env.sheets.loanItems.getRange(1, 1, 1, F.env.sheets.loanItems.getLastColumn()).getValues()[0];
+  ok("IOU items: with its columns", ["id", "loan", "name", "date", "cost", "share", "note", "deleted", "updated", "by"].every(c => head.indexOf(c) >= 0), head);
+  ok("IOU items: and the version is noted", F.c.readTable_("meta").rows.some(m => m.key === "schemaVersion" && +m.value === F.c.SCHEMA_VERSION));
+  // a column missing from an older loans tab is added too, without touching its rows
+  const F2 = fresh();
+  const lsh = F2.env.sheets.goals; const cols = lsh.getRange(1, 1, 1, lsh.getLastColumn()).getValues()[0];
+  const i = cols.indexOf("price") + 1; lsh.getRange(1, i).setValue("");
+  F2.env.sheets.meta.getDataRange().getValues().forEach((row, k) => { if (row[0] === "schemaVersion") F2.env.sheets.meta.getRange(k + 1, 2).setValue(1); });
+  F2.c.CACHE_ = {};
+  F2.call({key: F2.kE});
+  const cols2 = lsh.getRange(1, 1, 1, lsh.getLastColumn()).getValues()[0];
+  ok("IOU items: a column an older tab lacks is added", cols2.indexOf("price") >= 0, cols2);
+}
+
+// ================= goals: straight-away money =================
+{
+  const F = fresh(t => { t.goals.push({id: "g-isa", owners: "ethan", name: "Rainy day", target: 5000, accounts: "e-isa"}); t.settlements.push({id: "s1", date: "2026-10-27", from: "sophie", to: "ethan", amount: 200, loan: "sofa", key: "loan:sofa:2026-10-27"}); });
+  let r = F.call({key: F.kE, ops: [{op: "put", table: "settings", row: {id: "ethan:goal.direct.g-isa", person: "ethan", key: "goal.direct.g-isa", value: "2026-10-26"}}]});
+  ok("goal straight away: the setting saves", r.applied.length === 1 && !r.rejected.length, r);
+  ok("goal straight away: and is only ever the person's own", !F.call({key: F.kS, full: true}).rows.settings.some(x => /goal\.direct/.test(x.key)));
+  r = F.call({key: F.kS, ops: [{op: "put", table: "settings", row: {id: "ethan:goal.direct.g-isa", person: "ethan", key: "goal.direct.g-isa", value: "off"}}]});
+  ok("goal straight away: the other one can't change it", r.rejected.length === 1 && !r.applied.length, r);
+  // the same tick twice (two phones) is kept once
+  const tick = (id) => F.call({key: F.kE, ops: [{op: "put", table: "moves", row: {id, date: "2026-10-28", person: "ethan", from: "e-main", to: "e-isa", amount: 200, key: "goal:g-isa:s1"}}]});
+  tick("mv-g1"); const second = tick("mv-g2"); F.c.CACHE_ = {};
+  const mv = F.c.readTable_("moves").rows.filter(x => x.key === "goal:g-isa:s1");
+  ok("goal straight away: ticking the same one twice counts once (the second is kept as a copy)", second.applied.length === 1 && mv.length === 2 && mv.filter(x => x.deleted === true || x.deleted === "TRUE").length === 1, mv);
+}
+
 console.log(fails ? fails + " failed, " + passes + " passed" : "All " + passes + " passed");
 process.exit(fails ? 1 : 0);
