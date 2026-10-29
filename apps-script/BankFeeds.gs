@@ -1197,7 +1197,7 @@ function bankApply_(p, data, windowFrom, payCarry) {
           // money from your partner is never your pay, however much it is
           if (mine || namesPartner(t)) return;
           var pi = payIn(t);
-          if (pi) { usedOcc[pi.o.key] = true; if (!same(-t.amount, pi.o.amount)) exception(pi.i.id, pi.o.orig, -t.amount, "from " + label); }
+          if (pi) { usedOcc[pi.o.key] = true; if (!same(-t.amount, pi.o.amount)) exception(pi.i.id, pi.o.orig, -t.amount, "from " + label); paidMark(pi.i.id, pi.o.orig); }
           // other money in that isn't planned (selling something, a friend paying you back, interest): kept as a payment of
           // less than nothing, for no budget, so it shows up in Recent and in the account it went into, and spends nothing.
           // Money that matches a planned income or a regular payment to you (Sophie's share of the rent) is already in the plan.

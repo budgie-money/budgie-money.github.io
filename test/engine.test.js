@@ -1495,5 +1495,31 @@ const tickPay11 = (t, p, d) => { const L0 = B.load(t, d), per = B.periodAt(L0, p
   eq("Y8: a pooled bill is one row, with how much its real bills have used; those bills aren't rows too", [pl.filter(r => r.item === "e-flat").map(r => [r.amount, r.status, r.pool && r.pool.actual]), pl.filter(r => r.kind === "payment").length], [[[450, "due", 75]], 0]);
 }
 
+// --- payday before the pay has arrived (Z1-Z5): nothing is topped up from the fallback pot for the pay that's missing
+{
+  const day = "2026-10-29";   // Ethan's payday (last Thursday)
+  // the bank's balance read in the small hours: it has the day's flows in it as far as balances go, but not the pay
+  const mk = (mut) => { const t = fixture(); t.valuations.push({id: "bk-acc_main-" + day, account: "e-main", date: day, amount: 120, updated: 5000, note: "from Monzo"}); if (mut) mut(t); return t; };
+  const td = (t, d) => B.todo(B.load(t, d || day), "ethan", d || day);
+  const topUps = (items) => items.filter(x => x.type === "move" && x.from === "e-emergency" && x.to === "e-main").map(x => x.amount);
+  const t0 = td(mk());
+  eq("Z1: pay not in yet: no top-up of Main from the Emergency pot", topUps(t0), []);
+  eq("Z1: and no warning that Main is short either", t0.filter(x => x.type === "warn").length, 0);
+  const pdi = t0.filter(x => x.payday);
+  eq("Z1: payday's moves are marked as waiting for the pay", [pdi.length > 0, pdi.every(x => x.waiting === true && !x.short)], [true, true]);
+  eq("Z1: the plan says it's waiting", B.payPending(B.load(mk(), day), "ethan", B.periodAt(B.load(mk(), day), "ethan", day), day), true);
+  // the bank has seen the pay (marked paid on its date): not waiting any more, and the same as without that
+  const seen = mk(t => t.exceptions.push({id: "x-e-pay-2026-10-29-bankpaid-ethan", item: "e-pay", date: day, action: "paid"}));
+  eq("Z2: the bank has seen the pay: not waiting", [B.payPending(B.load(seen, day), "ethan", B.periodAt(B.load(seen, day), "ethan", day), day), td(seen).filter(x => x.payday).some(x => x.waiting)], [false, false]);
+  // a move of payday's already ticked says the pay is in
+  eq("Z3: a payday move already ticked: not waiting", B.payPending(B.load(mk(t => t.moves.push({id: "m1", date: day, person: "ethan", from: "e-main", to: "e-bills", amount: 100, key: "pay:2026-10-29:e-bills"})), day), "ethan", B.periodAt(B.load(fixture(), day), "ethan", day), day), false);
+  // no bank feed: the pay is taken to be in on its day, as before
+  const nobank = fixture();
+  eq("Z4: without a bank feed it's never waiting", B.payPending(B.load(nobank, day), "ethan", B.periodAt(B.load(nobank, day), "ethan", day), day), false);
+  // a late pay: still waiting two days on, until the bank sees it
+  eq("Z5: a late pay is still waited for on the 31st, and no top-up", [B.payPending(B.load(mk(), "2026-10-31"), "ethan", B.periodAt(B.load(mk(), "2026-10-31"), "ethan", "2026-10-31"), "2026-10-31"), topUps(td(mk(), "2026-10-31"))], [true, []]);
+  eq("Z5: after a week it isn't waited for any more", B.payPending(B.load(mk(), "2026-11-06"), "ethan", B.periodAt(B.load(mk(), "2026-11-06"), "ethan", "2026-11-06"), "2026-11-06"), false);
+}
+
 console.log(fails ? fails + " failed, " + passes + " passed" : "All " + passes + " passed");
 process.exit(fails ? 1 : 0);

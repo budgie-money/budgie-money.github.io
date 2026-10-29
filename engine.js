@@ -1132,6 +1132,25 @@
     });
   }
 
+  // On payday (and for a late pay, until it lands) with a bank feed: has the pay not arrived yet? The balance the bank gives
+  // already counts the day's flows as in it, so before the pay lands Main looks short by the whole pay, and the payday
+  // moves out of it look unfunded. It's waiting when this period's pay day is within a week, the bank hasn't seen the pay
+  // (nothing marks it paid) and none of payday's moves has been ticked (a tick says it's in). Without a bank feed the pay
+  // is taken to be in on its day.
+  function bankFed(db, p) {
+    return db.valuations.some(function (v) { return /^bk-/.test(String(v.id)) && (db.byId[v.account] || {}).owner === p; }) || db.transactions.some(function (x) { return x.person === p && (!!x.bankId || /^bk-/.test(String(x.id))); });
+  }
+  function payPending(db, p, per, today) {
+    if (!per || !per.pay || per.opening || diff(per.start, today) > 7 || diff(per.start, today) < 0 || !bankFed(db, p)) return false;
+    var found = false, seen = false;
+    db.income.forEach(function (i) {
+      if (i.person !== p || !i.isPay) return;
+      occurrencesAll(db, i, addDays(per.start, -1), addDays(per.start, 2)).forEach(function (o) { if (o.date === per.start) { found = true; if (o.paid) seen = true; } });
+    });
+    if (!found || seen) return false;
+    return !db.moves.some(function (m) { return !m.dup && m.person === p && String(m.key || "").indexOf("pay:" + per.start + ":") === 0; });
+  }
+
   // ---------- To do ----------
   // returns pending moves and reminders for a person today
   function todo(db, p, today) {
@@ -1158,8 +1177,10 @@
     };
     // 1. payday: sort the pay into pots (current period, from payday for 7 days)
     if (per.pay && !per.opening) {
-      var pdNow = payday(db, p, per);
-      pdNow.moves.forEach(function (m) { plan("pay:" + per.start + ":" + m.to, m.from, m.to, m.amount, "Payday: move " + money(m.amount) + " to " + accName(db, m.to), m.why, {payday: true}); });
+      var pdNow = payday(db, p, per), waiting = payPending(db, p, per, today);
+      // (the pay isn't in yet: it's on its way, so the account it comes into isn't short of it, and nothing is topped up for that)
+      if (waiting && pdNow.pay) pend[pdNow.payAccount] = (pend[pdNow.payAccount] || 0) + pdNow.pay.amount;
+      pdNow.moves.forEach(function (m) { plan("pay:" + per.start + ":" + m.to, m.from, m.to, m.amount, "Payday: move " + money(m.amount) + " to " + accName(db, m.to), m.why, {payday: true, waiting: waiting}); });
       // the payday screen's cover, from the pot that covers going over, counts as on its way while that screen still has
       // moves to tick; once they're all done (it can come later, when a bill's real amount is logged), To do asks for it
       var pc = pdNow.cover;
@@ -1552,7 +1573,7 @@
   // A pooled bill's estimate is one row (how much of it the real bills have used so far); those real bills are in it.
   // [{kind: bill | transfer | loan | payment, status, via (bank | ticked | logged | ""), id, key (the occurrence or loan
   //   repayment), item, table, name, date, amount, account, category, split, pool {actual, estimate, closed} | null,
-  //   skipId, paidId, left (a repayment part paid), review, bankId}]
+  //   skipId, paidId, left (a repayment part paid), and for a payment: note, budget, review, bank}]
   function outgoings(db, p, per, today) {
     var st = startOf(db, p), from = per.start, to = per.next, main = mainOf(db, p), out = [];
     var stat = function (date, paid) { return paid ? "paid" : date < today ? "late" : "due"; };
@@ -1588,7 +1609,7 @@
       if (x.person !== p || !(+x.amount > 0) || x.date < from || x.date >= to || isPoolTx(db, x)) return;
       var b = db.byId[x.budget], bank = !!x.bankId || /^bk-/.test(String(x.id));
       out.push({kind: "payment", id: x.id, key: x.id, orig: x.date, item: x.id, table: "transactions", name: x.note || (b ? b.name : "Payment"), date: x.date, amount: round(+x.amount), account: x.account || main, category: b ? b.name : "", split: x.split || "",
-        changed: false, skipId: "", paidId: "", via: bank ? "bank" : "logged", pool: null, status: "paid", review: x.review === true || /^true$/i.test(String(x.review)), bank: bank});
+        changed: false, skipId: "", paidId: "", via: bank ? "bank" : "logged", pool: null, status: "paid", note: x.note || "", budget: x.budget || "", review: x.review === true || /^true$/i.test(String(x.review)), bank: bank});
     });
     return out.sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : a.name < b.name ? -1 : a.name > b.name ? 1 : 0; });
   }
@@ -2018,7 +2039,7 @@
 
   return {
     VERSION: VERSION, TABLES: TABLES,
-    load: load, occurrences: occurrences, occurrencesAll: occurrencesAll, outgoings: outgoings, scheduleDates: scheduleDates, isWorkingDay: isWorkingDay, bankHolidays: bankHolidays,
+    load: load, payPending: payPending, occurrences: occurrences, occurrencesAll: occurrencesAll, outgoings: outgoings, scheduleDates: scheduleDates, isWorkingDay: isWorkingDay, bankHolidays: bankHolidays,
     periods: periods, periodAt: periodAt, prevPeriod: prevPeriod, nextPeriod: nextPeriod, planFor: planFor, payday: payday,
     budgetState: budgetState, balances: balances, flows: flows, todo: todo, between: between, today: today, coming: coming,
     calendar: calendar, pots: pots, monthView: monthView, year: year, kindOf: kindOf, newMoney: newMoney, kinds: kinds,
