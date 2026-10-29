@@ -59,6 +59,7 @@ async function setup(b, slowHome) {
     ok("and the phone keeps its own sheet meanwhile", await p.evaluate(s => JSON.parse(localStorage.getItem("budgie.cfg")).u === s, SHEET));
     ok("no CSP complaints at the new home", csp.length === 0, csp);
     ok("no page errors at the new home", errs.length === 0, errs);
+    await ctx.unrouteAll({behavior: "wait"});
     await ctx.close();
   }
   // 2) the old home: shows the moved screen, carries the phone across, wipes its old copy
@@ -81,6 +82,7 @@ async function setup(b, slowHome) {
     ok("nothing of Budgie's is left at the old address", left.ls.length === 0 && left.dbs.indexOf("budgie") < 0, left);
     ok("no CSP complaints at the old home", csp.length === 0, csp);
     ok("no page errors at the old home", errs.length === 0, errs);
+    await ctx.unrouteAll({behavior: "wait"});
     await ctx.close();
   }
   // 3) the old home with Show and tell left on and a payment still waiting: moving across still sends it first
@@ -98,6 +100,7 @@ async function setup(b, slowHome) {
     const tx = await (await p.request.get("http://localhost:" + PORT + "/dump?transactions")).json();
     ok("Show and tell left on at the old home doesn't stop a waiting payment going across", landed && tx.some(r => r.id === "t-waiting-move"), {landed, toast: T(await p.textContent("#toast").catch(() => ""))});
     ok("no page errors moving with Show and tell on", errs.length === 0, errs);
+    await ctx.unrouteAll({behavior: "wait"});
     await ctx.close();
   }
   // 4) moving across when the sheet turns a waiting change down (so Budgie fetches everything again straight after)
@@ -119,6 +122,7 @@ async function setup(b, slowHome) {
     const left = await old.evaluate(() => Object.keys(localStorage).filter(k => /^budgie\./.test(k)));
     ok("a sync still on its way while moving saves nothing at the old address", left.length === 0, left);
     ok("no page errors moving while the sheet turns a change down", errs.length === 0, errs);
+    await ctx.unrouteAll({behavior: "wait"});
     await ctx.close();
   }
   // 5) the old home with a key that's been changed since (a new one made after a lost phone): moving says why it can't,
@@ -137,6 +141,7 @@ async function setup(b, slowHome) {
     const said = T(await p.textContent("#toast"));
     ok("moving with a changed key says the link has stopped working, not the signal", /connect link/.test(said) && !/signal/.test(said) && /alertrobot/.test(p.url()), said);
     ok("no page errors moving with a changed key", errs.length === 0, errs);
+    await ctx.unrouteAll({behavior: "wait"});
     await ctx.close();
   }
   console.log("PASS\n  " + out.join("\n  ")); console.log(fail.length ? "FAIL\n  " + fail.join("\n  ") : "All " + out.length + " address checks passed"); process.exitCode = fail.length ? 1 : 0;
