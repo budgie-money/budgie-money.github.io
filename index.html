@@ -208,6 +208,15 @@ label.check input,input.tick{width:24px;height:24px;accent-color:var(--accent);f
 .theme-card .grow{flex:1;min-width:0}
 .theme-card .what{display:block;font-weight:600}
 .theme-card .why{display:block;color:var(--muted);font-size:13px}
+/* payments out: where each stands, and the rows grouped by pot */
+.rt{display:flex;flex-direction:column;align-items:flex-end;gap:3px;flex:none}
+.st{font-size:12px;font-weight:700;line-height:1;padding:4px 8px;border-radius:999px;white-space:nowrap;background:var(--soft);color:var(--muted)}
+.st.paid{color:var(--good);background:color-mix(in srgb, var(--good) 14%, var(--card))}
+.st.late{color:var(--bad);background:color-mix(in srgb, var(--bad) 12%, var(--card))}
+.outrow .skipped{text-decoration:line-through;color:var(--muted)}
+.num.skipped{text-decoration:line-through;color:var(--muted);font-weight:600}
+.ghead{display:flex;justify-content:space-between;align-items:baseline;gap:12px;margin-top:14px;padding-bottom:2px;font-size:13px;font-weight:700;color:var(--muted)}
+.ghead .num{font-size:13px;color:var(--ink)}
 .sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
 .easy .hide-easy{display:none!important}
 :focus-visible{outline:3px solid var(--accent);outline-offset:2px}

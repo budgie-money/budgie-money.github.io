@@ -49,7 +49,7 @@ People are `ethan` and `sophie`. Money is in pounds. Dates are real dates.
 | `goals` | something you're saving for | id, owners, name, target, due, accounts, kind, extra |
 | `valuations` | a balance you checked | id, account, date, amount |
 | `amounts` | a price or pay change from a date, or a split's new shares | id, item, start, amount, shares |
-| `exceptions` | a change to one occurrence | id, item, date, action (skip, move, amount), newDate, amount |
+| `exceptions` | a change to one occurrence | id, item, date, action (skip, move, amount, paid), newDate, amount |
 | `settings` | a setting | id, person, key, value |
 | `meta` | schema version and other housekeeping | key, value |
 
@@ -97,6 +97,11 @@ People are `ethan` and `sophie`. Money is in pounds. Dates are real dates.
     January, "2026-10-16, off 2027-01-16" to stop then). The app turns it on from the bills month going now, and adds a
     change only from the next bills month that hasn't started, so no month that's going, or waiting to be recorded,
     changes.
+- **Payments out** (Money tab): every bill, regular payment to your partner, loan repayment and payment made in a pay period
+  as one list (`outgoings`), each Paid (you ticked it, or the bank saw it go out: the bank feed writes a `paid` exception
+  for a planned bill or pay it matched), Due, Late (Not seen when there's a bank feed) or Skipped. A pooled bill's estimate
+  is one row with its real bills inside it. Sort by date, amount or pot; tapping a row opens the usual sheet to change it.
+  While a bank feed hasn't seen the pay on payday (or a late pay), it's counted as on its way, so no top-up is asked for.
 - **Goals, LISA, house, net worth, insights, calendar.**
 
 ## Privacy between partners
