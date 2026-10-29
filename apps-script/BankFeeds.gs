@@ -687,7 +687,7 @@ function bankRun_(p) {
       var cfgAt = 0; BANK_CFG_TABS_.forEach(function (t) { readTable_(t).rows.forEach(function (r) { if (+r.updated > cfgAt) cfgAt = +r.updated; }); });
       // and a payment you've logged yourself since (it may be one the bank brought in already, to link)
       var txAt = 0; readTable_("transactions").rows.forEach(function (r) { if (r.person === p && !r.bankId && !/^bk-/.test(String(r.id)) && +r.updated > txAt) txAt = +r.updated; });
-      fp = bankHash_([data.accounts, data.txns, windowFrom, today0, setAt, cfgAt, txAt, wide]);
+      fp = bankHash_([data.accounts, data.txns, windowFrom, today0, setAt, cfgAt, txAt, wide, Budgie.VERSION]);   // (a new version reads them again)
     }
     var res = fp && s.applied && s.applied.fp === fp && Date.now() - (+s.applied.at || 0) < BANK_REAPPLY_ ? {added: 0, updated: 0, stopped: false, same: true} : bankApply_(p, data, windowFrom, cursor && !note && Array.isArray(s.payCarry) ? s.payCarry : null);
     if (gone()) return {ok: false, error: "The bank was disconnected while it was being read."};
