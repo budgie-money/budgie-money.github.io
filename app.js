@@ -1,12 +1,12 @@
 /* Budgie app: screens, syncing and offline queue. The maths lives in engine.js. */
 (function () {
   "use strict";
-  var B = window.Budgie, TH = window.BudgieThemes, APP_VERSION = "1.4.23";
+  var B = window.Budgie, TH = window.BudgieThemes, APP_VERSION = "1.5.0";
   var $ = function (s) { return document.querySelector(s); };
   var esc = function (s) { return String(s === undefined || s === null ? "" : s).replace(/[&<>"']/g, function (c) { return {"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]; }); };
   // wiped: Budgie's copy at the old address has been wiped (it's moving across), so nothing is saved here again
   var wiped = false;
-  var LS = {get: function (k, d) { try { var v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch (e) { return d; } }, set: function (k, v) { if (wiped) return; try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }};
+  var LS = {get: function (k, d) { try { var v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch (e) { return d; } }, set: function (k, v) { if (wiped) return false; try { localStorage.setItem(k, JSON.stringify(v)); return true; } catch (e) { return false; } }};
   var todayIso = function () { var d = new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); };
   var newId = function (p) { return (p || "r") + "-" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6); };
   var ICON = {
@@ -24,10 +24,16 @@
 
   // ---------- storage (IndexedDB, falling back to localStorage) ----------
   var store = {
-    db: null,
+    db: null, revision: 0,
     open: function () { return new Promise(function (res) { try { var r = indexedDB.open("budgie", 1); r.onupgradeneeded = function () { r.result.createObjectStore("kv"); }; r.onsuccess = function () { store.db = r.result; res(); }; r.onerror = function () { res(); }; } catch (e) { res(); } }); },
-    get: function (k) { return new Promise(function (res) { if (!store.db) return res(LS.get("budgie.kv." + k, null)); try { var q = store.db.transaction("kv").objectStore("kv").get(k); q.onsuccess = function () { res(q.result || null); }; q.onerror = function () { res(null); }; } catch (e) { res(null); } }); },
-    set: function (k, v) { if (wiped) return; if (!store.db) { LS.set("budgie.kv." + k, v); return; } try { store.db.transaction("kv", "readwrite").objectStore("kv").put(v, k); } catch (e) { LS.set("budgie.kv." + k, v); } }
+    get: function (k) { return new Promise(function (res) { var fallback = LS.get("budgie.kv." + k, null), finish = function (value) { store.revision = Math.max(store.revision, +(value || {}).savedAt || 0); res(value); }; if (!store.db) return finish(fallback); try { var q = store.db.transaction("kv").objectStore("kv").get(k); q.onsuccess = function () { var value = q.result; finish(fallback && (!value || (+fallback.savedAt || 0) > (+value.savedAt || 0)) ? fallback : value || null); }; q.onerror = function () { finish(fallback); }; } catch (e) { finish(fallback); } }); },
+    set: function (k, v) {
+      if (wiped) return;
+      if (k === "data") { store.revision = Math.max(Date.now(), store.revision + 1, (+v.savedAt || 0) + 1); v.savedAt = store.revision; }
+      var stamp = +v.savedAt || 0, done = false, failed = function () { if (done) return; done = true; if (k === "data" && v !== S.data) return; var saved = LS.set("budgie.kv." + k, v); if (k === "data") { S.storageError = saved ? "" : "This phone could not save your changes. Keep Budgie open and sync now."; if (!saved) render(true); } };
+      if (!store.db) { failed(); return; }
+      try { var tx = store.db.transaction("kv", "readwrite"); tx.objectStore("kv").put(v, k); tx.onerror = tx.onabort = failed; tx.oncomplete = function () { if (done) return; done = true; if (k === "data" && v === S.data && (+v.savedAt || 0) <= stamp) S.storageError = ""; var old = LS.get("budgie.kv." + k, null); if (old && (+old.savedAt || 0) <= stamp) { try { localStorage.removeItem("budgie.kv." + k); } catch (e) {} } }; } catch (e) { failed(); }
+    }
   };
 
   // ---------- state ----------
@@ -74,9 +80,9 @@
     dirty(); if (!quiet) render();
     return row;
   }
-  function del(t, id, quiet) {
+  function del(t, id, quiet, ifBankId) {
     upsert(t, {id: id, deleted: true, updated: Date.now()});
-    if (!demoOn()) { S.data.queue.push({op: "delete", table: t, id: id}); persist(); syncSoon(); }
+    if (!demoOn()) { var op = {op: "delete", table: t, id: id}; if (ifBankId) op.ifBankId = ifBankId; S.data.queue.push(op); persist(); syncSoon(); }
     dirty(); if (!quiet) render();
   }
   function setting(key, value) { var id = me() + ":" + key; put("settings", {id: id, person: me(), key: key, value: String(value)}, true); }
@@ -133,8 +139,8 @@
       // it has failed a few times over several hours, so a Google hiccup (which can last a while, with a few things
       // logged during it) never loses anything; changes the sheet turned down are dropped (the sheet's copy comes back
       // in a full refresh) so they can't block the rest
-      var tNow = Date.now(), keepTrying = function (op) { return (op.tries || 0) < 4 || tNow - (op.failedAt || tNow) < 6 * 3600000; };
-      var again = [], rej = (j.rejected || []).filter(function (r) { var op = ops[r.i]; if (r.retry && op && (r.notTried || keepTrying(op))) { if (!r.notTried) { op.tries = (op.tries || 0) + 1; op.failedAt = op.failedAt || tNow; } again.push(op); return false; } return true; });
+      var tNow = Date.now();
+      var again = [], rej = (j.rejected || []).filter(function (r) { var op = ops[r.i]; if (r.retry && op) { if (!r.notTried) { op.tries = (op.tries || 0) + 1; op.failedAt = op.failedAt || tNow; op.error = r.error || "Your sheet is busy"; } again.push(op); return false; } return true; });
       S.data.queue = again.concat(S.data.queue.slice(ops.length));
       // changes made on this phone before it was given a new link for the same person and sheet go up now
       if (S.data.carry) { var cr = S.data.carry; delete S.data.carry; if (cr.me === j.person) S.data.queue = S.data.queue.concat(cr.queue); else { S.ui.carryNote = cr.queue.length + " change" + (cr.queue.length === 1 ? "" : "s") + " made as " + (cr.name || cr.me) + " weren't sent, because this link is for someone else."; toast(S.ui.carryNote); } }
@@ -144,7 +150,7 @@
       S.newVersion = j.engine && newer(j.engine, B.VERSION) ? j.engine : null; // only when the sheet is ahead of this phone
       // when the sheet's code is updated, fetch everything once: it may now send things it didn't before (new tabs, say)
       var upgraded = !!(j.engine && S.data.serverEngine !== j.engine && !j.full); if (j.engine) S.data.serverEngine = j.engine;
-      persist(); dirty(); S.lastSync = Date.now(); S.lastError = "";
+      persist(); dirty(); S.lastSync = Date.now(); S.lastError = again.length ? "Your sheet couldn't save " + again.length + " change" + (again.length === 1 ? "" : "s") + " yet. They are kept on this phone and will be tried again." : "";
       applyPersonPrefs();
       if (!S.bank && !S.bankAsked) { S.bankAsked = true; setTimeout(bankRefresh, 300); }
       // (what's waiting to be tried again waits for the next sync, a minute or the next change, rather than straight away)
@@ -458,7 +464,7 @@
   function tourSheet() {
     var cs = tourCards(), i = Math.max(0, Math.min(cs.length - 1, S.ui.tourI || 0)), c = cs[i], last = i === cs.length - 1;
     var dots = cs.map(function (x, k) { return "<i" + (k === i ? ' class="on"' : "") + "></i>"; }).join("");
-    openSheet("<h2>" + esc(c.t) + '</h2><div class="tourmock" aria-hidden="true">' + c.m + '</div><p class="tourtxt">' + esc(c.s) + '</p><div class="dots" role="img" aria-label="Step ' + (i + 1) + " of " + cs.length + '">' + dots + "</div>" +
+    openSheet("<h2>" + esc(c.t) + '</h2><div class="tourmock" aria-hidden="true">' + (c.show ? c.m.replace(/<button\b[^>]*>([\s\S]*?)<\/button>/g, '<div class="what">$1</div>') : c.m) + '</div><p class="tourtxt">' + esc(c.s) + '</p>' + (c.show ? '<button type="button" class="btn ghost wide" data-a="extourShow" data-v="' + esc(c.show) + '">Show me</button>' : '') + '<div class="dots" role="img" aria-label="Step ' + (i + 1) + " of " + cs.length + '">' + dots + "</div>" +
       (last ? '<button type="button" class="btn wide" data-a="tourskip">Got it</button>' : '<div class="two fit"><button type="button" class="btn ghost" data-a="tourskip">Skip</button><button type="button" class="btn" data-a="tournext">Next</button></div>'));
   }
   // how "You can spend today" is worked out, from the same figures: cash in the accounts the budgets spend from, what's
@@ -466,12 +472,12 @@
   function heroSheet() {
     var d = db(), p = me(), t = B.today(d, p, todayIso());
     var r = function (what, why, v, cls) { return '<div class="li"><span class="grow"><span class="what">' + what + "</span>" + (why ? '<span class="why">' + why + "</span>" : "") + "</span>" + num(v, cls) + "</div>"; };
-    var days = t.daysLeft + (t.daysLeft === 1 ? " day" : " days");
+    var days = t.allowanceDays + (t.allowanceDays === 1 ? " day" : " days");
     openSheet("<h2>You can spend today</h2>" + '<div class="list" style="margin-top:6px">' +
       r("Cash available", "In the accounts your budgets spend from", M(t.cash)) +
       r("Still needed before payday", "Bills and payments due, and money put by", M(t.needed)) +
-      r("Free to spend", "Over " + days + " until payday", M(t.cashFree)) +
-      r("Your cash allows", "A day, over " + days, M(t.cashDay)) +
+      r("Free to spend", "Allowance set on " + B.nice(t.allowanceFrom), M(t.cashFree)) +
+      r("Your cash allows", "A day, using " + days + " from the last change", M(t.cashDay)) +
       r("Your budgets allow", "A day, from what's left in each", M(t.budgetDay)) +
       r("You can spend today", "The lower of the two", M(t.safe), "good") + '</div><div class="two fit" style="margin-top:12px"><button type="button" class="btn ghost" data-a="go" data-v="pots">Where it is</button><button type="button" class="btn" data-a="sheetclose">Got it</button></div>');
   }
@@ -791,7 +797,9 @@
     S.ui.payLeft = remainderName(pd.plan);
     var rows = pd.moves.map(function (m) {
       var key = "pay:" + per.start + ":" + m.to, done = !!B.ticked(d, p, key);
-      return '<label class="li" style="cursor:pointer"><input type="checkbox" class="tick" data-c="paytick" data-v="' + esc(key) + "|" + esc(m.from) + "|" + esc(m.to) + "|" + m.amount + '"' + (done ? " checked" : "") + (upcoming ? " disabled" : "") + '><span class="grow"><span class="what">' + esc(B.accName(d, m.to)) + '</span><span class="why">' + esc(MT(m.why)) + "</span></span>" + num(M(m.amount)) + "</label>";
+      var waiting = B.payPending(d, p, per, now), available = B.balances(d, now)[m.from] || 0;
+      if (!done && (waiting || available < m.amount - 0.004)) m = Object.assign({}, m, {why: waiting ? "Waiting for your pay to arrive" : "Only " + B.money(Math.max(0, available)) + " is available right now. " + m.why});
+      return '<label class="li" style="cursor:pointer"><input type="checkbox" class="tick" data-c="paytick" data-v="' + esc(key) + "|" + esc(m.from) + "|" + esc(m.to) + "|" + m.amount + '"' + (done ? " checked" : "") + (upcoming || !done && (waiting || available < m.amount - 0.004) ? " disabled" : "") + '><span class="grow"><span class="what">' + esc(B.accName(d, m.to)) + '</span><span class="why">' + esc(MT(m.why)) + "</span></span>" + num(M(m.amount)) + "</label>";
     }).join("");
     if (pd.cover) {
       var ckey = "pay:" + per.start + ":cover", cdone = !!B.ticked(d, p, ckey);
@@ -1112,7 +1120,7 @@
         (L.expectedBonus && L.expectedBonus.length ? '<div class="small" style="margin-top:6px">Bonus on its way: about <b>' + M(L.expectedBonusTotal || L.expectedBonus.reduce(function (t, x) { return t + x.amount; }, 0)) + "</b>" + (L.expectedBonus[0].due ? (L.expectedBonus[0].due < now ? ", the first was due by " : ", the first by ") + esc(B.nice(L.expectedBonus[0].due)) : "") + ". Moneybox claims it for you.</div>" : "") +
         '<div style="margin-top:12px"><div class="row small"><span style="font-weight:600">This tax year (6 Apr to 5 Apr)</span><span class="num">' + M0(L.paidThisYear) + " of £4,000</span></div>" + '<div style="margin-top:6px">' + bar(L.paidThisYear / 40, null, "var(--k-save)") + '</div><div class="small muted" style="margin-top:4px">' + M0(L.allowanceLeft) + " left you can pay in · bonus on this year's payments about " + M(L.bonusThisYear) + "</div>" +
         (L.planned ? '<div class="small" style="margin-top:8px">On course for ' + M0(L.onCourse) + " by 5 April" + (L.overBy ? '. <span class="warn">That\'s ' + M(L.overBy) + " over the £4,000 limit, and your provider turns away anything over it. Pay in a little less before then.</span>" : L.onCourse >= 3999.5 ? '. <span class="good">That\'s the full £1,000 bonus.</span>' : ".") + "</div>" : "") +
-        (a.owner === me() && (L.paidBefore || !Mo.flows.length) ? '<button type="button" class="btn ghost sm" style="margin-top:8px" data-a="lisapaid" data-v="' + esc(a.id) + '">' + (L.paidBefore ? "Paid in before Budgie: " + M0(L.paidBefore) : "Add what's already paid in") + "</button>" : "") + "</div>");
+        (a.owner === me() && (L.paidBefore || !Mo.flows.length) ? '<button type="button" class="btn ghost sm" style="margin-top:8px" data-a="lisapaid" data-v="' + esc(a.id) + '">' + (L.paidBefore ? "Earlier contributions" : "Add what's already paid in") + "</button>" : "") + "</div>");
     });
     if (mineFirst.length > 1) html += card('<div class="row"><span style="font-weight:700">Together</span>' + num(M0(together)) + "</div>");
     html += '<div class="banner small"><b>The rules Budgie keeps an eye on.</b> Up to £4,000 a year, plus a 25% government bonus (up to £1,000). For a first home up to £450,000. Taking money out for anything else costs 25%. The government plans to replace the LISA with a new first-time-buyer account from April 2028; existing LISAs carry on for now.</div>';
@@ -1473,6 +1481,7 @@
   // an IOU as a card (Debts and Between you two): who owes whom, how much is left, what it's made of, what's next
   function loanCard(l, full) {
     var d = db(), p = me(), now = todayIso(), qp = person(l.lender === p ? l.borrower : l.lender), bw = {mine: l.borrower === p, name: shortName(person(l.borrower).name)};
+    if (l.left < -0.004) return card('<h2>' + esc(l.name) + '</h2><div class="what">' + (l.lender === p ? "Return " + M(-l.left) + " to " + esc(qp.name) : esc(qp.name) + " returns " + M(-l.left) + " to you") + '</div><p class="small muted">A refund or correction left this IOU overpaid. Your Needs you list keeps track until it is returned.</p>');
     var who = l.lender === p ? esc(qp.name) + " owes you" : "You owe " + esc(qp.name), next = l.plan[0];
     var parts = l.items.length ? [] : l.notes.split(/\s*[;\n]\s*/).filter(Boolean);
     return '<button type="button" class="card li" style="display:block;text-align:left;padding:16px" data-a="edit" data-v="loans:' + esc(l.id) + '"><div class="row"><span style="font-weight:700">' + esc(l.name) + "</span>" + num(M(l.left)) + '</div><div class="small muted">' +
@@ -1549,7 +1558,7 @@
     if (id && DATED.test(table) && row.amount !== "" && row.amount !== undefined) { var live = db().byId[id]; nowAmt = live ? B.amountAt(db(), live, todayIso()) : +row.amount; row.amount = nowAmt; }
     EDIT = {table: table, id: id, row: row, orig: JSON.parse(JSON.stringify(row)), nowAmt: nowAmt}; S.ui.onTouched = false;
     if (table === "loans") {
-      EDIT.items = iou ? iou.items.map(function (x) { return {id: x.id, name: x.name, date: x.date, cost: x.cost === null ? "" : x.cost, share: x.share, note: x.note}; }) : [];
+      EDIT.items = iou ? iou.items.map(function (x) { return {id: x.id, name: x.name, date: x.date, cost: x.cost === null ? "" : x.cost, share: x.originalShare === undefined ? x.share : x.originalShare, note: x.note}; }) : [];
       EDIT.itemsOrig = JSON.parse(JSON.stringify(EDIT.items)); EDIT.paid = iou ? iou.paid : 0; EDIT.removed = [];
     }
     go("edit", {title: (id ? "Change " : "New ") + FORMS[table].title.toLowerCase()});
@@ -1677,7 +1686,7 @@
     }
     if (t === "goals") {
       var dKey = "goal.direct." + r.id, dNow = !!B.parseDate(getSetting(dKey, ""));
-      if (r.directOn && !dNow) setting(dKey, now); else if (!r.directOn && dNow) setting(dKey, "off");
+      if (!B.spareRules(db(), me(), now)) { if (r.directOn && !dNow) setting(dKey, now); else if (!r.directOn && dNow) setting(dKey, "off"); }
       delete r.directOn;
     }
     if (F.owner === "person") r.person = r.person || me();
@@ -1851,6 +1860,7 @@
       var ids = [];
       $("#main").querySelectorAll('input[data-c="paytick"]:not(:checked):not(:disabled)').forEach(function (el) {
         var k = el.dataset.v.split("|"); if (/:cover$/.test(k[0])) return;
+        if ((B.balances(db(), todayIso())[k[1]] || 0) < +k[3] - 0.004) return;
         ids.push(put("moves", {id: newId("mv"), date: payTickDate(k[0], k[1], k[2]), person: me(), from: k[1], to: k[2], amount: +k[3], key: k[0]}, true).id);
       });
       if (ids.length) { toast("Done", {t: "moves", ids: ids}); render(); }
@@ -1940,7 +1950,7 @@
     itemdel: function () {
       var x = S.ui.item || {}, at = EDIT.items.findIndex(function (i) { return i.id === x.id; }); if (at < 0) { closeSheet(); return; }
       // the last one taken off leaves the IOU as the total it was, to type over
-      if (EDIT.items.length === 1) EDIT.row.amount = B.round(+EDIT.items[0].share || 0);
+      if (EDIT.items.length === 1) EDIT.row.amount = 0;
       if (EDIT.itemsOrig.some(function (o) { return o.id === x.id; })) EDIT.removed.push(x.id);
       EDIT.items.splice(at, 1); closeSheet(); render();
     },
@@ -2080,6 +2090,7 @@
   function themeSaved() { S.prefs._local = true; savePrefs(); applyTheme(); if (!demoOn() && me()) { setting("theme.mode", S.prefs.mode); setting("theme.colour", S.prefs.colour); setting("theme.special", S.prefs.special); } render(); }
   function tickItem(it) {
     if (!it) return;
+    if (it.type === "move" && (it.short || it.waiting || (B.balances(db(), todayIso())[it.from] || 0) < it.amount - 0.004)) { toast(it.waiting ? "Wait until your pay arrives" : "There isn't enough available to make this move yet"); render(); return; }
     var now = todayIso(), ids = [];
     if (it.type === "move") it.keys.forEach(function (k) { ids.push(put("moves", {id: newId("mv"), date: now, person: me(), from: it.from, to: it.to, amount: k.amount, key: k.key}, true).id); });
     else if (it.type === "loan") ids.push(put("settlements", {id: newId("set"), date: now, from: it.borrower, to: it.lender, amount: it.amount, loan: it.loan, key: it.key}, true).id);
@@ -2109,7 +2120,7 @@
     if (!c) return;
     var v = el.dataset.v;
     if (c === "tick") { tickItem(last.todo[+v]); return; }
-    if (c === "paytick") { var k = v.split("|"); if (el.checked) put("moves", {id: newId("mv"), date: payTickDate(k[0], k[1], k[2]), person: me(), from: k[1], to: k[2], amount: +k[3], key: k[0]}); else { (db().moves || []).filter(function (m) { return m.key === k[0] && m.person === me(); }).forEach(function (m) { del("moves", m.id); }); } return; }
+    if (c === "paytick") { var k = v.split("|"); if (el.checked && (B.balances(db(), todayIso())[k[1]] || 0) < +k[3] - 0.004) { el.checked = false; toast("There is not enough available for this move yet"); return; } if (el.checked) put("moves", {id: newId("mv"), date: payTickDate(k[0], k[1], k[2]), person: me(), from: k[1], to: k[2], amount: +k[3], key: k[0]}); else { (db().moves || []).filter(function (m) { return m.key === k[0] && m.person === me(); }).forEach(function (m) { del("moves", m.id); }); } return; }
     if (c === "toggle") {
       if (v === "easy") { S.prefs.easy = el.checked; savePrefs(); if (!demoOn() && me()) setting("easy", el.checked); applyTheme(); render(); }
       if (v === "hide") { S.prefs.hide = el.checked; S.ui.reveal = false; savePrefs(); render(); }
@@ -2313,6 +2324,7 @@
     if (jump && me() && (jump === "add" || jump === "payday" || TABS.indexOf(jump) >= 0) && jump !== "today") go(jump);
     sync(false);
   }
+  if (window.BudgieExperience) window.BudgieExperience.install({B: B, S: S, ACT: ACT, SCREENS: SCREENS, TITLES: TITLES, FORMS: FORMS, db: db, me: me, partner: partner, person: person, tables: tables, today: todayIso, M: M, M0: M0, MT: MT, esc: esc, card: card, li: li, num: num, icon: icon, bar: bar, go: go, render: render, put: put, del: del, setting: setting, getSetting: getSetting, newId: newId, openSheet: openSheet, closeSheet: closeSheet, toast: toast, tick: tickItem, reviewSave: reviewSave, reviewRows: reviewRows, bankName: bankName, merchantKey: merchantKey, bankCall: bankCall, sync: sync, recentCard: recentCard, paymentSheet: paymentSheet, outRow: function (r) { last.out[r.id] = r; ACT.outrow(r.id); }, tour: function (cards) { tourCards = cards; }});
   window.BudgieApp = {S: S, db: db, render: render, go: go, sync: sync, setDemo: setDemo};
   start();
 })();

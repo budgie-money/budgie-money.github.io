@@ -735,13 +735,13 @@ const phone = (F, k) => { const P = {T: {}, since: 0}; P.sync = (ops) => { const
   ok("W6: so Ethan can still make them", !e.rejected.length && e.applied.length === 2, e.rejected);
 }
 
-// #5 the one-file backend (apps-script/Budgie.gs, made by migrate/build.js) must be built from the current files
+// #5 the one-file backend (apps-script/Budgie.gs, made by scripts/build-backend.js) must be built from the current files
 {
   const fs = require("fs"), path = require("path"), dir = path.join(__dirname, ".."), bundle = path.join(dir, "apps-script/Budgie.gs");
   if (fs.existsSync(bundle)) {
-    const b = fs.readFileSync(bundle, "utf8"), parts = ["engine.js", "apps-script/Code.gs", "apps-script/Prices.gs", "apps-script/BankFeeds.gs", "apps-script/Extras.gs"].filter(f => fs.existsSync(path.join(dir, f)));
-    const stale = parts.filter(f => b.indexOf(fs.readFileSync(path.join(dir, f), "utf8")) < 0);
-    ok("#5 Budgie.gs is up to date (run node migrate/build.js)", !stale.length, stale);
+    const b = fs.readFileSync(bundle, "utf8").replace(/\r\n/g, "\n"), parts = ["engine.js", "apps-script/Code.gs", "apps-script/Prices.gs", "apps-script/BankFeeds.gs", "apps-script/Extras.gs"].filter(f => fs.existsSync(path.join(dir, f)));
+    const stale = parts.filter(f => b.indexOf(fs.readFileSync(path.join(dir, f), "utf8").replace(/\r\n/g, "\n")) < 0);
+    ok("#5 Budgie.gs is up to date (run node scripts/build-backend.js)", !stale.length, stale);
   }
 }
 // ================= review 2026-10-27 (1.4.7) =================

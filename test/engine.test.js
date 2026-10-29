@@ -490,7 +490,7 @@ const savedUp = (pl, id) => lineAmt(pl, l => l.setAside && l.bill === id && l.ki
   const bs = B.budgetState(c, me, per);
   eq("compat: budgetState(db, me, per)", ["amount", "spent", "left", "avail", "carryIn", "carryOut", "over"].every(k => k in bs["e-fun"]) && bs["e-fun"].period.start === per.start, true);
   eq("compat: still exported", ["load", "coming", "periodAt", "planFor", "budgetState", "today", "checks", "lisa", "yearly", "yearReview"].every(k => typeof B[k] === "function"), true);
-  eq("compat: version", B.VERSION, "1.4.23");
+  eq("compat: version", B.VERSION, "1.5.0");
 })();
 
 // C3: a payday move ticked in the app and by the bank feed counts once (the latest)
@@ -1542,7 +1542,7 @@ const tickPay11 = (t, p, d) => { const L0 = B.load(t, d), per = B.periodAt(L0, p
   // no items: exactly as before
   near("IOU items: a loan without items keeps its own amount", B.loans(db(), "ethan", "2026-11-01")[0].amount, 600);
   eq("IOU items: and has an empty list", B.loans(db(), "ethan", "2026-11-01")[0].items, []);
-  near("IOU items: items that are all taken off leave the loan's own amount", B.loans(db(t => { t.loanItems = [{id: "i4", loan: "sofa", name: "Gone", share: 999, deleted: true}]; }), "ethan", "2026-11-01")[0].amount, 600);
+  near("IOU items: removing the final item clears the itemised principal", B.loans(db(t => { t.loanItems = [{id: "i4", loan: "sofa", name: "Gone", share: 999, deleted: true}]; }), "ethan", "2026-11-01")[0].amount, 0);
   near("IOU items: an item of a loan that isn't there changes nothing", B.loans(db(t => { t.loanItems = [{id: "i9", loan: "nothing", name: "x", share: 5}]; }), "ethan", "2026-11-01")[0].amount, 600);
   // an item typed into the sheet as text with a pound sign is still a number
   near("IOU items: a share typed as £1,234.50 is a number", B.loans(db(t => { t.loanItems = [{id: "i6", loan: "sofa", name: "x", share: "£1,234.50"}]; }), "ethan", "2026-11-01")[0].amount, 1234.5);
@@ -1691,7 +1691,7 @@ const tickPay11 = (t, p, d) => { const L0 = B.load(t, d), per = B.periodAt(L0, p
     // (free is never below nothing: when the cash doesn't cover what's needed, nothing is free)
     eq("hero " + day + ": what's still needed is never less than nothing", r.needed >= 0, true);
     near("hero " + day + ": cash less what is needed is what is free", Math.max(0, r.cash - r.needed), r.cashFree);
-    near("hero " + day + ": the cash allows free over the days left", r.cashDay, r.cashFree / r.daysLeft);
+    near("hero " + day + ": the cash allowance rebases on a money event", r.cashDay, r.cashFree / r.allowanceDays);
     near("hero " + day + ": you can spend the lower of what the cash and the budgets allow", r.safe, Math.min(r.cashDay, r.budgetDay));
   }
   // the cash doesn't cover what's due: "still needed" is what's due, not the cash again

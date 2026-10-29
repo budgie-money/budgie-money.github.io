@@ -10,6 +10,7 @@ const out = [], fail = [];
 const ok = (name, cond, extra) => { (cond ? out : fail).push(name + (cond ? "" : " :: " + JSON.stringify(extra || "").slice(0, 300))); };
 async function setup(b, slowHome) {
   const ctx = await b.newContext({...devices["Pixel 7"], locale: "en-GB", serviceWorkers: "block"});
+  await ctx.addInitScript(() => { if (location.hostname === "budgie-money.github.io" && window.top === window) { try { ["ethan", "sophie", "alex", "sam"].forEach(n => localStorage.setItem("budgie.tour." + n, "true")); } catch (e) {} } });
   const csp = [], errs = [];
   await ctx.route("https://alertrobot.github.io/budgie/**", r => route(r, new URL(r.request().url()).pathname.replace(/^\/budgie/, "")));
   await ctx.route("https://budgie-money.github.io/**", async r => { if (slowHome) await new Promise(res => setTimeout(res, slowHome)); return route(r, new URL(r.request().url()).pathname); });
@@ -138,6 +139,6 @@ async function setup(b, slowHome) {
     ok("no page errors moving with a changed key", errs.length === 0, errs);
     await ctx.close();
   }
-  console.log("PASS\n  " + out.join("\n  ")); console.log("FAIL\n  " + fail.join("\n  ")); process.exitCode = fail.length ? 1 : 0;
+  console.log("PASS\n  " + out.join("\n  ")); console.log(fail.length ? "FAIL\n  " + fail.join("\n  ") : "All " + out.length + " address checks passed"); process.exitCode = fail.length ? 1 : 0;
   await b.close();
 })();

@@ -867,7 +867,15 @@ function bankApply_(p, data, windowFrom, payCarry) {
     var putMove = function (t, from, to, amount, key, review, note) {
       var id = "bk-" + provider + "-" + t.id, ex = moveRows[id];
       if (ex && ex.person !== p) { Logger.log("Bank feed skipped moves " + id + ": it isn't " + p + "'s."); return; }
-      if (ex) { if (!bankTrue_(ex.deleted) && (!same(+ex.amount, amount) || ex.from !== from || ex.to !== to)) update("moves", id, {amount: amount, from: from, to: to}); return; }
+      if (ex) {
+        if (bankTrue_(ex.deleted) && ex.by === "bank") {
+          var parts = Object.keys(moveRows).filter(function (k) { return (k === id || k.indexOf(id + "~") === 0) && moveRows[k].person === p && moveRows[k].by === "bank"; }).map(function (k) { return moveRows[k]; });
+          var total = parts.reduce(function (sum, m) { return sum + (+m.amount || 0); }, 0);
+          if (same(total, amount) && parts.every(function (m) { return m.from === from && m.to === to; })) parts.forEach(function (m) { update("moves", m.id, {deleted: false}); });
+          else update("moves", id, {deleted: false, amount: amount, from: from, to: to, key: key || "bank:" + t.id});
+        }
+        else if (!bankTrue_(ex.deleted) && (!same(+ex.amount, amount) || ex.from !== from || ex.to !== to)) update("moves", id, {amount: amount, from: from, to: to}); return;
+      }
       // already ticked in your app: nothing new to add (only your own ticks count: your partner can write any key on
       // a move of theirs, and that mustn't hide one of yours)
       // Ticked by another payment from the bank, though, it's a second move of its own (a top-up the same week, say):
@@ -885,7 +893,7 @@ function bankApply_(p, data, windowFrom, payCarry) {
     // main account, the payday cover): to the same place, the same amount to the penny, within the last week. It takes
     // that move's key (one row for each part it ticks), so To do counts it as done rather than asking for it again; and
     // one you'd already ticked in your app (within 3 days) isn't added a second time
-    var TODO_KEY_ = /^(back|cover|fill|lent|late|refund):|^pay:\d{4}-\d{2}-\d{2}:cover$/, openTodo = null, todoTaken = {}, appTaken = {};
+    var TODO_KEY_ = /^(back|cover|fill|lent|late|refund|goal|sweep):|^pay:\d{4}-\d{2}-\d{2}:cover$/, openTodo = null, todoTaken = {}, appTaken = {};
     var todoMatch = function (from, to, amount, date) {
       if (D.diff(date, today) > 7) return null;
       // (looking at it as if no pot move had been made at the bank yet, so one saved under the bank's own key is found too)
@@ -925,6 +933,7 @@ function bankApply_(p, data, windowFrom, payCarry) {
       return d;
     };
     var plannedCands = function (t, needName) {
+      if (bankTrue_(D.setting(db, p, "bank.undo." + t.id, ""))) return [];
       var toPartner = namesPartner(t), out = [], words = bankMerchantKey_(t.name).split(" ").filter(function (w) { return w.length > 2; });
       var a = t.amount, lo = D.addDays(t.date, -3), hi = D.addDays(t.date, 4);
       var win = function (item) { return D.occurrences(db, item, D.addDays(t.date, -10), D.addDays(t.date, 11)).filter(function (o) { var d = planDay(o); return d >= lo && d < hi; }); };
@@ -982,31 +991,31 @@ function bankApply_(p, data, windowFrom, payCarry) {
     };
     var payIn = function (t) { var pk = payPick[t.id]; return pk && !usedOcc[pk.o.key] ? pk : null; };
     // the bank's own change to one date: its id names the person, and one with that id for another item isn't used
-    var exception = function (itemId, orig, amount, note) {
+    var exception = function (itemId, orig, amount, note, bankId) {
       var id = "x-" + itemId + "-" + orig + "-bank-" + p, ex = byId_("exceptions", id);
       if (ex && ex.item !== itemId) { Logger.log("Bank feed skipped " + id + ": that id is already used for something else."); return; }
-      if (ex) { if (!same(+ex.amount, amount)) update("exceptions", id, {amount: amount, deleted: false}); }
-      else create("exceptions", {id: id, item: itemId, date: orig, action: "amount", amount: amount, note: note});
+      if (ex) { if (!same(+ex.amount, amount) || bankTrue_(ex.deleted) || (bankId && ex.bankId !== bankId)) update("exceptions", id, {amount: amount, deleted: false, bankId: bankId || ex.bankId || ""}); }
+      else create("exceptions", {id: id, item: itemId, date: orig, action: "amount", amount: amount, note: note, bankId: bankId || ""});
     };
     // a planned bill or payment to your partner the bank saw go out is marked paid on its date, so the Payments out list can
     // say so (one that came out at another amount or on another day says it already, with the change above)
-    var paidMark = function (itemId, orig) {
+    var paidMark = function (itemId, orig, bankId) {
       var id = "x-" + itemId + "-" + orig + "-bankpaid-" + p, ex = byId_("exceptions", id);
       if (ex && ex.item !== itemId) { Logger.log("Bank feed skipped " + id + ": that id is already used for something else."); return; }
-      if (ex) { if (bankTrue_(ex.deleted)) update("exceptions", id, {deleted: false}); }
-      else create("exceptions", {id: id, item: itemId, date: orig, action: "paid", note: "seen at " + label});
+      if (ex) { if (bankTrue_(ex.deleted) || (bankId && ex.bankId !== bankId)) update("exceptions", id, {deleted: false, bankId: bankId || ex.bankId || ""}); }
+      else create("exceptions", {id: id, item: itemId, date: orig, action: "paid", note: "seen at " + label, bankId: bankId || ""});
     };
     // a planned bill or payment to your partner that went out on another day than planned (a day early, say) is moved
     // to that day: the balance the bank gives already has it taken off, so it isn't taken off again on the day it was
     // planned (which made a pot look short until then). Only within the same pay period, so no payday's moves change.
-    var dayChange = function (o, date) {
+    var dayChange = function (o, date, bankId) {
       var it = o.item; if (!it || !it.id || !date) return;
       var id = "x-" + it.id + "-" + o.orig + "-bankday-" + p, ex = byId_("exceptions", id), plan = planDay(o);
       if (ex && ex.item !== it.id) { Logger.log("Bank feed skipped " + id + ": that id is already used for something else."); return; }
       var live = !!ex && !bankTrue_(ex.deleted), pa = D.periodAt(db, p, plan), pb = D.periodAt(db, p, date);
       if (date === plan || !pa || !pb || pa.start !== pb.start) { if (live) update("exceptions", id, {deleted: true}); return; }
-      if (ex) { if (!live || String(ex.action) !== "move" || String(ex.newDate) !== date) update("exceptions", id, {action: "move", newDate: date, deleted: false}); }
-      else create("exceptions", {id: id, item: it.id, date: o.orig, action: "move", newDate: date, note: "paid that day, from " + label});
+      if (ex) { if (!live || String(ex.action) !== "move" || String(ex.newDate) !== date || (bankId && ex.bankId !== bankId)) update("exceptions", id, {action: "move", newDate: date, deleted: false, bankId: bankId || ex.bankId || ""}); }
+      else create("exceptions", {id: id, item: it.id, date: o.orig, action: "move", newDate: date, note: "paid that day, from " + label, bankId: bankId || ""});
     };
 
     // each payment once, even if the read listed it twice (under a Space as well as the account, say, or in two
@@ -1023,9 +1032,9 @@ function bankApply_(p, data, windowFrom, payCarry) {
       var id = "x-" + it.id + "-" + o.orig + "-bankday-" + p, ex = byId_("exceptions", id), live = !!ex && !bankTrue_(ex.deleted), plan = planDay(o);
       if (ex && ex.item !== it.id) { Logger.log("Bank feed skipped " + id + ": that id is already used for something else."); return; }
       if (date >= plan) { if (live) { update("exceptions", id, {deleted: true}); payDays.push({id: id}); } return; }
-      if (live && String(ex.action) === "move" && String(ex.newDate) === date) return;
-      var row = {id: id, item: it.id, date: o.orig, action: "move", newDate: date, note: "came in that day, from " + label};
-      if (ex) update("exceptions", id, {action: "move", newDate: date, deleted: false}); else create("exceptions", row);
+      if (live && String(ex.action) === "move" && String(ex.newDate) === date && ex.bankId === tid) return;
+      var row = {id: id, item: it.id, date: o.orig, action: "move", newDate: date, note: "came in that day, from " + label, bankId: tid};
+      if (ex) update("exceptions", id, {action: "move", newDate: date, deleted: false, bankId: tid}); else create("exceptions", row);
       payDays.push({id: id, row: row});
     });
     if (payDays.length) {
@@ -1119,6 +1128,7 @@ function bankApply_(p, data, windowFrom, payCarry) {
     });
     linkPairs.sort(function (x, y) { return x.d.score - y.d.score || x.ti - y.ti || x.d.i - y.d.i; });
     var linkTook = Object.create(null); linkPairs.forEach(function (x) { if (linkTook[x.d.r.id] || linkPick[x.t.id]) return; linkTook[x.d.r.id] = true; linkPick[x.t.id] = x.d; });
+    var activeOccurrence = function (item, orig) { return Object.keys(planPick).some(function (id) { var h = planPick[id]; return h.occ.item && h.occ.item.id === item && h.occ.orig === orig; }) || Object.keys(payPick).some(function (id) { var h = payPick[id]; return h.i.id === item && h.o.orig === orig; }); };
     txList.forEach(function (t) {
       if (!t.date) return;
       seen[t.id] = true;
@@ -1128,10 +1138,27 @@ function bankApply_(p, data, windowFrom, payCarry) {
       // a pending hold that went to nothing, or a payment refused or reversed: drop the row the bank added
       if (t.declined || t.reversed || (!t.amount && t.pending !== undefined && (t.pending || pending[t.id]))) {
         delete pending[t.id];
-        if (mine && /^bk-/.test(mine.id) && !bankTrue_(mine.deleted) && (t.reversed || !t.amount || bankTrue_(mine.review))) update("transactions", mine.id, {deleted: true});
+        if (mine && (mine.bankId || /^bk-/.test(mine.id)) && !bankTrue_(mine.deleted) && (t.reversed || !t.amount || bankTrue_(mine.review))) update("transactions", mine.id, {deleted: true});
+        db.exceptions.forEach(function (x) { var it = db.byId[x.item] || {}; if (String(x.bankId || "") === String(t.id) && /-bank(paid|day)?-/.test(String(x.id)) && (it.person === p || it.from === p) && !activeOccurrence(x.item, x.date)) update("exceptions", x.id, {deleted: true}); });
+        // Older releases did not save the bank reference. Migrate an unambiguous cancelled match only;
+        // another live payment assigned to the occurrence always takes precedence.
+        var legacy = {}, words = bankMerchantKey_(t.name).split(" ").filter(function (w) { return w.length > 2; });
+        db.exceptions.forEach(function (x) {
+          if (x.bankId || x.by !== "bank" || !/-bank(paid|day)?-/.test(String(x.id))) return;
+          var item = db.byId[x.item]; if (!item || !(item.person === p || item.from === p) || Math.abs(D.diff(x.newDate || x.date, t.date)) > 3) return;
+          var names = bankMerchantKey_(item.name).split(" "), nameHit = words.some(function (w) { return names.indexOf(w) >= 0; });
+          var expected = D.amountAt(db, item, x.date), actual = (db.byItem.exceptions[item.id] || []).filter(function (e) { return e.date === x.date && e.action === "amount" && /-bank-/.test(e.id); })[0];
+          if (t.amount ? !near(Math.abs(t.amount), actual ? +actual.amount : expected) : !nameHit) return;
+          var k = x.item + "|" + x.date, group = legacy[k] = legacy[k] || {rows: [], item: x.item, date: x.date, score: nameHit ? 0 : 1}; group.rows.push(x);
+        });
+        var groups = Object.keys(legacy).map(function (k) { return legacy[k]; }).sort(function (a, b) { return a.score - b.score; });
+        if (groups.length && (groups.length === 1 || groups[0].score < groups[1].score)) {
+          var group = groups[0], replacement = activeOccurrence(group.item, group.date);
+          if (!replacement) group.rows.forEach(function (x) { update("exceptions", x.id, {deleted: true}); });
+        }
         // and a pot, Space or Moneybox move the bank feed made from it (money that went back never reached the LISA)
-        var mv0 = moveRows["bk-" + provider + "-" + t.id];
-        if (mv0 && mv0.person === p && !bankTrue_(mv0.deleted)) update("moves", mv0.id, {deleted: true});
+        var moveBase = "bk-" + provider + "-" + t.id;
+        Object.keys(moveRows).forEach(function (id) { var mv0 = moveRows[id]; if ((id === moveBase || id.indexOf(moveBase + "~") === 0) && mv0.person === p && !bankTrue_(mv0.deleted)) update("moves", mv0.id, {deleted: true}); });
         return;
       }
       if (!t.amount) return;
@@ -1159,7 +1186,7 @@ function bankApply_(p, data, windowFrom, payCarry) {
         var pm = into ? paydayMatch(to, amt, t.date) : null;
         if (!pm) {
           var exM = moveRows["bk-" + provider + "-" + t.id], loose = !exM || /^bank:/.test(String(exM.key || ""));
-          if (exM && (exM.person !== p || bankTrue_(exM.deleted) || !loose)) { if (exM.person === p && !loose) return; }
+          if (exM && (exM.person !== p || bankTrue_(exM.deleted) || !loose)) { if (exM.person === p && !loose && !(bankTrue_(exM.deleted) && exM.by === "bank")) return; }
           else {
             var tm = todoMatch(from, to, amt, t.date);
             if (tm) { putTodoMove(t, from, to, tm, exM); return; }
@@ -1186,8 +1213,8 @@ function bankApply_(p, data, windowFrom, payCarry) {
           var po = mine ? null : plannedOut(t);
           if (po) {
             usedOcc[po.occ.key] = true;
-            if (po.kind === "bill" && !same(t.amount, po.occ.amount)) exception(po.item.id, po.occ.orig, t.amount, "from " + label);
-            if (po.kind === "bill" || po.kind === "transfer") { dayChange(po.occ, t.date); if (po.occ.item && po.occ.item.id) paidMark(po.occ.item.id, po.occ.orig); }
+            if (po.kind === "bill" && (!same(t.amount, po.occ.amount) || byId_("exceptions", "x-" + po.item.id + "-" + po.occ.orig + "-bank-" + p))) exception(po.item.id, po.occ.orig, t.amount, "from " + label, t.id);
+            if (po.kind === "bill" || po.kind === "transfer") { dayChange(po.occ, t.date, t.id); if (po.occ.item && po.occ.item.id) paidMark(po.occ.item.id, po.occ.orig, t.id); }
             return;
           }
         }
@@ -1207,18 +1234,19 @@ function bankApply_(p, data, windowFrom, payCarry) {
           // money from your partner is never your pay, however much it is
           if (mine || namesPartner(t)) return;
           var pi = payIn(t);
-          if (pi) { usedOcc[pi.o.key] = true; if (!same(-t.amount, pi.o.amount)) exception(pi.i.id, pi.o.orig, -t.amount, "from " + label); paidMark(pi.i.id, pi.o.orig); }
+          if (pi) { usedOcc[pi.o.key] = true; if (!same(-t.amount, pi.o.amount)) exception(pi.i.id, pi.o.orig, -t.amount, "from " + label, t.id); paidMark(pi.i.id, pi.o.orig, t.id); }
           // other money in that isn't planned (selling something, a friend paying you back, interest): kept as a payment of
           // less than nothing, for no budget, so it shows up in Recent and in the account it went into, and spends nothing.
           // Money that matches a planned income or a regular payment to you (Sophie's share of the rent) is already in the plan.
           var inAmt = -t.amount, plannedIn = false;
           var inWin = function (item) { return D.occurrences(db, item, D.addDays(t.date, -10), D.addDays(t.date, 11)).filter(function (o) { var d = planDay(o); return d >= D.addDays(t.date, -3) && d < D.addDays(t.date, 4); }); };
           // (anything pay-sized near a payday is left for the pay check, which might not have seen that payday yet when a first read comes in parts)
-          db.income.forEach(function (i) { if (i.person === p) inWin(i).forEach(function (o) { var base = D.amountAt(db, i, o.orig); if (near(inAmt, o.amount) || (i.isPay && base > 0 && Math.abs(inAmt - base) <= base * 0.5)) plannedIn = true; }); });
+          db.income.forEach(function (i) { if (i.person === p && !i.isPay) inWin(i).forEach(function (o) { if (near(inAmt, o.amount)) plannedIn = true; }); });
+          if (pi) plannedIn = true;
           db.transfers.forEach(function (tr) { if (tr.to === p) inWin(tr).forEach(function (o) { if (near(inAmt, o.amount)) plannedIn = true; }); });
           if (plannedIn || movedIn()) return;
           if (boxIn) { putMove(t, boxIn.id, acc, inAmt, "bank:" + t.id, true, t.name); return; }
-          create("transactions", {id: "bk-" + provider + "-" + t.id, date: t.date, person: p, amount: t.amount, budget: "", account: acc, split: "", splitHint: "", note: t.name, source: provider, bankId: t.id, review: false});
+          create("transactions", {id: "bk-" + provider + "-" + t.id, date: t.date, person: p, amount: t.amount, budget: "", account: acc, split: "", splitHint: "", note: t.name, source: provider, bankId: t.id, review: t.date >= st});
           return;
         }
       }
@@ -1244,7 +1272,7 @@ function bankApply_(p, data, windowFrom, payCarry) {
         var f = {}, confirmed = !bankTrue_(mine.review);
         // dismissed on a phone: it stays dismissed. Taken off by the bank feed itself (a hold that seemed to have gone):
         // the bank shows it again, so it comes back
-        if (bankTrue_(mine.deleted)) { if (!(String(mine.by) === "bank" && /^bk-/.test(mine.id))) return; f.deleted = false; }
+        if (bankTrue_(mine.deleted)) { if (!(String(mine.by) === "bank" && (mine.bankId || /^bk-/.test(mine.id)))) return; f.deleted = false; }
         if (!same(+mine.amount, t.amount)) f.amount = t.amount;      // a pending payment settled at a different amount
         if (paidFrom[t.id] && confirmed && mine.account !== acc && /^bk-/.test(mine.id)) f.account = acc;   // paid from a bills pot
         if (!confirmed) { if (mine.account !== acc && /^bk-/.test(mine.id)) f.account = acc;   // the account was mapped since

@@ -22,18 +22,18 @@ function webAppUrl_() {
 }
 var NO_URL_ = "Add a Script Property WEB_APP_URL (Project Settings > Script Properties) with your Web app URL, ending /exec (Deploy > Manage deployments), and run again.";
 var APP_URL = "https://budgie-money.github.io/";
-// 2: loanItems (what an IOU is made of). Raised whenever a table or column is added: the sheet gets it by itself (ensureSchema_)
-var SCHEMA_VERSION = 2;
+// 3: linked refunds, bill receipts and credit repayments. Raised whenever a table or column is added: the sheet gets it by itself (ensureSchema_)
+var SCHEMA_VERSION = 3;
 var COMMON = ["deleted", "updated", "by"];
 var SCHEMA = {
   people: ["id", "name", "bank", "potWord", "partner", "colour"],
   accounts: ["id", "owner", "name", "kind", "purpose", "fallback", "order"],
   income: ["id", "person", "name", "amount", "account", "isPay", "unit", "every", "on", "shift", "start", "end", "dates", "notes"],
-  bills: ["id", "person", "name", "category", "amount", "account", "split", "variable", "setAside", "unit", "every", "on", "shift", "start", "end", "dates", "pool", "notes"],
+  bills: ["id", "person", "name", "category", "amount", "account", "split", "variable", "setAside", "unit", "every", "on", "shift", "start", "end", "dates", "pool", "notes", "creditAccount"],
   budgets: ["id", "person", "name", "amount", "mode", "account", "carry", "start", "end", "notes"],
   splits: ["id", "name", "shares", "notes"],
   transfers: ["id", "from", "to", "name", "amount", "fromAccount", "toAccount", "purpose", "unit", "every", "on", "shift", "start", "end", "dates", "notes"],
-  transactions: ["id", "date", "person", "amount", "budget", "account", "split", "note", "source", "bankId", "review", "splitHint"],
+  transactions: ["id", "date", "person", "amount", "budget", "account", "split", "note", "source", "bankId", "review", "splitHint", "refundOf", "loanItem", "purchaseTotal", "iouShare", "planId", "billId", "billDate"],
   moves: ["id", "date", "person", "from", "to", "amount", "key", "note", "review"],
   settlements: ["id", "date", "from", "to", "amount", "fromAccount", "toAccount", "loan", "key", "note"],
   loans: ["id", "lender", "borrower", "name", "amount", "date", "account", "repay", "repayFrom", "repayDay", "notes"],
@@ -41,7 +41,7 @@ var SCHEMA = {
   goals: ["id", "owners", "name", "target", "due", "accounts", "kind", "extra", "price", "notes"],
   valuations: ["id", "account", "date", "amount", "note"],
   amounts: ["id", "item", "start", "amount", "shares", "note"],
-  exceptions: ["id", "item", "date", "action", "newDate", "amount", "note"],
+  exceptions: ["id", "item", "date", "action", "newDate", "amount", "note", "bankId"],
   settings: ["id", "person", "key", "value"],
   gifts: ["id", "person", "name", "idea", "occasion", "date", "limit", "cost", "bought", "notes"],
   prices: ["id", "fund", "date", "price", "source"],
@@ -417,6 +417,7 @@ function applyOne_(me, op, now, by, opts) {
   if (!sys) for (var lk in src) if (typeof src[lk] === "string" && src[lk].length > 45000) throw refuse_("That's too long to save (" + lk + ")");
   var tab = readTable_(t), sh = tab.sheet || ensureTab_(ss_(), t);
   var existing = byId_(t, id);
+  var oldReceipt = t === "transactions" && existing ? {billId: existing.billId, billDate: existing.billDate, source: existing.bankId || "manual:" + id} : null;
   var row = existing ? strip_(existing) : {};
   // the other one's rows are turned away in the same words whether they're there or not, so a refusal never tells you
   // about something private of theirs (that they have a bank rule for a shop, or changed a bill on a date)
@@ -448,13 +449,14 @@ function applyOne_(me, op, now, by, opts) {
   // how a pooled bill's month was settled up is recorded by the sheet alone, once (poolFreeze_)
   if (t === "settings" && !sys && /^pool:/.test(String(src.key !== undefined ? src.key : (existing || {}).key || id.replace(/^[^:]*:/, "")))) throw refuse_("The sheet records that itself");
   var bankRow = !sys && isBankRow_(t, existing);
-  if (op.op === "delete") { if (!existing) return; row.deleted = true; }
+  if (op.op === "delete") { if (!existing) return; if (op.ifBankId && String(existing.bankId || "") !== String(op.ifBankId)) return; row.deleted = true; }
   else {
     for (var k in src) {
       if (k === "updated" || k === "by" || k === "_row") continue;
       // a "__proto__" field (JSON.parse keeps it) would hand the row fields the rules below never look at
       if (!Object.prototype.hasOwnProperty.call(src, k) || k === "__proto__" || k === "constructor" || k === "prototype") continue;
       if (!sys && k === "bankId") continue;   // only the bank feed links a payment to the bank
+      if (!sys && k === "refundCredit") continue; // derived from private purchases on the server
       // a phone may only change these on a bank row: what it's for, the split, the note, and that it's checked
       // (taking one off is always fine; bringing one back only when you took it off yourself, so Undo works, but a
       // payment the bank feed removed stays removed: the feed brings it back itself if the bank shows it again)
@@ -495,6 +497,12 @@ function applyOne_(me, op, now, by, opts) {
       if (!asked) { row.deleted = true; row.note = "Same move as " + before.id; }
     }
   }
+  // A stale second phone must not record a saving suggestion after the cash has already moved.
+  if (!existing && !sys && t === "moves" && /^sweep:/.test(String(row.key || "")) && !toBoolCell_(row.deleted) && Budgie.isIso(String(row.date || ""))) {
+    var sweepDb = Budgie.load(allTables_(), String(row.date)), suggestion = Budgie.spareMoney(sweepDb, String(row.person), String(row.date)).moves.filter(function (x) { return x.key === row.key && x.from === row.from && x.to === row.to; })[0];
+    if (!suggestion) { row.deleted = true; row.note = "This saving move is no longer needed"; }
+    else row.amount = Math.min(+row.amount || 0, suggestion.amount);
+  }
   // you both ticking the same settling up (one "I've paid", the other "it's arrived") before your phones caught up:
   // when nothing is owed any more by the time the second one arrives, it's kept but marked as a copy, so neither of
   // you ends up owing the other the same amount back
@@ -503,6 +511,13 @@ function applyOne_(me, op, now, by, opts) {
     var twin = tab.rows.filter(function (r) { return r.from === row.from && r.to === row.to && !r.loan && !toBoolCell_(r.deleted) && String(r.date) <= String(row.date); })
       .sort(function (x, y) { return String(x.date) < String(y.date) ? 1 : -1; })[0];
     if (twin && bt.partner === String(row.from) && !(bt.owedToMe > 0.004)) { row.deleted = true; row.note = "Same settling up as " + twin.id; }
+  }
+  if (!existing && !sys && t === "settlements" && row.loan && /^loanreturn:/.test(String(row.key || "")) && !toBoolCell_(row.deleted)) {
+    var returnDb = Budgie.load(allTables_(), String(row.date || "")), returnLoan = returnDb.byId[String(row.loan)];
+    if (!returnLoan || row.from !== returnLoan.lender || row.to !== returnLoan.borrower) throw refuse_("That is not a return for this IOU");
+    var credit = Math.max(0, Budgie.loanPaid(returnDb, returnLoan, String(row.date || "")) - (+returnLoan.amount || 0));
+    if (credit < 0.005) { row.deleted = true; row.note = "This overpayment was already returned"; }
+    else row.amount = Math.min(+row.amount || 0, credit);
   }
   // the same for a loan repayment: the lender ticking "it's been paid to me" and the borrower "I've paid it" are one
   // repayment (its key names the loan and the date it was due), so the second is kept but marked as a copy
@@ -515,6 +530,27 @@ function applyOne_(me, op, now, by, opts) {
       var stillOwed = !!lrow && Budgie.loans(ldb, String(lrow.lender), String(row.date || "")).some(function (l) { return l.id === lrow.id && l.plan.some(function (r) { return r.key === String(row.key) && r.amount > 0.004; }); });
       if (!stillOwed) { row.deleted = true; row.note = "Same repayment as " + paidAlready.id; }
     }
+  }
+  if (!sys && t === "bills" && row.creditAccount) { var ca = byId_("accounts", String(row.creditAccount)); if (!ca || ca.kind !== "credit" || ca.owner !== row.person || ca.id === row.account) throw refuse_("Choose your credit account and a separate account to pay it from"); }
+  if (!sys && t === "transactions" && !toBoolCell_(row.deleted)) {
+    if (row.billId) {
+      var linkedBill = byId_("bills", String(row.billId)), receiptSource = row.bankId || "manual:" + id;
+      if (!linkedBill || linkedBill.person !== me || toBoolCell_(linkedBill.deleted) || !(+row.amount > 0) || !Budgie.isIso(String(row.billDate))) throw refuse_("Choose one of your own bills and its payment date");
+      var receiptDb = Budgie.load(allTables_(), String(row.date));
+      if (!Budgie.occurrences(receiptDb, linkedBill, Budgie.addDays(String(row.billDate), -45), Budgie.addDays(String(row.billDate), 46)).some(function (o) { return o.orig === String(row.billDate); })) throw refuse_("Choose an existing payment of this bill");
+      var marked = byId_("exceptions", "x-" + row.billId + "-" + row.billDate + "-bankpaid-" + me);
+      if (marked && !toBoolCell_(marked.deleted) && marked.bankId && marked.bankId !== receiptSource && (!oldReceipt || marked.bankId !== oldReceipt.source)) throw refuse_("This bill already has a different matched payment");
+      row.budget = ""; row.split = "";
+    }
+    if (row.planId) { var planBill = byId_("bills", String(row.planId)); if (!planBill || planBill.person !== me || toBoolCell_(planBill.deleted)) throw refuse_("Choose one of your own payment plans"); }
+    if (row.refundOf) {
+      var original = byId_("transactions", String(row.refundOf));
+      if (!original || original.person !== me || toBoolCell_(original.deleted) || !(+original.amount > 0) || !(+row.amount < 0) || String(row.date) < String(original.date)) throw refuse_("Choose one of your own earlier purchases for this refund");
+      var refunded = -Number(row.amount); readTable_("transactions").rows.forEach(function (x) { if (x.id !== id && x.person === me && x.refundOf === original.id && !toBoolCell_(x.deleted)) refunded -= Math.min(0, +x.amount || 0); });
+      if (refunded > (+original.purchaseTotal || +original.amount) + 0.005) throw refuse_("Those refunds add up to more than the purchase");
+    }
+    if (row.loanItem && (!existing || String(existing.loanItem) !== String(row.loanItem))) { var li = byId_("loanItems", String(row.loanItem)), ln = li && byId_("loans", String(li.loan)); if (!li || toBoolCell_(li.deleted) || !ln || ln.lender !== me || !(+row.amount > 0)) throw refuse_("Choose an item from an IOU owed to you"); }
+    if (row.iouShare !== undefined && (!isFinite(+row.iouShare) || +row.iouShare < 0 || +row.iouShare > Math.abs(+row.amount))) throw refuse_("The shared amount must fit within this payment");
   }
   // people are set up in the sheet; you can change your own name or colour, never who your partner is
   if (t === "people") {
@@ -563,14 +599,25 @@ function applyOne_(me, op, now, by, opts) {
   }
   // a loan with items is worth what its items add up to: its own amount is kept in step (the engine adds them up too)
   if (t === "loanItems") [String(row.loan || ""), wasLoan].forEach(function (lid, i, all) { if (lid && all.indexOf(lid) === i) loanTotal_(lid, now); });
+  if (t === "transactions") {
+    var receiptSource = row.bankId || "manual:" + id, suffixes = ["bankpaid", "bank", "bankday"];
+    if (oldReceipt && oldReceipt.billId && (toBoolCell_(row.deleted) || row.billId !== oldReceipt.billId || row.billDate !== oldReceipt.billDate || receiptSource !== oldReceipt.source)) suffixes.forEach(function (s) { applyOne_(String(row.person), {op: "delete", table: "exceptions", id: "x-" + oldReceipt.billId + "-" + oldReceipt.billDate + "-" + s + "-" + row.person, ifBankId: oldReceipt.source}, now, "bank", {sys: true}); });
+    if (row.billId && !toBoolCell_(row.deleted)) {
+      var base = "x-" + row.billId + "-" + row.billDate + "-", common = {item: row.billId, date: row.billDate, bankId: receiptSource, deleted: false};
+      applyOne_(String(row.person), {op: "put", table: "exceptions", row: Object.assign({}, common, {id: base + "bankpaid-" + row.person, action: "paid"})}, now, "bank", {sys: true});
+      applyOne_(String(row.person), {op: "put", table: "exceptions", row: Object.assign({}, common, {id: base + "bank-" + row.person, action: "amount", amount: +row.amount})}, now, "bank", {sys: true});
+      if (String(row.date) === String(row.billDate)) applyOne_(String(row.person), {op: "delete", table: "exceptions", id: base + "bankday-" + row.person, ifBankId: receiptSource}, now, "bank", {sys: true});
+      else applyOne_(String(row.person), {op: "put", table: "exceptions", row: Object.assign({}, common, {id: base + "bankday-" + row.person, action: "move", newDate: row.date})}, now, "bank", {sys: true});
+    }
+  }
 }
 // the loan's amount follows its items (their shares added up) as long as it has any; with none it keeps the amount it has
 function loanTotal_(loanId, now) {
   var ln = byId_("loans", loanId); if (!ln) return;
-  var sum = 0, any = false;
-  readTable_("loanItems").rows.forEach(function (r) { if (String(r.loan) === String(loanId) && !toBoolCell_(r.deleted)) { any = true; sum += +String(r.share === undefined || r.share === null ? 0 : r.share).replace(/[£,\s]/g, "") || 0; } });
+  var sum = 0, any = false, itemised = false;
+  readTable_("loanItems").rows.forEach(function (r) { if (String(r.loan) !== String(loanId)) return; itemised = true; if (!toBoolCell_(r.deleted)) { any = true; sum += +String(r.share === undefined || r.share === null ? 0 : r.share).replace(/[£,\s]/g, "") || 0; } });
   sum = Math.round(sum * 100) / 100;
-  if (any && Math.abs((+ln.amount || 0) - sum) > 0.004) applyOne_(String(ln.lender), {op: "put", table: "loans", row: {id: loanId, amount: sum}}, now, "sheet", {sys: true});
+  if (itemised && Math.abs((+ln.amount || 0) - sum) > 0.004) applyOne_(String(ln.lender), {op: "put", table: "loans", row: {id: loanId, amount: sum}}, now, "sheet", {sys: true});
 }
 
 // which person each account column belongs to: a payment, pot move, bill, income or budget uses its person's own
@@ -578,7 +625,7 @@ function loanTotal_(loanId, now) {
 // from the lender's
 var ACCOUNT_SIDES_ = {
   transactions: {account: "person"}, moves: {from: "person", to: "person"},
-  bills: {account: "person"}, income: {account: "person"}, budgets: {account: "person"},
+  bills: {account: "person", creditAccount: "person"}, income: {account: "person"}, budgets: {account: "person"},
   transfers: {fromAccount: "from", toAccount: "to"}, settlements: {fromAccount: "from", toAccount: "to"}, loans: {account: "lender"}
 };
 // the accounts money comes out of, on rows either of you can write
@@ -761,6 +808,9 @@ function sync_(me, since, full, snap) {
   var partner = (personRow(me) || {}).partner || "", pr = personRow(partner);
   if (!partner || partner === me || !pr || pr.partner !== me) partner = "";
   var sharing = partner ? sharingOf(partner) : {};
+  var today = Utilities.formatDate(new Date(), tz_(), "yyyy-MM-dd"), loanCredits = Object.create(null);
+  // Both phones see the same itemised liability without disclosing the lender's private purchases/refunds.
+  Budgie.load(tables, today).loanItems.forEach(function (item) { loanCredits[item.id] = Budgie.round((+item.originalShare || 0) - (+item.share || 0)); });
   full = full || !since;
   // the list of rows to drop was trimmed past this phone's last sync: send everything instead
   if (!full && (+PropertiesService.getScriptProperties().getProperty("HIDDEN_ROWS_DROPPED") || 0) > +since - 5000) full = true;
@@ -771,9 +821,9 @@ function sync_(me, since, full, snap) {
   Object.keys(tables).forEach(function (t) {
     rows[t] = [];
     tables[t].forEach(function (r) {
-      if (!(full || recent(r) || t === "meta")) return;
+      if (!(full || recent(r) || t === "meta" || t === "loanItems")) return;
       if (canSee_(me, t, r, sharing)) {
-        rows[t].push(r);
+        rows[t].push(t === "loanItems" ? Object.assign({}, r, {refundCredit: loanCredits[r.id] || 0}) : r);
         // your partner's split payment names their budget, so the app can match it to yours ("Food")
         if (t === "transactions" && r.person !== me && r.budget) needStub[r.budget] = true;
       }
