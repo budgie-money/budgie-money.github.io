@@ -875,13 +875,22 @@ function bankApply_(p, data, windowFrom, payCarry) {
       var per = D.periodAt(db, p, date), cands = [per, D.prevPeriod(db, p, per)], hit = null, close = [];
       cands.forEach(function (pk) {
         if (hit || !pk || !pk.pay || pk.opening) return; var dd = D.diff(pk.start, date); if (dd < 0 || dd > 7) return;
-        D.payday(db, p, pk).moves.forEach(function (m) {
-          if (hit) return; var acc = accRow[m.to] || {};
+        var journey=D.paydaySteps(db,p,date,pk);journey.steps.forEach(function (m) {
+          if (hit) return; var target=m.account||m.to,acc = accRow[target] || {};
           // (only ever to one of your own accounts: a plan typed in the sheet that names your partner's LISA mustn't
           // turn your Moneybox payment into a move into theirs)
-          if (acc.owner !== p || !(to ? m.to === to : kindRe.test(String(acc.kind)))) return;
-          var h = {key: "pay:" + pk.start + ":" + m.to, to: m.to, start: pk.start};
-          if (near(m.amount, amount)) hit = h; else if (Math.abs(m.amount - amount) <= m.amount * 0.1) close.push(h);
+          if (acc.owner !== p || !(to ? target === to : kindRe.test(String(acc.kind)))) return;
+          // A person can still make the old gross funding transfer and return the
+          // reimbursement separately. Recognise those real facts as well.
+          if(m.net&&m.back>0&&same(m.allocation-m.paid,amount)){
+            var grossKey='pay:'+pk.start+':'+target;
+            if(m.paid>.004)grossKey='net:'+JSON.stringify({v:1,period:pk.start,account:target,offset:m.paid,parts:[{key:grossKey,amount:amount,reverse:false}]});
+            hit={key:grossKey,to:target,start:pk.start};return;
+          }
+          var h = {key:m.key, to:m.to, start:pk.start};
+          var expected=journey.enabled?m.remaining:m.amount;
+          if (m.from!==D.mainOf(db,p)||!(expected>0.004))return;
+          if (m.net?same(expected,amount):near(expected, amount)) hit = h; else if (!m.net&&Math.abs(expected - amount) <= expected * 0.1) close.push(h);
         });
       });
       return hit || (close.length === 1 ? close[0] : null);
@@ -898,7 +907,10 @@ function bankApply_(p, data, windowFrom, payCarry) {
           if (same(total, amount) && parts.every(function (m) { return m.from === from && m.to === to; })) parts.forEach(function (m) { update("moves", m.id, {deleted: false}); });
           else update("moves", id, {deleted: false, amount: amount, from: from, to: to, key: key || "bank:" + t.id});
         }
-        else if (!bankTrue_(ex.deleted) && (!same(+ex.amount, amount) || ex.from !== from || ex.to !== to)) update("moves", id, {amount: amount, from: from, to: to}); return;
+        else if (!bankTrue_(ex.deleted)) {
+          if(!same(+ex.amount,amount)||ex.from!==from||ex.to!==to)update('moves',id,{amount:amount,from:from,to:to});
+          else if(/^net:/.test(key||'')&&/^bank:/.test(ex.key||''))update('moves',id,{key:key});
+        }return;
       }
       // already ticked in your app: nothing new to add (only your own ticks count: your partner can write any key on
       // a move of theirs, and that mustn't hide one of yours)
@@ -917,18 +929,18 @@ function bankApply_(p, data, windowFrom, payCarry) {
     // main account, the payday cover): to the same place, the same amount to the penny, within the last week. It takes
     // that move's key (one row for each part it ticks), so To do counts it as done rather than asking for it again; and
     // one you'd already ticked in your app (within 3 days) isn't added a second time
-    var TODO_KEY_ = /^(back|cover|fill|lent|late|refund|goal|sweep):|^pay:\d{4}-\d{2}-\d{2}:cover$/, openTodo = null, todoTaken = {}, appTaken = {};
+    var TODO_KEY_ = /^(back|cover|fill|lent|late|refund|goal|sweep|net):|^pay:\d{4}-\d{2}-\d{2}:cover$/, openTodo = null, todoTaken = {}, appTaken = {};
     var todoMatch = function (from, to, amount, date) {
       if (D.diff(date, today) > 7) return null;
       // (looking at it as if no pot move had been made at the bank yet, so one saved under the bank's own key is found too)
-      if (openTodo === null) { try { db.looseOff = true; db._c = {}; openTodo = D.todo(db, p, today).filter(function (x) { return x.type === "move" && !x.payday && x.keys && x.keys.length && x.keys.every(function (k) { return TODO_KEY_.test(k.key); }); }); } catch (e) { openTodo = []; } db.looseOff = false; db._c = {}; }
+      if (openTodo === null) { try { db.looseOff = true; db._c = {}; openTodo = D.todo(db, p, today).filter(function (x) { return x.type === "move" && (!x.payday||x.net) && x.keys && x.keys.length && x.keys.every(function (k) { return TODO_KEY_.test(k.key); }); }); } catch (e) { openTodo = []; } db.looseOff = false; db._c = {}; }
       for (var i = 0; i < openTodo.length; i++) { var it = openTodo[i]; if (!todoTaken[i] && it.from === from && it.to === to && same(it.amount, amount)) { todoTaken[i] = true; return it; } }
       return null;
     };
     // (what one tick in the app saved: its parts, one row each, on the same day between the same two accounts)
     var appTicks = null;
     var appTicked = function (from, to, amount, date) {
-      if (appTicks === null) { var g = {}; appTicks = []; db.moves.forEach(function (m) { if (m.dup || m.person !== p || /^bk-/.test(String(m.id)) || !TODO_KEY_.test(String(m.key || ""))) return; var k = (m.batch || m.date) + "|" + m.from + "|" + m.to; if (!g[k]) { g[k] = {date: m.date, from: m.from, to: m.to, amount: 0}; appTicks.push(g[k]); } g[k].amount += +m.amount || 0; }); }
+      if (appTicks === null) { var g = {}; appTicks = []; db.moves.forEach(function (m) { if (m.dup || m.person !== p || /^bk-/.test(String(m.id)) || !TODO_KEY_.test(String(m.key || ""))) return; var k = (/^net:/.test(m.key||'')?m.id:m.batch || m.date) + "|" + m.from + "|" + m.to; if (!g[k]) { g[k] = {date: m.date, from: m.from, to: m.to, amount: 0}; appTicks.push(g[k]); } g[k].amount += +m.amount || 0; }); }
       for (var i = 0; i < appTicks.length; i++) { var x = appTicks[i]; if (!appTaken[i] && x.from === from && x.to === to && same(x.amount, amount) && Math.abs(D.diff(x.date, date)) <= 3) { appTaken[i] = true; return x; } }
       return null;
     };
