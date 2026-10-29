@@ -169,3 +169,7 @@ of that person's apps.
 - Saving and payment actions have shared spacing rules. Budget figures align on the first numeric line; over captions have a reserved line. The daily guide uses each theme's hero text colour. The tour targets actual cards and keeps its history transition together.
 - Saving a row acknowledges the data before rebuilding formatted budget sheets. One coalesced time trigger refreshes those views in the background; the hourly refresh remains the fallback. Read snapshots and write validation still use the script lock, and both bank feeds keep their existing read-only polling schedule.
 - Theme tests cover foreground/hero/action/status contrast for all 20 light, dark and special looks. Browser polish checks cover four phone/tablet widths, larger text, the tour and separate payment actions. Private live data never goes into fixtures or the source repository.
+
+## Daily guide card (UI 1.5.5)
+
+The guide uses compact category tiles with icons, daily contributions, remaining/over/used states and a remaining-budget meter. A payday countdown and a contextual line connect the headline to its contributing categories. The breakdown retains negative category remainders as overspending. The headline calculation and bank/backend code remain engine 1.5.4; this is a client-only release. Theme contrast checks include the inset tile surface, and browser checks cover exhausted, over-budget and cash-capped cases.
