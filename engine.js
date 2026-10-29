@@ -6,7 +6,7 @@
   else root.Budgie = factory();
 })(this, function () {
   "use strict";
-  var VERSION = "1.5.0";
+  var VERSION = "1.5.1";
 
   // ---------- dates ----------
   function D(s) { var p = String(s).split("-"); return new Date(Date.UTC(+p[0], +p[1] - 1, +p[2])); }
@@ -114,12 +114,33 @@
   function amountAt(db, it, date) {
     var best = null;
     (db.byItem.amounts[it.id] || []).forEach(function (a) { if (a.start && a.start <= date && (!best || a.start >= best.start)) best = a; });
-    return best ? best.amount : (+it.amount || 0);
+    var base = best ? best.amount : (+it.amount || 0), anchor = best ? best.start : it.start;
+    return /^(day|days)$/.test(it.unit) && +it.dailyIncrease > 0 && isIso(anchor) ? round(base + Math.max(0, diff(anchor, date)) * it.dailyIncrease) : base;
   }
   // occurrences with exceptions applied: [{key, item, orig, date, amount, changed}]
   function occurrences(db, it, from, to) { return it.id ? memo(db, "occ|" + it.id + "|" + from + "|" + to, function () { return occ0(db, it, from, to); }) : occ0(db, it, from, to); }
   // (all: the ones skipped too, marked skipped, for the Payments out list)
   function occurrencesAll(db, it, from, to) { return it.id ? memo(db, "occa|" + it.id + "|" + from + "|" + to, function () { return occ0(db, it, from, to, true); }) : occ0(db, it, from, to, true); }
+  // Assign observed saving moves one for one, even when two rules share an amount and destination.
+  function savingMove(db, item, occurrence) {
+    var from = item.account || mainOf(db, item.person), to = item.toAccount, date = occurrence.date, amount = occurrence.amount;
+    var matches = memo(db, "savingmove|" + item.person + "|" + date + "|" + from + "|" + to + "|" + amount, function () {
+      var candidates = [];
+      db.bills.forEach(function (b) {
+        if (b.person !== item.person || (b.account || mainOf(db, b.person)) !== from || b.toAccount !== to) return;
+        scheduleDates(b, addDays(date, -45), addDays(date, 46), true).forEach(function (pair) {
+          var day = pair[0], value = amountAt(db, b, day), skipped = false;
+          (db.byItem.exceptions[b.id] || []).forEach(function (x) { if (x.date !== pair[0]) return; if (x.action === "skip") skipped = true; if (x.action === "move" && x.newDate) day = x.newDate; if ((x.action === "amount" || x.action === "actual") && x.amount !== "") value = +x.amount; });
+          if (!skipped && day === date && Math.abs(value - amount) < 0.005) candidates.push(b.id + "@" + pair[0]);
+        });
+      });
+      candidates.sort();
+      var moves = db.moves.filter(function (m) { return !m.dup && m.person === item.person && m.from === from && m.to === to && m.date === date && Math.abs((+m.amount || 0) - amount) < 0.005; }).sort(function (a, b) { return String(a.id).localeCompare(String(b.id)); }), assigned = dict();
+      candidates.forEach(function (key, i) { if (moves[i]) assigned[key] = moves[i]; });
+      return assigned;
+    });
+    return matches[item.id + "@" + occurrence.orig] || null;
+  }
   function occ0(db, it, from, to, all) {
     var pairs = scheduleDates(it, addDays(from, -45), addDays(to, 45), true), ex = db.byItem.exceptions[it.id] || [], out = [], seen = {};
     var pooled = !!(db.poolIds && db.poolIds[it.id]);
@@ -141,6 +162,10 @@
         var bk = /-bank(paid|day)?-[^-]+$/.test(String(x.id));
         if (a === "paid" || (bk && (a === "amount" || a === "actual" || a === "move"))) { o.paid = true; if (bk) o.via = "bank"; else if (!o.via) o.via = "ticked"; if (a === "paid") o.paidId = x.id; }
       });
+      if (it.toAccount && !o.skipped && db.moves) {
+        var matchedMove = savingMove(db, it, o);
+        if (matchedMove) { o.paid = true; o.moveId = matchedMove.id; o.via = /^bk-/.test(matchedMove.id) ? "bank" : "logged"; }
+      }
       if ((all || !o.skipped) && o.date >= from && o.date < to) out.push(o);
     });
     // extra one-off occurrences added as exceptions ("add")
@@ -161,7 +186,7 @@
   }
 
   // ---------- loading ----------
-  var NUM = ["amount", "every", "order", "target", "repay", "newAmount", "extra", "price", "limit", "cost", "share", "purchaseTotal", "iouShare"];
+  var NUM = ["amount", "every", "order", "target", "repay", "newAmount", "extra", "price", "limit", "cost", "share", "purchaseTotal", "iouShare", "dailyIncrease"];
   var DATE = ["start", "end", "date", "newDate", "due", "repayFrom"];
   var BOOL = ["deleted", "isPay", "fallback", "carry", "variable", "bought", "review"];
   function toBool(v) { return v === true || /^(true|yes|y|1)$/i.test(String(v || "").trim()); }
@@ -188,6 +213,7 @@
     // worth what their shares add up to, so repayments, Between you two and net worth all keep working from one number
     db.itemsByLoan = dict();
     db.loanItems.forEach(function (x, i) { x.seq = i; if (x.loan) (db.itemsByLoan[x.loan] = db.itemsByLoan[x.loan] || []).push(x); });
+    db.transactions.forEach(function (x) { var credit = db.accounts.filter(function (a) { return a.id === x.creditAccount && a.kind === "credit" && a.owner === x.person; })[0]; if (credit) { x.observedAccount = x.account; x.account = credit.id; } });
     // A refund remains a cash fact on its own date. Its budget and IOU effects belong to the purchase.
     var txById = dict(); db.transactions.forEach(function (x) { txById[x.id] = x; });
     db.transactions.forEach(function (x) { x.isBillPayment = !!x.billId && isIso(x.billDate) && db.bills.some(function (b) { return b.id === x.billId && b.person === x.person; }); });
@@ -262,7 +288,7 @@
       if (/^bank:/.test(k)) { loose.push(m); return; }
       // (one tick in the app saves each part of an item as a row on the same day; the bank feed's own rows are never ticks of this kind)
       if (/^bk-/.test(String(m.id)) || !TODO_TICK.test(k)) return;
-      var ps = tickPeriod(db, m), gk = m.person + "|" + ps + "|" + m.date + "|" + m.from + "|" + m.to;
+      var ps = tickPeriod(db, m), gk = m.person + "|" + ps + "|" + (m.batch || m.date) + "|" + m.from + "|" + m.to;
       if (!g[gk]) { g[gk] = {person: m.person, start: ps, date: m.date, from: m.from, to: m.to, amount: 0}; ticks.push(g[gk]); }
       g[gk].amount += +m.amount || 0;
     });
@@ -1022,7 +1048,7 @@
     db.bills.forEach(function (b) {
       // a pooled estimate: only what's not been paid yet (the real payments are the money that goes out)
       var on = poolOn(db, b), acc = b.account || mainOf(db, b.person);
-      occurrences(db, b, from, to).forEach(function (o) { if (o.date >= startOf(db, b.person) && !(on && pooledOn(db, b, o.sched))) { var receipt = db.transactions.filter(function (x) { return x.isBillPayment && x.billId === b.id && x.billDate === o.orig && x.person === b.person; })[0]; push(o.date, receipt ? receipt.account || mainOf(db, b.person) : acc, -o.amount, b.name, o.key, receipt && receipt.updated, !!(receipt && receipt.bankId)); var credit = db.byId[b.creditAccount]; if (credit && credit.owner === b.person && credit.kind === "credit") push(o.date, credit.id, o.amount, b.name, o.key); } });
+      occurrences(db, b, from, to).forEach(function (o) { if (o.date >= startOf(db, b.person) && !o.moveId && !(on && pooledOn(db, b, o.sched))) { var receipt = db.transactions.filter(function (x) { return x.isBillPayment && x.billId === b.id && x.billDate === o.orig && x.person === b.person; })[0]; push(o.date, receipt ? receipt.account || mainOf(db, b.person) : acc, -o.amount, b.name, o.key, receipt && receipt.updated, !!(receipt && receipt.bankId)); if (b.toAccount) push(o.date, b.toAccount, o.amount, b.name, o.key); var credit = db.byId[b.creditAccount]; if (credit && credit.owner === b.person && credit.kind === "credit") push(o.date, credit.id, o.amount, b.name, o.key); } });
       if (on) poolFlows(db, b, from, to).forEach(function (f) { push(f.date, acc, -f.amount, b.name, f.key); });
     });
     db.transfers.forEach(function (t) { occurrences(db, t, from, to).forEach(function (o) { if (o.date >= startOf(db, t.from)) { push(o.date, t.fromAccount || mainOf(db, t.from), -o.amount, t.name, o.key); push(o.date, t.toAccount || mainOf(db, t.to), o.amount, t.name, o.key); } }); });
@@ -2263,6 +2289,7 @@
     var onTxt = /^\d+$/.test(on) ? "on the " + ord(on) : on ? "on the " + on : "";
     if (u === "once") return "Once, " + nice(it.start);
     if (u === "dates") return "On set dates";
+    if (u === "day" || u === "days") return (e === 1 ? "Every day" : "Every " + e + " days") + (+it.dailyIncrease > 0 ? ", rising by " + money(it.dailyIncrease) : "");
     if (u === "week" || u === "weeks") return e === 1 ? "Every week" : "Every " + e + " weeks";
     if (u === "year" || u === "years") return "Every year, " + (it.start ? (+it.start.slice(8, 10)) + " " + MONTHS[+it.start.slice(5, 7) - 1] : "");
     return (e === 1 ? "Every month " : e === 3 ? "Every 3 months " : "Every " + e + " months ") + onTxt;

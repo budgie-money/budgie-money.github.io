@@ -2,7 +2,7 @@
 
 One money app for two people, backed by your own Google Sheet. Lives at **https://budgie-money.github.io/**.
 
-- **App**: `index.html`, `app.js`, `experience.js`, `themes.js`, `demo.js` (Show and tell), `sw.js` (offline). Installs from Chrome. Today answers what needs attention; Money has the pay-period timeline; Your budget explains the job each part of the pay does.
+- **App**: `index.html`, `app.js`, `experience.js`, `clarity.js`, `themes.js`, `demo.js` (Show and tell), `sw.js` (offline). Installs from Chrome. Today shows category balances and feasible pot actions. Money separates Budget, Activity (newest first) and Pots. More keeps the icon tiles for supporting tools.
 - **Engine**: `engine.js` works everything out from rules (pay, bills, budgets, splits). The same file runs in Apps Script.
 - **Backend** (Apps Script in the "Budgie data" Google Sheet), built into one file by `node scripts/build-backend.js`:
   - `apps-script/Code.gs`: sync, privacy between partners, linked-app keys, budget tabs.

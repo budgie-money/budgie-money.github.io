@@ -1,7 +1,7 @@
 /* Budgie app: screens, syncing and offline queue. The maths lives in engine.js. */
 (function () {
   "use strict";
-  var B = window.Budgie, TH = window.BudgieThemes, APP_VERSION = "1.5.0";
+  var B = window.Budgie, TH = window.BudgieThemes, APP_VERSION = "1.5.1";
   var $ = function (s) { return document.querySelector(s); };
   var esc = function (s) { return String(s === undefined || s === null ? "" : s).replace(/[&<>"']/g, function (c) { return {"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]; }); };
   // wiped: Budgie's copy at the old address has been wiped (it's moving across), so nothing is saved here again
@@ -357,7 +357,7 @@
     try { html = fn(S.view.p); } catch (e) { html = card('<h2>Something went wrong</h2><p class="muted small">' + esc(e && e.message) + '</p><button class="btn ghost sm" type="button" data-a="tab" data-v="today">Back to Today</button>'); console.error(e); }
     $("#main").innerHTML = (S.newVersion && !demoOn() ? '<button type="button" class="banner li" data-a="reload" style="padding:10px 14px;border:0"><span class="grow"><span class="what">A new version of Budgie is ready</span><span class="why">Tap to update. It takes a second.</span></span></button>' : "") + (demoOn() ? '<button type="button" class="banner demo li" data-a="demoinfo" style="padding:10px 14px;border:0;color:var(--accent-ink)"><span class="grow"><span class="what">Show and tell is on</span><span class="why" style="color:inherit;opacity:.9">Made-up people and money. Tap to switch person or turn it off.</span></span></button>' : "") + html;
     // the first time on this phone: a short walkthrough (it comes first; the things to check follow)
-    if (S.view.s === "today" && !S.ui.tourShown && !sheetOpen() && S.lastSync && tourDue()) { S.ui.tourShown = true; setTimeout(function () { if (!sheetOpen() && S.view.s === "today" && tourDue()) { LS.set(tourKey(), true); S.ui.tourI = 0; tourSheet(); } else S.ui.tourShown = false; }, 500); }
+    if (false && S.view.s === "today" && !S.ui.tourShown && !sheetOpen() && S.lastSync && tourDue()) { S.ui.tourShown = true; setTimeout(function () { if (!sheetOpen() && S.view.s === "today" && tourDue()) { LS.set(tourKey(), true); S.ui.tourI = 0; tourSheet(); } else S.ui.tourShown = false; }, 500); }
     // once a day, until they're all confirmed, pop up the figures Budgie guessed
     if (S.view.s === "today" && !S.ui.checkShown && !sheetOpen() && !tourDue() && S.lastSync && LS.get("budgie.checkSeen", "") !== todayIso() && checkList().length) {
       S.ui.checkShown = true; LS.set("budgie.checkSeen", todayIso()); setTimeout(function () { if (!sheetOpen() && S.view.s === "today") checksSheet(); }, 500);
@@ -779,7 +779,7 @@
   SCREENS.more = function () {
     var items = [["payday", "pay", "Payday", "Sort your pay into " + potWord(true)], ["pots", "pot", cap(potWord(true)), "What should be where"], ["bills", "cal", "Bills", "Calendar and subscriptions"], ["goals", "target", "Goals", "House, car, holidays"],
       ["lisa", "lisa", "LISA tracker", "Balance, bonus, allowance"], ["house", "house", "House", "Deposit and mortgage"], ["networth", "scale", "Net worth", "Own minus owe"], ["debts", "debt", "Debts and IOUs", "Who owes what"],
-      ["insights", "spark", "Insights", "Trends and nudges"], ["gifts", "gift", "Gifts", "Christmas and birthdays"], ["settings", "gear", "Settings", "Bills, pay, budgets, themes"], ["tour", "info", "How Budgie works", "A quick tour"]];
+      ["spare", "pot", "Saving rules", "Buffer and spare money"], ["insights", "spark", "Insights", "Trends and nudges"], ["gifts", "gift", "Gifts", "Christmas and birthdays"], ["settings", "gear", "Settings", "Bills, pay, budgets, themes"], ["tour", "info", "How Budgie works", "A quick tour"]];
     return '<div class="more">' + items.map(function (x) { return '<button type="button" data-a="' + (x[0] === "tour" ? "tour" : "go") + '" data-v="' + x[0] + '"><span class="ic">' + icon(x[1], 20) + '</span><span style="font-weight:700">' + esc(x[2]) + '</span><span class="tiny muted">' + esc(x[3]) + "</span></button>"; }).join("") + "</div>";
   };
 
@@ -865,6 +865,7 @@
       '<label class="f">Amount<input type="text" inputmode="decimal" id="peAmt" value="' + esc(inn ? -x.amount : x.amount) + '"' + lock + "></label>" +
       '<label class="f">What for<select id="peBud">' + (inn || !x.budget ? '<option value=""' + (x.budget ? "" : " selected") + ">" + (inn ? "Not for a budget" : "Nothing yet") + "</option>" : "") + buds.map(function (b) { return '<option value="' + esc(b.id) + '"' + (b.id === x.budget ? " selected" : "") + ">" + esc(b.name.replace(/ \(what's left\)/, "")) + "</option>"; }).join("") + "</select></label>" +
       '<label class="f">' + (inn ? "Paid into" : "Paid from") + '<select id="peAcc"' + lock + ">" + accs.map(function (a) { return '<option value="' + esc(a.id) + '"' + (a.id === x.account ? " selected" : "") + ">" + esc(a.name) + "</option>"; }).join("") + "</select></label>" +
+      '<label class="f">Paid using credit (optional)<select id="peCredit"><option value="">Use the recorded account</option>' + accs.filter(function (a) { return a.kind === "credit"; }).map(function (a) { return '<option value="' + esc(a.id) + '"' + (a.id === x.creditAccount ? ' selected' : '') + '>' + esc(a.name) + '</option>'; }).join('') + '</select></label>' +
       '<div class="two"><label class="f">Date<input type="date" id="peDate" value="' + esc(x.date) + '"' + lock + '></label><label class="f">Note<input type="text" id="peNote" value="' + esc(x.note || "") + '"></label></div>' +
       (!inn && partner() && !isPoolBill(x.budget) ? '<label class="f">Split with ' + esc(shortName(person(partner()).name)) + '<select id="peSplit"><option value="">Not split</option>' + [{id: "half", name: "Half each"}].concat(d.splits.filter(function (s) { return s.id !== "half"; })).concat(x.split && !d.byId[x.split] && x.split !== "half" ? [{id: x.split, name: x.split}] : []).map(function (s) { return '<option value="' + esc(s.id) + '"' + (s.id === x.split ? " selected" : "") + ">" + esc(s.name) + "</option>"; }).join("") + "</select></label>" : "") +
       '<button type="button" class="btn wide" style="margin-top:14px" data-a="pesave">Save</button><button type="button" class="btn danger wide" style="margin-top:10px" data-a="pedel">Delete this ' + (inn ? "one" : "payment") + "</button>");
@@ -1555,7 +1556,7 @@
     if (table === "goals" && id) row.directOn = !!B.parseDate(getSetting("goal.direct." + id, ""));
     // show what it costs today, which may come from a dated price change rather than the first amount
     var nowAmt = null;
-    if (id && DATED.test(table) && row.amount !== "" && row.amount !== undefined) { var live = db().byId[id]; nowAmt = live ? B.amountAt(db(), live, todayIso()) : +row.amount; row.amount = nowAmt; }
+    if (id && !(+row.dailyIncrease > 0) && DATED.test(table) && row.amount !== "" && row.amount !== undefined) { var live = db().byId[id]; nowAmt = live ? B.amountAt(db(), live, todayIso()) : +row.amount; row.amount = nowAmt; }
     EDIT = {table: table, id: id, row: row, orig: JSON.parse(JSON.stringify(row)), nowAmt: nowAmt}; S.ui.onTouched = false;
     if (table === "loans") {
       EDIT.items = iou ? iou.items.map(function (x) { return {id: x.id, name: x.name, date: x.date, cost: x.cost === null ? "" : x.cost, share: x.originalShare === undefined ? x.share : x.originalShare, note: x.note}; }) : [];
@@ -1630,7 +1631,7 @@
         var onV = r.on !== undefined && r.on !== "" ? String(r.on) : String(+(r.start || todayIso()).slice(8, 10));
         var days = ""; for (var i = 1; i <= 31; i++) days += '<option value="' + i + '"' + (onV === String(i) ? " selected" : "") + ">" + ordinal(i) + "</option>";
         var specials = ["last", "last working day", "first working day", "last friday", "last thursday", "first monday"].map(function (o) { return '<option value="' + o + '"' + (onV.toLowerCase() === o ? " selected" : "") + ">The " + o + "</option>"; }).join("");
-        return '<label class="f">How often<select data-f="how"><option value="month"' + (how === "month" ? " selected" : "") + '>Every month</option><option value="quarter"' + (how === "quarter" ? " selected" : "") + '>Every 3 months</option><option value="week"' + (how === "week" ? " selected" : "") + '>Every few weeks</option><option value="year"' + (how === "year" ? " selected" : "") + '>Every year</option><option value="once"' + (how === "once" ? " selected" : "") + '>Just once</option><option value="dates"' + (how === "dates" ? " selected" : "") + ">On set dates</option></select></label>" +
+        return '<label class="f">How often<select data-f="how"><option value="month"' + (how === "month" ? " selected" : "") + '>Every month</option><option value="day"' + (how === "day" ? " selected" : "") + '>Every day</option><option value="quarter"' + (how === "quarter" ? " selected" : "") + '>Every 3 months</option><option value="week"' + (how === "week" ? " selected" : "") + '>Every few weeks</option><option value="year"' + (how === "year" ? " selected" : "") + '>Every year</option><option value="once"' + (how === "once" ? " selected" : "") + '>Just once</option><option value="dates"' + (how === "dates" ? " selected" : "") + ">On set dates</option></select></label>" +
           (how === "month" || how === "quarter" ? '<label class="f">On<select data-f="on">' + days + specials + "</select></label>" : "") +
           (how === "week" ? '<label class="f">Every how many weeks<input type="number" inputmode="numeric" data-f="every" value="' + every + '"></label>' : "") +
           (how === "dates" ? '<label class="f">Dates (one per line)<textarea data-f="dates">' + esc(String(r.dates || "").split(/[,;]\s*/).join("\n")) + "</textarea></label>" : "") +
@@ -1645,7 +1646,7 @@
     var r = EDIT.row, root = $("#main");
     root.querySelectorAll("[data-f]").forEach(function (el) {
       var k = el.dataset.f, v = el.type === "checkbox" ? el.checked : el.value;
-      if (k === "how") { r.unit = v === "quarter" ? "month" : v; if (v === "quarter") r.every = 3; else if (v !== "week") r.every = ""; return; }
+      if (k === "how") { r.unit = v === "quarter" ? "month" : v; if (v !== "day") r.dailyIncrease = ""; if (v === "quarter") r.every = 3; else if (v !== "week") r.every = ""; return; }
       if (k === "dates") v = v.split(/\n+/).map(function (x) { return B.parseDate(x.trim()) || x.trim(); }).filter(Boolean).join(", ");
       r[k] = v;
     });
@@ -1871,9 +1872,9 @@
       var nb = $("#peBud").value, poolSwap = isPoolBill(nb) !== isPoolBill(x.budget);
       if (poolSwap && isBankTx(x) && x.note) setting("bank.rule." + merchantKey(x.note), nb);
       var sp = $("#peSplit") ? {split: $("#peSplit").value} : {};
-      if (isBankTx(x)) { put("transactions", Object.assign({}, x, {budget: nb, note: $("#peNote").value}, sp, isPoolBill(nb) ? {split: ""} : {}), true); closeSheet(); toast("Payment changed"); render(); return; }
+      if (isBankTx(x)) { put("transactions", Object.assign({}, x, {budget: nb, note: $("#peNote").value, creditAccount: $("#peCredit").value}, sp, isPoolBill(nb) ? {split: ""} : {}), true); closeSheet(); toast("Payment changed"); render(); return; }
       var a = +String(($("#peAmt") || {}).value || "").replace(/[£,\s]/g, ""); if (!(a > 0)) { toast("Type the amount first"); return; }
-      put("transactions", Object.assign({}, x, {amount: B.round(+x.amount < 0 ? -a : a), budget: nb, account: $("#peAcc").value, date: $("#peDate").value || x.date, note: $("#peNote").value}, sp, isPoolBill(nb) ? {split: ""} : {}), true);
+      put("transactions", Object.assign({}, x, {amount: B.round(+x.amount < 0 ? -a : a), budget: nb, account: $("#peAcc").value, date: $("#peDate").value || x.date, note: $("#peNote").value, creditAccount: $("#peCredit").value}, sp, isPoolBill(nb) ? {split: ""} : {}), true);
       closeSheet(); toast("Payment changed"); render();
     },
     pedel: function () { var id = S.ui.payEdit; del("transactions", id, true); closeSheet(); toast("Payment deleted", {t: "transactions", ids: [id], restore: true}); render(); },
@@ -2091,8 +2092,8 @@
   function tickItem(it) {
     if (!it) return;
     if (it.type === "move" && (it.short || it.waiting || (B.balances(db(), todayIso())[it.from] || 0) < it.amount - 0.004)) { toast(it.waiting ? "Wait until your pay arrives" : "There isn't enough available to make this move yet"); render(); return; }
-    var now = todayIso(), ids = [];
-    if (it.type === "move") it.keys.forEach(function (k) { ids.push(put("moves", {id: newId("mv"), date: now, person: me(), from: it.from, to: it.to, amount: k.amount, key: k.key}, true).id); });
+    var now = todayIso(), ids = [], batch = newId("batch");
+    if (it.type === "move") it.keys.forEach(function (k) { ids.push(put("moves", {id: newId("mv"), date: now, person: me(), from: it.from, to: it.to, amount: k.amount, key: k.key, batch: batch}, true).id); });
     else if (it.type === "loan") ids.push(put("settlements", {id: newId("set"), date: now, from: it.borrower, to: it.lender, amount: it.amount, loan: it.loan, key: it.key}, true).id);
     else if (it.type === "settle") ids.push(put("settlements", {id: newId("set"), date: now, from: it.from, to: it.to, amount: it.amount, key: it.key, note: "Settled up"}, true).id);
     else if (it.type === "warn") ids.push(put("moves", {id: newId("mv"), date: now, person: me(), amount: 0, key: it.key, note: "dismissed"}, true).id);
@@ -2324,7 +2325,7 @@
     if (jump && me() && (jump === "add" || jump === "payday" || TABS.indexOf(jump) >= 0) && jump !== "today") go(jump);
     sync(false);
   }
-  if (window.BudgieExperience) window.BudgieExperience.install({B: B, S: S, ACT: ACT, SCREENS: SCREENS, TITLES: TITLES, FORMS: FORMS, db: db, me: me, partner: partner, person: person, tables: tables, today: todayIso, M: M, M0: M0, MT: MT, esc: esc, card: card, li: li, num: num, icon: icon, bar: bar, go: go, render: render, put: put, del: del, setting: setting, getSetting: getSetting, newId: newId, openSheet: openSheet, closeSheet: closeSheet, toast: toast, tick: tickItem, reviewSave: reviewSave, reviewRows: reviewRows, bankName: bankName, merchantKey: merchantKey, bankCall: bankCall, sync: sync, recentCard: recentCard, paymentSheet: paymentSheet, outRow: function (r) { last.out[r.id] = r; ACT.outrow(r.id); }, tour: function (cards) { tourCards = cards; }});
+  if (window.BudgieExperience) window.BudgieExperience.install({B: B, S: S, ACT: ACT, SCREENS: SCREENS, TITLES: TITLES, FORMS: FORMS, editRow: function () { return EDIT.row || {}; }, db: db, me: me, partner: partner, person: person, tables: tables, today: todayIso, M: M, M0: M0, MT: MT, esc: esc, card: card, li: li, num: num, icon: icon, bar: bar, go: go, render: render, put: put, del: del, setting: setting, getSetting: getSetting, newId: newId, openSheet: openSheet, closeSheet: closeSheet, toast: toast, tick: tickItem, reviewSave: reviewSave, reviewRows: reviewRows, bankName: bankName, merchantKey: merchantKey, bankCall: bankCall, sync: sync, recentCard: recentCard, paymentSheet: paymentSheet, outRow: function (r) { last.out[r.id] = r; ACT.outrow(r.id); }, tour: function (cards) { tourCards = cards; }});
   window.BudgieApp = {S: S, db: db, render: render, go: go, sync: sync, setDemo: setDemo};
   start();
 })();

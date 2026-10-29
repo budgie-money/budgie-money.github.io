@@ -190,4 +190,25 @@ function record(name, details){out.push({name,...details});}
   feed.txns[0].reversed=false;c.bankApply_('alex',feed);
   assert(rows(c,'moves').filter(x=>x.id.startsWith('bk-starling-group')).every(x=>!x.deleted),'a reinstated grouped move restores all parts once');
 }
-console.log('All 11 experience regression scenarios passed (refunds, privacy, credit, bill receipts, replacement order, grouped reversals and recovery)');
+{
+  const t=household();t.budgets=[];t.bills=[{id:'challenge',person:'alex',name:'Daily saving',unit:'day',start:'2026-10-28',end:'2027-01-02',amount:1.21,dailyIncrease:0.01,account:'a-main',toAccount:'a-save'}];
+  t.valuations=[{id:'base',account:'a-main',date:'2026-10-27',amount:1000,updated:1}];
+  let d=B.load(t,day);assert(B.amountAt(d,d.byId.challenge,'2026-11-01')===1.25);assert(B.amountAt(d,d.byId.challenge,'2027-01-01')===1.86);
+  const forecast=B.flows(d,'2026-10-27',day);assert(B.round(forecast.filter(x=>x.account==='a-main'&&x.amount<0).reduce((n,x)=>n+x.amount,0))===-2.43);
+  t.moves=[{id:'bk-daily',person:'alex',date:day,from:'a-main',to:'a-save',amount:1.22,key:'bank:daily'}];d=B.load(t,day);
+  assert(B.flows(d,'2026-10-28',day).filter(x=>x.account==='a-main'&&x.amount<0).length===1,'a daily bank transfer counts once');assert(B.outgoings(d,'alex',{start:day,next:'2026-10-30'},day)[0].status==='paid');
+  t.bills.push({...t.bills[0],id:'challenge-two'});d=B.load(t,day);assert(B.outgoings(d,'alex',{start:day,next:'2026-10-30'},day).filter(x=>x.status==='paid').length===1,'one bank move cannot pay two saving rules');t.bills.pop();
+  t.moves[0].deleted=true;d=B.load(t,day);assert(B.outgoings(d,'alex',{start:day,next:'2026-10-30'},day)[0].status==='due','reversed daily transfer returns to due');
+  const c=envFor(t).ctx;assert(c.applyOps_('sam',[{op:'put',table:'bills',row:{id:'stolen-saving',person:'sam',name:'Bad',amount:1,unit:'day',start:day,account:'s-main',toAccount:'a-save'}}]).rejected.length===1);
+}
+{
+  const t=household();t.accounts.push({id:'a-credit',owner:'alex',name:'Credit',kind:'credit'});t.transactions=[{id:'credit-purchase',person:'alex',date:day,amount:25,account:'a-fun',creditAccount:'a-credit',budget:'a-budget',bankId:'example-bank'}];
+  let d=B.load(t,day);assert(d.transactions.find(x=>x.id==='credit-purchase').observedAccount==='a-fun'&&d.transactions.find(x=>x.id==='credit-purchase').account==='a-credit');assert(B.flows(d,'2026-10-28',day).some(x=>x.account==='a-credit'&&x.amount===-25));
+  const c=envFor(t).ctx;c.applyOne_('alex',{op:'put',table:'transactions',row:{id:'credit-purchase',creditAccount:'a-credit',account:'a-main'}},Date.now());assert(rows(c,'transactions')[0].account==='a-fun','the observed bank account stays immutable');
+  const bad=c.applyOps_('sam',[{op:'put',table:'transactions',row:{id:'bad-credit',person:'sam',amount:5,date:day,account:'s-main',creditAccount:'a-credit'}}]);assert(bad.rejected.length===1);
+}
+{
+  const t=household();t.moves=[{id:'partial-1',person:'alex',date:day,from:'a-fun',to:'a-main',amount:3,key:'back:budget:'+day+':a-main',batch:'one'}, {id:'partial-2',person:'alex',date:day,from:'a-fun',to:'a-main',amount:6,key:'back:budget:'+day+':a-main',batch:'two'}, {id:'bk-seen-1',person:'alex',date:day,from:'a-fun',to:'a-main',amount:3,key:'bank:seen1'}, {id:'bk-seen-2',person:'alex',date:day,from:'a-fun',to:'a-main',amount:6,key:'bank:seen2'}];
+  const d=B.load(t,day);assert(d.moves.filter(x=>x.dup).length===2,'separate partial reimbursements each reconcile once');
+}
+console.log('All 14 experience regression scenarios passed');
