@@ -212,4 +212,9 @@ function record(name, details){out.push({name,...details});}
   const d=B.load(t,day);assert(d.moves.filter(x=>x.dup).length===2,'separate partial reimbursements each reconcile once');
 }
 { const summary=B.summary(B.load(household(),day),'alex',day);assert(summary.tiles[0].left===200,'partner summary carries the actual amount left'); }
-console.log('All 15 experience regression scenarios passed');
+{
+  const t=household();t.budgets=[];t.accounts.push({id:'a-card',owner:'alex',name:'Credit',kind:'credit'});t.valuations=[{id:'card-balance',account:'a-card',date:'2026-10-27',amount:-50}];t.bills=[{id:'repayment',person:'alex',name:'Repayment',amount:50,account:'a-bills',creditAccount:'a-card',unit:'once',start:'2026-10-28'}];
+  assert(B.balances(B.load(t,day),day)['a-card']===-50,'a due date alone must not clear an unobserved credit debt');
+  t.exceptions=[{id:'x-repayment-2026-10-28-paid',item:'repayment',date:'2026-10-28',action:'paid'}];assert(B.balances(B.load(t,day),day)['a-card']===0,'an observed or confirmed repayment clears the debt');
+}
+console.log('All 16 experience regression scenarios passed');

@@ -159,3 +159,5 @@ of that person's apps.
 - A saving-transfer bill can have an owned `toAccount`, daily frequency and `dailyIncrease`. Its first amount grows by the daily increment from `start`; dated amount changes begin a new base. Saving transfers debit and credit the two owned accounts. Actual moves match scheduled transfers one for one, and matched schedules do not generate another cash flow. The bank feed excludes these transfers from external bill matching.
 - Private live-data cleanup remains in the app UI. Neither live amounts nor browser state belong in this repository.
 - Partner summaries include each category's actual `left` value (1.5.2). The category table also derives it from amount and spending for older cached summaries.
+
+- Credit repayment flows are forecasts while future-dated. On or before today, a paid/matched occurrence is required before the liability is reduced (1.5.3); an elapsed due date alone does not clear the debt.
