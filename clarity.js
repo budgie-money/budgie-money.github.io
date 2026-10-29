@@ -337,9 +337,11 @@
           paydayWord = days === 0 ? "Today" : days === 1 ? "Tomorrow" : days + " days",
           shortName = function (name) { return name.replace(/^Fun and spending$/i, "Fun"); },
           active = parts.filter(function (x) { return x.amount > 0.004; }),
-          context = t.fundingInMain > .004 ? "Includes budget money still in Main — sort payday to fund your pots" : active.length === 1 ? "Today’s guide comes from " + shortName(active[0].name)
-            : active.length ? "Split across your daily budgets"
-            : t.budgetDay > t.cashDay ? "Available cash is limiting today’s guide" : "No daily allowance available";
+          context = t.budgetDay > t.cashDay + .004 ? "Available cash is limiting today’s guide"
+            : active.length === 1 ? "Today’s guide comes from " + shortName(active[0].name)
+            : !active.length ? "No daily allowance available"
+            : t.fundingInMain > .004 ? "Includes budget money still in Main — sort payday to fund your pots"
+            : "Split across your daily budgets";
         html +=
           '<button type="button" id="c-guide" class="hero card c-guide" data-a="herosheet"><div class="c-guide-top"><span>Daily guide</span><span class="c-guide-link">View breakdown ↗</span></div><div class="c-guide-main"><div class="c-guide-total"><div class="big">' +
           M(t.safe) +
