@@ -58,6 +58,22 @@ f.settings=[{person:'ethan',key:'start',value:'2026-10-30'},{person:'ethan',key:
  t.moves=t.moves.slice(0,2);t.moves[1].key='back:food:2026-10-30:e-main';d=B.load(t,'2026-10-30');near(B.ticked(d,'ethan','pay:2026-10-30:e-bills'),500,'ordinary matched reimbursement is not an undo');
  t.moves[1].key='bank:returned';t.moves[1].person='sophie';d=B.load(t,'2026-10-30');near(B.ticked(d,'ethan','pay:2026-10-30:e-bills'),500,'partner cannot undo your allocation');
 }
+// Moving budget money between Main and its pots cannot change affordability.
+{
+ const t=simple();t.bills[0].account='e-bills';t.accounts.push({id:'e-ents',owner:'ethan',kind:'pot',name:'Fun pot'});t.budgets[0].account='e-food';t.budgets.push({id:'fun',person:'ethan',name:'Fun',amount:200,account:'e-ents',mode:'daily'});t.budgets[1].amount=800;
+ t.valuations=[{id:'bk-main-now',account:'e-main',date:'2026-10-30',amount:2000,updated:100}];t.exceptions.push({id:'pay-paid',item:'pay',date:'2026-10-30',action:'paid'});let d=B.load(t,'2026-10-30');near(B.today(d,'ethan','2026-10-30').safe,22.58,'700 spending budget divided across 31 days before funding pots');
+ for(const [i,to,amount] of [[0,'e-bills',500],[1,'e-food',500],[2,'e-ents',200],[3,'e-isa',800]])t.moves.push({id:'manual-'+i,person:'ethan',date:'2026-10-30',from:'e-main',to,amount,key:'pay:2026-10-30:'+to,updated:200});d=B.load(t,'2026-10-30');near(B.today(d,'ethan','2026-10-30').safe,22.58,'same spending affordability after funding pots');
+}
+// Keeping a spending budget in Main must still protect unfilled bill/saving pots.
+{
+ const t=simple();t.income[0].amount=1000;t.bills[0].account='e-bills';t.valuations=[{id:'bk-main',account:'e-main',date:'2026-10-30',amount:1000,updated:100}];t.exceptions.push({id:'pay-paid',item:'pay',date:'2026-10-30',action:'paid'});
+ near(B.today(B.load(t,'2026-10-30'),'ethan','2026-10-30').safe,0,'unfunded non-spending commitments are reserved from Main');t.settings.push({person:'ethan',key:'saving.flexFrom',value:'2026-10-30'});near(B.today(B.load(t,'2026-10-30'),'ethan','2026-10-30').safe,16.13,'reducing the unfunded new saving releases the funded food allowance');
+}
+// This payday's unperformed goal allocation belongs in the forecast exactly once.
+{
+ const t=simple();t.valuations=[{id:'bk-main',account:'e-main',date:'2026-10-30',amount:2000,updated:100},{id:'isa',account:'e-isa',date:'2026-10-29',amount:1000}];t.exceptions.push({id:'pay-paid',item:'pay',date:'2026-10-30',action:'paid'});
+ let d=B.load(t,'2026-10-30');near(B.goalForecast(d,'ethan','car','2026-10-30','2027-02-07').projected,4200,'four 800 contributions include current payday');t.moves.push({id:'manual-current',person:'ethan',date:'2026-10-30',from:'e-main',to:'e-isa',amount:800,key:'pay:2026-10-30:e-isa',updated:200});d=B.load(t,'2026-10-30');near(B.goalForecast(d,'ethan','car','2026-10-30','2027-02-07').projected,4200,'recording the current allocation leaves projected total unchanged');
+}
 // A funded bill pot is not charged to future salary a second time.
 {
  const t=simple();t.bills[0].account='e-bills';t.budgets.push({id:'rest',person:'ethan',name:'Spare',mode:'remainder',account:'e-isa'});t.valuations.push({id:'funded',account:'e-bills',date:'2026-10-29',amount:500});
