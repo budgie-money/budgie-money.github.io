@@ -191,6 +191,21 @@ label.check input,input.tick{width:24px;height:24px;accent-color:var(--accent);f
 .legend>div{display:flex;align-items:baseline;gap:7px;min-width:0;font-size:13px}
 .legend>div>span:nth-child(2){min-width:0;color:var(--muted);font-weight:600}
 .legend b{display:block;color:var(--ink);font-size:15px;font-weight:700;font-variant-numeric:tabular-nums;white-space:nowrap}
+.mstrip{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+.mstrip .n{color:var(--muted);font-size:12px;font-weight:600}
+.mstrip .v{font-size:18px;font-weight:800;font-variant-numeric:tabular-nums;font-family:var(--head);margin-top:2px;overflow-wrap:anywhere}
+.mstrip .v.bad{color:var(--bad)}
+.legend3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:6px}
+.legend3>div{display:flex;align-items:baseline;gap:6px;min-width:0;font-size:12px}
+.legend3>div>span:nth-child(2){min-width:0;color:var(--muted);font-weight:600}
+.legend3 b{display:block;color:var(--ink);font-size:14px;font-weight:700;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+.tmore .what{color:var(--accent);font-weight:700}
+.tourmock{pointer-events:none;margin:12px 0 4px;padding:12px;border-radius:var(--radius);background:var(--bg);border:1px solid var(--line)}
+.tourmock .hero .big{font-size:34px}
+.tourtxt{font-size:17px;line-height:1.4;margin:12px 0 0;font-weight:600}
+.dots{display:flex;justify-content:center;gap:7px;margin:16px 0 14px}
+.dots i{width:8px;height:8px;border-radius:4px;background:var(--line)}
+.dots i.on{background:var(--accent);width:20px}
 /* a month of days, one mark each: filled for a day with no spending, an outline for the days still to come */
 .days{display:flex;gap:2px;height:18px;margin-top:12px}
 .days>i{flex:1;min-width:0;border-radius:3px;background:var(--track)}

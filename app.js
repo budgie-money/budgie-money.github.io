@@ -216,7 +216,7 @@
     outs: ["Payments out", "Everything that goes out in this pay period: bills, regular payments, loan repayments and the payments you've made. Paid means you ticked it or your bank showed it going out. Not seen means its day has gone and your bank hasn't shown it yet. Tap one to change it, tick it or put it right."],
     pace: ["Paced week by week", "Budgets like Food are paced week by week, so a big shop at the start of a week isn't counted as over."],
     between: ["How it's worked out", "Shared bills are split by your rules and settled by month. Split payments count straight away. Money lent between you is paid back as each loan says."],
-    sheet: ["Where your pay goes", "This is your budget for one pay period, payday to payday: what comes in, the bills it pays, what you can spend and what you save. It's the same as your budget tab in the Google Sheet, worked out from the same rules."],
+    sheet: ["Where your pay goes", "This is your budget for one pay period, payday to payday: what comes in, the bills it pays, what you can spend and what you save. It's the same as your budget tab in the Google Sheet, worked out from the same rules. What's left over is carried into next month. If it says Short, more goes out than comes in."],
     bankmap: ["Which is which", "Tell Budgie which of its accounts each one is. Moves between them tick off your payday list by themselves."],
     modes: ["How budgets work", "Day to day builds up each day. Weekly is paced week by week, good for food shops. One-offs have no daily pace. Saving is moved on payday. Whatever is left gets what's left after everything else."],
     rate: ["Saving rate", "How much of what comes in each month is saved. Coming in is your pay and money paid to you, not money carried over from last month. Money put by for yearly bills isn't counted as saved. The month still going is the lighter bar."],
@@ -350,8 +350,10 @@
     var fn = SCREENS[S.view.s] || SCREENS.today, html = "";
     try { html = fn(S.view.p); } catch (e) { html = card('<h2>Something went wrong</h2><p class="muted small">' + esc(e && e.message) + '</p><button class="btn ghost sm" type="button" data-a="tab" data-v="today">Back to Today</button>'); console.error(e); }
     $("#main").innerHTML = (S.newVersion && !demoOn() ? '<button type="button" class="banner li" data-a="reload" style="padding:10px 14px;border:0"><span class="grow"><span class="what">A new version of Budgie is ready</span><span class="why">Tap to update. It takes a second.</span></span></button>' : "") + (demoOn() ? '<button type="button" class="banner demo li" data-a="demoinfo" style="padding:10px 14px;border:0;color:var(--accent-ink)"><span class="grow"><span class="what">Show and tell is on</span><span class="why" style="color:inherit;opacity:.9">Made-up people and money. Tap to switch person or turn it off.</span></span></button>' : "") + html;
+    // the first time on this phone: a short walkthrough (it comes first; the things to check follow)
+    if (S.view.s === "today" && !S.ui.tourShown && !sheetOpen() && S.lastSync && tourDue()) { S.ui.tourShown = true; setTimeout(function () { if (!sheetOpen() && S.view.s === "today" && tourDue()) { LS.set(tourKey(), true); S.ui.tourI = 0; tourSheet(); } else S.ui.tourShown = false; }, 500); }
     // once a day, until they're all confirmed, pop up the figures Budgie guessed
-    if (S.view.s === "today" && !S.ui.checkShown && !sheetOpen() && S.lastSync && LS.get("budgie.checkSeen", "") !== todayIso() && checkList().length) {
+    if (S.view.s === "today" && !S.ui.checkShown && !sheetOpen() && !tourDue() && S.lastSync && LS.get("budgie.checkSeen", "") !== todayIso() && checkList().length) {
       S.ui.checkShown = true; LS.set("budgie.checkSeen", todayIso()); setTimeout(function () { if (!sheetOpen() && S.view.s === "today") checksSheet(); }, 500);
     }
   }
@@ -383,8 +385,8 @@
     var heroNotes = [];
     if (t.period.opening) heroNotes.push("A short month: you started Budgie on " + esc(B.nice(B.startOf(d, p))) + ".");
     if (t.spare && t.spare.amount > 0.5) heroNotes.push(M(t.spare.amount) + " spare in your " + esc(B.accName(d, B.mainOf(d, p))) + " goes to your " + esc(t.spare.toName) + " on payday.");
-    // tapping it shows where your money is: each pot now, and where Budgie says it should be
-    html += '<button type="button" class="hero card" data-a="go" data-v="pots" style="display:block;width:100%;text-align:left"><div class="row"><span class="small" style="opacity:.92">You can spend today</span><span class="pill">' + pill + "</span></div>" +
+    // tapping it shows how it's worked out: the cash there, what's still to go out, and the days left
+    html += '<button type="button" class="hero card" data-a="herosheet" style="display:block;width:100%;text-align:left"><div class="row"><span class="small" style="opacity:.92">You can spend today</span><span class="pill">' + pill + "</span></div>" +
       '<div class="big">' + M(t.safe) + '</div><div class="small" style="opacity:.92">' + (spendNames.length ? "for " + esc(joinWords(spendNames)) : "") + "</div>" +
       (heroNotes.length ? '<div class="small" style="opacity:.92;margin-top:6px">' + heroNotes.join(" ") + "</div>" : "") +
       '<div class="line"><span>' + (daysTo === 0 ? "Payday is today" : "Payday in " + daysTo + " day" + (daysTo === 1 ? "" : "s") + " · " + esc(B.nice(t.nextPay))) + "</span><span class=\"num\">" + (t.nextPayAmount ? M(t.nextPayAmount) : "") + "</span></div></button>";
@@ -397,18 +399,21 @@
     // to do
     var items = t.todo, payItems = items.filter(function (x) { return x.payday; }), rest = items.filter(function (x) { return !x.payday; });
     last.todo = rest;
-    var rows = "";
+    var rowsA = [];
     var reN = reviewRows().length;
-    if (reN) rows += li(reN + " new payment" + (reN === 1 ? "" : "s") + " from " + esc(bankName()), "Check what " + (reN === 1 ? "it was" : "they were") + " for", "", "go", "review");
-    if (S.bank && S.bank.reapproveBy && B.diff(todayIso(), String(S.bank.reapproveBy).slice(0, 10)) <= 7) rows += li("Approve Budgie again in the Monzo app", "Monzo asks every 90 days. Do it by " + esc(B.nice(String(S.bank.reapproveBy).slice(0, 10))), "", "go", "bank");
-    if (payItems.length) rows += li("Sort your pay into " + esc(potWord(true)), payItems.some(function (x) { return x.waiting; }) ? "Waiting for your pay to arrive" : payItems.length + " " + esc(payItems.length === 1 ? potWord() : potWord(true)) + " still to move", "", "go", "payday");
+    if (reN) rowsA.push(li(reN + " new payment" + (reN === 1 ? "" : "s") + " from " + esc(bankName()), "Check what " + (reN === 1 ? "it was" : "they were") + " for", "", "go", "review"));
+    if (S.bank && S.bank.reapproveBy && B.diff(todayIso(), String(S.bank.reapproveBy).slice(0, 10)) <= 7) rowsA.push(li("Approve Budgie again in the Monzo app", "Monzo asks every 90 days. Do it by " + esc(B.nice(String(S.bank.reapproveBy).slice(0, 10))), "", "go", "bank"));
+    if (payItems.length) rowsA.push(li("Sort your pay into " + esc(potWord(true)), payItems.some(function (x) { return x.waiting; }) ? "Waiting for your pay to arrive" : payItems.length + " " + esc(payItems.length === 1 ? potWord() : potWord(true)) + " still to move", "", "go", "payday"));
     rest.forEach(function (it, i) {
       var right = num(it.type === "warn" ? "" : M(it.amount));
       var why = esc(MT(it.why)) + (it.short ? ' <span class="warn">Only ' + M(Math.max(0, it.amount - it.short)) + " is there right now.</span>" : "");
-      if (it.type === "warn") rows += '<div class="li"><span class="grow"><span class="what warn">' + esc(MT(it.what)) + '</span><span class="why">' + why + '</span></span><button type="button" class="btn ghost sm" data-a="tick" data-v="' + i + '">Got it</button></div>';
-      else if (it.info) rows += '<div class="li"><span class="grow"><span class="what">' + esc(MT(it.what)) + '</span><span class="why">' + why + '</span></span><button type="button" class="btn ghost sm" data-a="tick" data-v="' + i + '">I\'ve paid</button></div>';
-      else rows += '<label class="li" style="cursor:pointer"><input type="checkbox" class="tick" data-c="tick" data-v="' + i + '" aria-label="Done: ' + esc(MT(it.what)) + '"><span class="grow"><span class="what">' + esc(MT(it.what)) + '</span><span class="why">' + why + "</span></span>" + right + "</label>";
+      if (it.type === "warn") rowsA.push('<div class="li"><span class="grow"><span class="what warn">' + esc(MT(it.what)) + '</span><span class="why">' + why + '</span></span><button type="button" class="btn ghost sm" data-a="tick" data-v="' + i + '">Got it</button></div>');
+      else if (it.info) rowsA.push('<div class="li"><span class="grow"><span class="what">' + esc(MT(it.what)) + '</span><span class="why">' + why + '</span></span><button type="button" class="btn ghost sm" data-a="tick" data-v="' + i + '">I\'ve paid</button></div>');
+      else rowsA.push('<label class="li" style="cursor:pointer"><input type="checkbox" class="tick" data-c="tick" data-v="' + i + '" aria-label="Done: ' + esc(MT(it.what)) + '"><span class="grow"><span class="what">' + esc(MT(it.what)) + '</span><span class="why">' + why + "</span></span>" + right + "</label>");
     });
+    // three at a time: the rest are one tap away
+    var TODO_MAX = 3, moreN = Math.max(0, rowsA.length - TODO_MAX), rows = (S.ui.todoAll ? rowsA : rowsA.slice(0, TODO_MAX)).join("");
+    if (moreN) rows += '<button type="button" class="li tmore" data-a="todomore">' + '<span class="grow"><span class="what">' + (S.ui.todoAll ? "Show fewer" : "Show " + moreN + " more") + "</span></span>" + chev() + "</button>";
     var leftN = rest.length + (payItems.length ? 1 : 0) + (reN ? 1 : 0);
     html += card('<div class="row"><h2>To do</h2><span class="small muted">' + (leftN ? leftN + " left" : "") + "</span></div>" + (rows ? '<div class="list">' + rows + "</div>" : '<p class="muted" style="margin:8px 0 0">All done. Everything is where it should be.</p>'));
     // tiles
@@ -429,6 +434,47 @@
     if (now.slice(5) >= "04-06" && now.slice(5) <= "04-30") html += yearCard(taxYearStart(B.addDays(now, -40)), false);
     return html;
   };
+  // ----- Walkthrough
+  // Five short cards the first time someone opens Budgie on a phone (once per person per phone), and any time from More.
+  // Each is one sentence and a small picture made from the same pieces the screens use.
+  function tourKey() { return "budgie.tour." + me(); }
+  function tourDue() { return !!me() && !demoOn() && !LS.get(tourKey(), false); }
+  function tourCards() {
+    var q = partner(), qn = q ? shortName(person(q).name) : "", col = q === "sophie" || q === "sam" ? "#2F7D6D" : "#2E5E8C";
+    var cards = [
+      {t: "Today", s: "See what you can spend today, and a short list of what to do.",
+        m: '<div class="hero card" style="margin:0"><div class="small" style="opacity:.92">You can spend today</div><div class="big">£24.50</div><div class="small" style="opacity:.92">Payday in 9 days</div></div>'},
+      {t: "To do", s: "Tick things off as you do them, and Budgie keeps everything in step.",
+        m: '<div class="card" style="margin:0"><div class="list"><div class="li"><input type="checkbox" class="tick" tabindex="-1" disabled><span class="grow"><span class="what">Move £120 to your Bills pot</span></span></div><div class="li"><input type="checkbox" class="tick" tabindex="-1" checked disabled><span class="grow"><span class="what">Pay the water bill</span></span></div></div></div>'},
+      {t: "Money", s: "See your pay period: what comes in, what goes out and what's left.",
+        m: '<div class="card" style="margin:0"><div class="mstrip"><div class="mc"><div class="n">Money in</div><div class="v">£2,000</div></div><div class="mc"><div class="n">Going out</div><div class="v">£1,700</div></div><div class="mc"><div class="n">Left over</div><div class="v">£300</div></div></div>' + kindBar({in: 2000, bill: 900, spend: 600, save: 200}, "big") + "</div>"}
+    ];
+    if (q) cards.push({t: qn, s: "See how " + qn + " is getting on, and what you owe each other.",
+      m: '<div class="card" style="margin:0"><div style="display:flex;gap:12px;align-items:center"><span class="round avatar" style="background:' + col + ';color:#fff;width:40px;height:40px;border-radius:20px">' + esc((person(q).name || "?").charAt(0)) + '</span><div class="grow"><div style="font-weight:800">' + esc(qn) + ' is on track</div><div class="small muted">All square on shared bills</div></div></div></div>'});
+    cards.push({t: "Goals", s: "Watch your goals grow, and see the date you're on course for.",
+      m: '<div class="card" style="margin:0"><div class="row"><span class="what">Holiday</span><span class="num">60%</span></div><div style="margin:8px 0 6px">' + bar(60, null, "var(--k-save)") + '</div><div class="small muted">On course for Jun 2027</div></div>'});
+    return cards;
+  }
+  function tourSheet() {
+    var cs = tourCards(), i = Math.max(0, Math.min(cs.length - 1, S.ui.tourI || 0)), c = cs[i], last = i === cs.length - 1;
+    var dots = cs.map(function (x, k) { return "<i" + (k === i ? ' class="on"' : "") + "></i>"; }).join("");
+    openSheet("<h2>" + esc(c.t) + '</h2><div class="tourmock" aria-hidden="true">' + c.m + '</div><p class="tourtxt">' + esc(c.s) + '</p><div class="dots" role="img" aria-label="Step ' + (i + 1) + " of " + cs.length + '">' + dots + "</div>" +
+      (last ? '<button type="button" class="btn wide" data-a="tourskip">Got it</button>' : '<div class="two fit"><button type="button" class="btn ghost" data-a="tourskip">Skip</button><button type="button" class="btn" data-a="tournext">Next</button></div>'));
+  }
+  // how "You can spend today" is worked out, from the same figures: cash in the accounts the budgets spend from, what's
+  // still to go out before payday, and the days left. The lower of what the cash allows and what the budgets allow.
+  function heroSheet() {
+    var d = db(), p = me(), t = B.today(d, p, todayIso());
+    var r = function (what, why, v, cls) { return '<div class="li"><span class="grow"><span class="what">' + what + "</span>" + (why ? '<span class="why">' + why + "</span>" : "") + "</span>" + num(v, cls) + "</div>"; };
+    var days = t.daysLeft + (t.daysLeft === 1 ? " day" : " days");
+    openSheet("<h2>You can spend today</h2>" + '<div class="list" style="margin-top:6px">' +
+      r("Cash available", "In the accounts your budgets spend from", M(t.cash)) +
+      r("Still needed before payday", "Bills and payments due, and money put by", M(-t.needed)) +
+      r("Free to spend", "Over " + days + " until payday", M(t.cashFree)) +
+      r("Your cash allows", "A day, over " + days, M(t.cashDay)) +
+      r("Your budgets allow", "A day, from what's left in each", M(t.budgetDay)) +
+      r("You can spend today", "The lower of the two", M(t.safe), "good") + '</div><div class="two fit" style="margin-top:12px"><button type="button" class="btn ghost" data-a="go" data-v="pots">Where it is</button><button type="button" class="btn" data-a="sheetclose">Got it</button></div>');
+  }
   // "food, fuel and fun", but "food, fuel, fun and spending" when the last one already has an "and" in it
   function joinWords(a) { if (a.length < 2) return a.join(""); var last = a[a.length - 1]; return a.slice(0, -1).join(", ") + (/ and /.test(last) ? ", " : " and ") + last; }
   // what a payment or money in is called: what you wrote, else what it was for
@@ -483,13 +529,13 @@
     var mv = B.monthView(d, p, per), pl = mv.plan, g = sortPlan(mv.lines), t = g.tot, end = B.addDays(per.next, -1);
     // the first month is short (it starts when you started Budgie): the dates say so
     var dates = per.opening ? "Started " + B.nice(st > per.start ? st : per.start) + " · ends " + B.nice(end) : B.nice(per.start) + " to " + B.nice(end);
-    html += '<div class="row" style="margin:14px 0 0;align-items:center"><button type="button" class="round" data-a="month" data-v="-1" aria-label="Earlier month">' + icon("back", 18) + '</button><div style="text-align:center"><div style="font-weight:800">' + esc(per.name) + '</div><div class="small muted">' + esc(dates) + '</div></div><button type="button" class="round" data-a="month" data-v="1" aria-label="Later month" style="transform:scaleX(-1)">' + icon("back", 18) + "</button></div>";
-    // at a glance: what comes in, and where it goes
-    var item = function (k, label, v) { return '<div class="k-' + k + '"><span class="kdot"></span><span>' + label + "<b>" + M(v) + "</b></span></div>"; };
-    html += card('<div class="row" style="align-items:center"><h2>Where it goes' + infoBtn("sheet") + "</h2></div>" + kindBar(t, "big") +
-      '<div class="legend">' + item("in", "Coming in", t.in) + item("bill", "Bills", t.bill) + item("spend", "Spending", t.spend) + item("save", "Saving", t.save) + "</div>" +
-      (t.left > 0.004 ? '<p class="small muted" style="margin:10px 0 0">' + M(t.left) + " left over, carried into next month.</p>" : "") +
-      (pl.shortfall > 0.004 ? '<p class="small bad" style="margin:10px 0 0;font-weight:700">' + M(pl.shortfall) + " short: more goes out than comes in.</p>" : ""));
+    html += '<div class="row" style="margin:14px 0 0;align-items:center"><button type="button" class="round" data-a="month" data-v="-1" aria-label="Earlier month">' + icon("back", 18) + '</button><div style="text-align:center"><div style="font-weight:800">' + esc(per.name) + infoBtn("sheet") + '</div><div class="small muted">' + esc(dates) + '</div></div><button type="button" class="round" data-a="month" data-v="1" aria-label="Later month" style="transform:scaleX(-1)">' + icon("back", 18) + "</button></div>";
+    // at a glance: what comes in, what goes out, and what's left (or short), then how the going out splits
+    var cell = function (label, v, cls) { return '<div class="mc"><div class="n">' + label + '</div><div class="v' + (cls ? " " + cls : "") + '">' + M0(v) + "</div></div>"; };
+    var goes = B.round(t.bill + t.spend + t.save), short = pl.shortfall > 0.004;
+    var key = function (k, label) { return '<div class="k-' + k + '"><span class="kdot"></span><span>' + label + "<b>" + M0(t[k]) + "</b></span></div>"; };
+    html += card('<div class="mstrip" role="group" aria-label="This pay period">' + cell("Money in", t.in) + cell("Going out", goes) + (short ? cell("Short", pl.shortfall, "bad") : cell("Left over", Math.max(0, t.left))) + "</div>" + kindBar(t, "big") +
+      '<div class="legend3">' + key("bill", "Bills") + key("spend", "Spending") + key("save", "Saving") + "</div>");
     var row = function (l) {
       var right = num(M(l.amount)), why = "", tbl = l.kind === "in" ? (l.id === "opening" ? "" : (d.byId[l.id] && d.income.indexOf(d.byId[l.id]) >= 0 ? "income" : "transfers")) : l.kind === "bill" ? (l.transfer ? "transfers" : l.loan ? "loans" : "bills") : l.kind === "topup" || l.setAside ? "" : "budgets", name = l.name;
       if (l.kind === "spend" && l.spent !== undefined) {
@@ -514,7 +560,10 @@
       var ls = g.lines[k]; if (!ls.length && !extra) return "";
       return card('<div class="row" style="align-items:center"><span class="khead">' + kchip(k) + "<h2>" + title + "</h2></span>" + num(M(t[k])) + '</div><div class="list" style="margin-top:6px">' + ls.map(row).join("") + (extra || "") + "</div>");
     };
-    html += sec("in", "Coming in") + sec("bill", "Bills to pay") + outCard(d, p, per, now) + sec("spend", "What you can spend") + savedCard(d, p, per, g, now);
+    // what's budgeted for spending, and what's put by for yearly bills, sit with the payments out (they're money going out too)
+    var spendLs = g.lines.spend, putBy = g.lines.bill.filter(function (l) { return l.setAside; }), sub = function (title, tot, ls) { return ls.length ? '<div class="ghead"><span>' + title + "</span>" + num(M(tot)) + '</div><div class="list">' + ls.map(row).join("") + "</div>" : ""; };
+    var extra = sub("Budgets", t.spend, spendLs) + sub("Put by for yearly bills", B.round(putBy.reduce(function (a, l) { return a + l.amount; }, 0)), putBy);
+    html += sec("in", "Coming in") + outCard(d, p, per, now, extra) + potsCard(d, p, per, g, now) + goalsCard(d, p, now);
     return html;
   };
   // Payments out: everything that goes out in the pay period shown (bills, regular payments, loan repayments due and the
@@ -524,7 +573,7 @@
   var OUT_CAT = {home: "Home", subscription: "Subscription", phone: "Phone", car: "Car", health: "Health", work: "Work and fees", insurance: "Insurance", other: "Other"};
   function outSortGet() { var v = LS.get("budgie.outSort", "date"); return v === "amount" || v === "pot" ? v : "date"; }
   function bankSeen() { return (tables().transactions || []).some(function (x) { return x.person === me() && !x.deleted && isBankTx(x); }); }
-  function outCard(d, p, per, now) {
+  function outCard(d, p, per, now, extra) {
     var rows = B.outgoings(d, p, per, now), sort = outSortGet(), seen = bankSeen(), tot = 0;
     last.out = {};
     rows.forEach(function (r) {
@@ -553,28 +602,41 @@
     } else body = '<div class="list">' + rows.sort(sort === "amount" ? function (a, c) { return c.amount - a.amount || byDate(a, c); } : byDate).map(function (r) { return one(r, false); }).join("") + "</div>";
     var seg = function (v, label) { return '<button type="button" data-a="outsort" data-v="' + v + '" aria-pressed="' + (sort === v) + '">' + label + "</button>"; };
     return card('<div class="row" style="align-items:center"><span class="khead"><span class="kchip k-bill" aria-hidden="true">' + icon("out", 18) + "</span><h2>Payments out" + infoBtn("outs") + "</h2></span>" + num(M(B.round(tot))) + "</div>" +
-      (rows.length ? '<div class="seg" role="group" aria-label="Sort payments out" style="margin-top:10px">' + seg("date", "Date") + seg("amount", "Amount") + seg("pot", cap(potWord())) + "</div>" : "") + body);
+      (rows.length ? '<div class="seg" role="group" aria-label="Sort payments out" style="margin-top:10px">' + seg("date", "Date") + seg("amount", "Amount") + seg("pot", cap(potWord())) + "</div>" : "") + body + (extra || ""));
   }
-  // what's saved: each savings account (and any pot a saving goes into) with what it's worth, what goes in this month,
-  // and an Update for when the provider's app says something different
-  function savedCard(d, p, per, g, now) {
-    var date = per.next <= now ? B.addDays(per.next, -1) : now, bal = B.balances(d, date), into = {};
+  // Pots: each account and pot with what's in it, where Budgie says it should be once the To do is done (this pay period),
+  // what goes in this month, and an Update for when the bank's or provider's app says something different
+  function potsCard(d, p, per, g, now) {
+    var cur = per.start <= now && now < per.next, date = per.next <= now ? B.addDays(per.next, -1) : now, bal = B.balances(d, date), into = {};
     g.lines.save.forEach(function (l) { var a = l.account || B.mainOf(d, p); into[a] = (into[a] || 0) + l.amount; });
-    var accs = B.accountsOf(d, p).filter(function (a) { return /saving|isa|lisa|pension/.test(a.kind || "") || into[a.id] !== undefined; });
+    var pots = cur ? B.pots(d, p, now) : [], byPot = {}; pots.forEach(function (x) { byPot[x.id] = x; });
+    var accs = B.accountsOf(d, p).filter(function (a) { return byPot[a.id] || /saving|isa|lisa|pension/.test(a.kind || "") || into[a.id] !== undefined; });
     if (!accs.length) return "";
     var tot = 0, nextPl = null;
     var rows = accs.map(function (a) {
-      var v = bal[a.id] || 0;
+      var v = bal[a.id] || 0, x = byPot[a.id];
       if (a.kind === "lisa" && date === now) { var Mo = lisaModel(a); if (Mo.value) v = Mo.value(now); }
       tot += v;
-      var inn = B.round(into[a.id] || 0), why = "", rl = g.lines.save.filter(function (l) { return l.remainder && l.account === a.id; })[0];
-      if (inn > 0.004) why = "+" + M(inn) + " this month";
-      else if (rl && per.opening) { nextPl = nextPl || B.planFor(d, p, B.nextPeriod(d, p, per)); var nl = nextPl.lines.filter(function (x) { return x.remainder; })[0]; why = "Starts on payday" + (nl && nl.amount > 0.004 ? ": " + M(nl.amount) : ""); }
-      else if (rl) why = "Nothing left over for it this month";
-      else { var lv = d.valuations.filter(function (x) { return x.account === a.id && x.date <= date; }).map(function (x) { return x.date; }).sort().pop(); if (lv) why = "Checked " + esc(B.nice(lv)); }
-      return '<div class="li"><span class="grow"><span class="what">' + esc(a.name) + "</span>" + (why ? '<span class="why">' + why + "</span>" : "") + '</span><span class="valup">' + num(M(v)) + '<button type="button" class="linkbtn" data-a="potcheck" data-v="' + esc(a.id) + '" aria-label="Update ' + esc(a.name) + '">Update</button></span></div>';
+      var inn = B.round(into[a.id] || 0), bits = [], rl = g.lines.save.filter(function (l) { return l.remainder && l.account === a.id; })[0];
+      if (a.purpose) bits.push(esc(a.purpose));
+      if (x && x.fallback) bits.push("covers going over");
+      if (x && Math.abs(x.pending) > 0.004) bits.push('<span class="' + (x.pending > 0 ? "warn" : "muted") + '">Should be ' + M(x.should) + "</span>");
+      if (inn > 0.004) bits.push("+" + M(inn) + " this month");
+      else if (rl && per.opening) { nextPl = nextPl || B.planFor(d, p, B.nextPeriod(d, p, per)); var nl = nextPl.lines.filter(function (y) { return y.remainder; })[0]; bits.push("Starts on payday" + (nl && nl.amount > 0.004 ? ": " + M(nl.amount) : "")); }
+      else if (rl) bits.push("Nothing left over for it this month");
+      else if (!x) { var lv = d.valuations.filter(function (y) { return y.account === a.id && y.date <= date; }).map(function (y) { return y.date; }).sort().pop(); if (lv) bits.push("Checked " + esc(B.nice(lv))); }
+      return '<div class="li"><span class="grow"><span class="what">' + esc(a.name) + "</span>" + (bits.length ? '<span class="why">' + bits.join(" · ") + "</span>" : "") + '</span><span class="valup">' + num(M(v)) + '<button type="button" class="linkbtn" data-a="potcheck" data-v="' + esc(a.id) + '" aria-label="Update ' + esc(a.name) + '">Update</button></span></div>';
     }).join("");
-    return card('<div class="row" style="align-items:center"><span class="khead">' + kchip("save") + "<h2>What's saved</h2></span>" + num(M(tot)) + '</div><div class="list" style="margin-top:6px">' + rows + "</div>");
+    return card('<div class="row" style="align-items:center"><span class="khead">' + kchip("save") + "<h2>" + esc(cap(potWord(true))) + infoBtn("pots") + "</h2></span>" + num(M(tot)) + '</div><div class="list" style="margin-top:6px">' + rows + "</div>");
+  }
+  // Goals: how far each has got, and the date it's on course for; tap one to open it
+  function goalsCard(d, p, now) {
+    var gs = B.goals(d, p, now); if (!gs.length) return "";
+    var rows = gs.map(function (g) {
+      var pr = B.goalProgress(d, p, g.id, now), sub = pr && pr.reached ? "Reached" : pr && pr.eta ? "On course for " + monthYear(pr.eta) : g.due ? "By " + monthYear(String(g.due).slice(0, 10)) : "";
+      return '<button type="button" class="li" style="display:block" data-a="edit" data-v="goals:' + esc(g.id) + '"><div class="row" style="flex-wrap:wrap;row-gap:2px"><span class="what">' + esc(g.name) + "</span>" + num(M0(g.saved) + " of " + M0(g.target)) + '</div><div style="margin-top:6px">' + bar(g.pct, null, "var(--k-save)") + "</div>" + (sub ? '<div class="small muted" style="margin-top:4px">' + esc(sub) + "</div>" : "") + "</button>";
+    }).join("");
+    return card('<div class="row" style="align-items:center"><span class="khead">' + kchip("save") + "<h2>Goals</h2></span>" + '<button type="button" class="linkbtn" data-a="go" data-v="goals">See all</button></div><div class="list" style="margin-top:6px">' + rows + "</div>");
   }
   function yearView(d, p, now) {
     var ys = B.year(d, p, now).map(function (y) { return Object.assign({k: B.kinds(B.planFor(d, p, y.period).lines)}, y); }), cur = 0;
@@ -708,8 +770,8 @@
   SCREENS.more = function () {
     var items = [["payday", "pay", "Payday", "Sort your pay into " + potWord(true)], ["pots", "pot", cap(potWord(true)), "What should be where"], ["bills", "cal", "Bills", "Calendar and subscriptions"], ["goals", "target", "Goals", "House, car, holidays"],
       ["lisa", "lisa", "LISA tracker", "Balance, bonus, allowance"], ["house", "house", "House", "Deposit and mortgage"], ["networth", "scale", "Net worth", "Own minus owe"], ["debts", "debt", "Debts and IOUs", "Who owes what"],
-      ["insights", "spark", "Insights", "Trends and nudges"], ["gifts", "gift", "Gifts", "Christmas and birthdays"], ["settings", "gear", "Settings", "Bills, pay, budgets, themes"]];
-    return '<div class="more">' + items.map(function (x) { return '<button type="button" data-a="go" data-v="' + x[0] + '"><span class="ic">' + icon(x[1], 20) + '</span><span style="font-weight:700">' + esc(x[2]) + '</span><span class="tiny muted">' + esc(x[3]) + "</span></button>"; }).join("") + "</div>";
+      ["insights", "spark", "Insights", "Trends and nudges"], ["gifts", "gift", "Gifts", "Christmas and birthdays"], ["settings", "gear", "Settings", "Bills, pay, budgets, themes"], ["tour", "info", "How Budgie works", "A quick tour"]];
+    return '<div class="more">' + items.map(function (x) { return '<button type="button" data-a="' + (x[0] === "tour" ? "tour" : "go") + '" data-v="' + x[0] + '"><span class="ic">' + icon(x[1], 20) + '</span><span style="font-weight:700">' + esc(x[2]) + '</span><span class="tiny muted">' + esc(x[3]) + "</span></button>"; }).join("") + "</div>";
   };
 
   // ----- Payday
@@ -1747,6 +1809,11 @@
     connect: function () { var v = ($("#connectLink") || {}).value || ""; connectFrom(v); },
     connectswitch: function () { closeSheet(); S.ui.connectOk = true; connectFrom(S.ui.pendingLink || ""); },
     moneyview: function (v) { S.ui.money = v; render(); }, moneyjump: function (v) { S.ui.money = "month"; S.ui.monthOff = +v || 0; render(); window.scrollTo(0, 0); }, month: function (v) { S.ui.monthOff += +v; render(); }, cal: function (v) { S.ui.calOff += +v; render(); },
+    herosheet: function () { heroSheet(); },
+    tour: function () { S.ui.tourI = 0; tourSheet(); },
+    tournext: function () { S.ui.tourI = (S.ui.tourI || 0) + 1; if (S.ui.tourI >= tourCards().length) closeSheet(); else tourSheet(); },
+    tourskip: function () { closeSheet(); },
+    todomore: function () { S.ui.todoAll = !S.ui.todoAll; render(); },
     outsort: function (v) { LS.set("budgie.outSort", v === "amount" || v === "pot" ? v : "date"); render(); },
     outrow: function (v) {
       var r = (last.out || {})[v], d = db(); if (!r) return;

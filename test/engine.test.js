@@ -1683,5 +1683,15 @@ const tickPay11 = (t, p, d) => { const L0 = B.load(t, d), per = B.periodAt(L0, p
   eq("straight away: the other person's money isn't touched: Sophie has no such goal", B.goalDirect(B.load(mk("2026-10-26"), "2026-12-30"), "sophie").length, 0);
 }
 
+// ================= Today's hero: how "You can spend today" is worked out =================
+{
+  for (const day of ["2026-10-28", "2026-11-05", "2026-11-20"]) {
+    const r = B.today(B.load(fixture(), day), "ethan", day);
+    near("hero " + day + ": cash less what is needed is what is free", r.cash - r.needed, r.cashFree);
+    near("hero " + day + ": the cash allows free over the days left", r.cashDay, r.cashFree / r.daysLeft);
+    near("hero " + day + ": you can spend the lower of what the cash and the budgets allow", r.safe, Math.min(r.cashDay, r.budgetDay));
+  }
+}
+
 console.log(fails ? fails + " failed, " + passes + " passed" : "All " + passes + " passed");
 process.exit(fails ? 1 : 0);

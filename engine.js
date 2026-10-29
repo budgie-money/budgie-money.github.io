@@ -1537,14 +1537,14 @@
     // money set aside for a yearly cost that isn't due before payday isn't spare
     Object.keys(plan.setAside || {}).forEach(function (id) { var b = db.byId[id], acc = b ? b.account || main : ""; if (spendAccs[acc]) committed -= Math.min(plan.setAside[id], Math.max(0, bal[acc] || 0)); });
     var cashFree = round(Math.max(0, cash + committed));
-    var cap = round(cashFree / daysLeft);
+    var cap = round(cashFree / daysLeft), budgetDay = round(safe);
     if (safe > cap) { safe = cap; status = cashFree <= 0 ? "No spare cash" : status; }
     var nxt = payDates(db, p, addDays(date, 1), addDays(date, 70))[0] || per.next, nplan = planFor(db, p, periodAt(db, p, nxt));
     // what's spare in the main account now (beyond what its budgets and bills still need) goes where whatever's left
     // goes on payday: said when that's somewhere else, a Cash ISA say
     var lo = nplan.lines.filter(function (l) { return l.leftover; })[0], rl = nplan.lines.filter(function (l) { return l.remainder; })[0], spare = null;
     if (lo && rl && rl.account !== main && rl.amount > 0.004) spare = {amount: round(Math.min(lo.amount, rl.amount)), to: rl.account, toName: accName(db, rl.account), date: nxt};
-    return {date: date, period: per, plan: plan, daysLeft: daysLeft, safe: round(safe), status: status, overs: overs, tiles: tiles, cashFree: cashFree, nextPay: nxt,
+    return {date: date, period: per, plan: plan, daysLeft: daysLeft, safe: round(safe), cash: round(cash), needed: round(cash - cashFree), cashDay: cap, budgetDay: budgetDay, status: status, overs: overs, tiles: tiles, cashFree: cashFree, nextPay: nxt,
       nextPayAmount: (nplan.lines.filter(function (l) { return l.isPay; })[0] || {}).amount || 0, spare: spare,
       todo: todo(db, p, date), coming: coming(db, p, date, 14)};
   }
