@@ -1,7 +1,7 @@
 /* Budgie app: screens, syncing and offline queue. The maths lives in engine.js. */
 (function () {
   "use strict";
-  var B = window.Budgie, TH = window.BudgieThemes, APP_VERSION = "1.4.21";
+  var B = window.Budgie, TH = window.BudgieThemes, APP_VERSION = "1.4.22";
   var $ = function (s) { return document.querySelector(s); };
   var esc = function (s) { return String(s === undefined || s === null ? "" : s).replace(/[&<>"']/g, function (c) { return {"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]; }); };
   // wiped: Budgie's copy at the old address has been wiped (it's moving across), so nothing is saved here again
@@ -17,7 +17,7 @@
     pay: '<rect x="3" y="6" width="18" height="12" rx="2"/><circle cx="12" cy="12" r="2.5"/>', pot: '<path d="M5 9h14l-1.5 10a2 2 0 0 1-2 1.7h-7a2 2 0 0 1-2-1.7z"/><path d="M8 9V6a4 4 0 0 1 8 0v3"/>',
     cal: '<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/>', target: '<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="4"/><circle cx="12" cy="12" r="1"/>',
     lisa: '<path d="M4 18l5-6 4 3 7-9"/><path d="M15 6h5v5"/>', house: '<path d="M3 11l9-7 9 7"/><path d="M5 10v10h14V10"/><path d="M10 20v-5h4v5"/>', scale: '<path d="M12 3v18M5 7h14M7 7l-3 7a3 3 0 0 0 6 0zM17 7l-3 7a3 3 0 0 0 6 0z"/>',
-    debt: '<path d="M4 7h16M4 12h16M4 17h10"/>', spark: '<path d="M12 3v4M12 17v4M3 12h4M17 12h4M6 6l2.5 2.5M15.5 15.5L18 18M6 18l2.5-2.5M15.5 8.5L18 6"/>',
+    out: '<path d="M7 17L17 7M9 7h8v8"/>', debt: '<path d="M4 7h16M4 12h16M4 17h10"/>', spark: '<path d="M12 3v4M12 17v4M3 12h4M17 12h4M6 6l2.5 2.5M15.5 15.5L18 18M6 18l2.5-2.5M15.5 8.5L18 6"/>',
     gift: '<rect x="3" y="9" width="18" height="12" rx="1.5"/><path d="M3 13h18M12 9v12M12 9c-2-4-6-4-6-1.5S10 9 12 9zM12 9c2-4 6-4 6-1.5S14 9 12 9z"/>', gear: '<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1"/>'
   };
   var icon = function (n, size) { return '<svg width="' + (size || 22) + '" height="' + (size || 22) + '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + (ICON[n] || "") + "</svg>"; };
@@ -213,6 +213,7 @@
   var sheetOpen = function () { return !!$("#sheets").firstChild; };
   // explanations that are good to know but needn't always be on show: a small (i) beside a heading opens them
   var INFO = {
+    outs: ["Payments out", "Everything that goes out in this pay period: bills, regular payments, loan repayments and the payments you've made. Paid means you ticked it or your bank showed it going out. Not seen means its day has gone and your bank hasn't shown it yet. Tap one to change it, tick it or put it right."],
     pace: ["Paced week by week", "Budgets like Food are paced week by week, so a big shop at the start of a week isn't counted as over."],
     between: ["How it's worked out", "Shared bills are split by your rules and settled by month. Split payments count straight away. Money lent between you is paid back as each loan says."],
     sheet: ["Where your pay goes", "This is your budget for one pay period, payday to payday: what comes in, the bills it pays, what you can spend and what you save. It's the same as your budget tab in the Google Sheet, worked out from the same rules."],
@@ -397,7 +398,7 @@
     var reN = reviewRows().length;
     if (reN) rows += li(reN + " new payment" + (reN === 1 ? "" : "s") + " from " + esc(bankName()), "Check what " + (reN === 1 ? "it was" : "they were") + " for", "", "go", "review");
     if (S.bank && S.bank.reapproveBy && B.diff(todayIso(), String(S.bank.reapproveBy).slice(0, 10)) <= 7) rows += li("Approve Budgie again in the Monzo app", "Monzo asks every 90 days. Do it by " + esc(B.nice(String(S.bank.reapproveBy).slice(0, 10))), "", "go", "bank");
-    if (payItems.length) rows += li("Sort your pay into " + esc(potWord(true)), payItems.length + " " + esc(payItems.length === 1 ? potWord() : potWord(true)) + " still to move", "", "go", "payday");
+    if (payItems.length) rows += li("Sort your pay into " + esc(potWord(true)), payItems.some(function (x) { return x.waiting; }) ? "Waiting for your pay to arrive" : payItems.length + " " + esc(payItems.length === 1 ? potWord() : potWord(true)) + " still to move", "", "go", "payday");
     rest.forEach(function (it, i) {
       var right = num(it.type === "warn" ? "" : M(it.amount));
       var why = esc(MT(it.why)) + (it.short ? ' <span class="warn">Only ' + M(Math.max(0, it.amount - it.short)) + " is there right now.</span>" : "");
@@ -510,11 +511,47 @@
       var ls = g.lines[k]; if (!ls.length && !extra) return "";
       return card('<div class="row" style="align-items:center"><span class="khead">' + kchip(k) + "<h2>" + title + "</h2></span>" + num(M(t[k])) + '</div><div class="list" style="margin-top:6px">' + ls.map(row).join("") + (extra || "") + "</div>");
     };
-    var nPay = d.transactions.filter(function (x) { return x.person === p && x.date >= per.start && x.date < per.next; }).length;
-    html += sec("in", "Coming in") + sec("bill", "Bills to pay") +
-      sec("spend", "What you can spend", nPay ? li("See all " + nPay + " payment" + (nPay === 1 ? "" : "s"), "", "", "payments", per.start + "|") : "") + savedCard(d, p, per, g, now);
+    html += sec("in", "Coming in") + sec("bill", "Bills to pay") + outCard(d, p, per, now) + sec("spend", "What you can spend") + savedCard(d, p, per, g, now);
     return html;
   };
+  // Payments out: everything that goes out in the pay period shown (bills, regular payments, loan repayments due and the
+  // payments made, logged or from the bank) in one list to sort by date, amount or pot. Each says where it stands, and a tap
+  // opens the same sheet as anywhere else for it, to change it, tick it paid or put it right.
+  var OUT_WORD = {paid: "Paid", due: "Due", skipped: "Skipped"};
+  var OUT_CAT = {home: "Home", subscription: "Subscription", phone: "Phone", car: "Car", health: "Health", work: "Work and fees", insurance: "Insurance", other: "Other"};
+  function outSortGet() { var v = LS.get("budgie.outSort", "date"); return v === "amount" || v === "pot" ? v : "date"; }
+  function bankSeen() { return (tables().transactions || []).some(function (x) { return x.person === me() && !x.deleted && isBankTx(x); }); }
+  function outCard(d, p, per, now) {
+    var rows = B.outgoings(d, p, per, now), sort = outSortGet(), seen = bankSeen(), tot = 0;
+    last.out = {};
+    rows.forEach(function (r) {
+      last.out[r.id] = r;
+      if (r.kind === "payment") { var b = d.byId[r.budget]; r.name = r.note || (b ? budName(b) : "Payment"); r.cat = b && r.name !== budName(b) ? budName(b) : (b ? "" : "No budget yet"); }
+      else r.cat = r.kind === "bill" ? (OUT_CAT[String(r.category).toLowerCase()] || "Bill") : r.kind === "transfer" ? "Regular payment" : "Loan · " + r.category;
+      if (r.status !== "skipped") tot += r.amount;
+    });
+    var one = function (r, grouped) {
+      var word = r.status === "late" ? (seen ? "Not seen" : "Late") : OUT_WORD[r.status];
+      var why = r.pool ? (r.pool.closed ? "Came to " + M(r.pool.actual) : M(r.pool.actual) + " paid so far") : esc([grouped ? "" : B.accName(d, r.account), r.cat].filter(Boolean).join(" · "));
+      return '<button type="button" class="li outrow" data-a="outrow" data-v="' + esc(r.id) + '">' + dateBox(r.date) + '<span class="grow"><span class="what' + (r.status === "skipped" ? " skipped" : "") + '">' + esc(r.name) + "</span>" + (why ? '<span class="why">' + why + "</span>" : "") + '</span><span class="rt">' +
+        num(M(r.amount), r.status === "skipped" ? "skipped" : "") + '<span class="st ' + r.status + '">' + word + "</span></span></button>";
+    };
+    var byDate = function (a, c) { return a.date < c.date ? -1 : a.date > c.date ? 1 : a.name < c.name ? -1 : a.name > c.name ? 1 : 0; };
+    var body = "";
+    if (!rows.length) body = '<p class="empty" style="padding:18px 0 8px">Nothing goes out this month.</p>';
+    else if (sort === "pot") {
+      var order = B.accountsOf(d, p).map(function (a) { return a.id; }), groups = {}, ids = [];
+      rows.forEach(function (r) { if (!groups[r.account]) { groups[r.account] = []; ids.push(r.account); } groups[r.account].push(r); });
+      ids.sort(function (a, c) { var x = order.indexOf(a), y = order.indexOf(c); return (x < 0 ? 99 : x) - (y < 0 ? 99 : y); });
+      body = ids.map(function (id) {
+        var gs = groups[id].sort(byDate), sub = 0; gs.forEach(function (r) { if (r.status !== "skipped") sub += r.amount; });
+        return '<div class="ghead"><span>' + esc(B.accName(d, id)) + "</span>" + num(M(B.round(sub))) + '</div><div class="list">' + gs.map(function (r) { return one(r, true); }).join("") + "</div>";
+      }).join("");
+    } else body = '<div class="list">' + rows.sort(sort === "amount" ? function (a, c) { return c.amount - a.amount || byDate(a, c); } : byDate).map(function (r) { return one(r, false); }).join("") + "</div>";
+    var seg = function (v, label) { return '<button type="button" data-a="outsort" data-v="' + v + '" aria-pressed="' + (sort === v) + '">' + label + "</button>"; };
+    return card('<div class="row" style="align-items:center"><span class="khead"><span class="kchip k-bill" aria-hidden="true">' + icon("out", 18) + "</span><h2>Payments out" + infoBtn("outs") + "</h2></span>" + num(M(B.round(tot))) + "</div>" +
+      (rows.length ? '<div class="seg" role="group" aria-label="Sort payments out" style="margin-top:10px">' + seg("date", "Date") + seg("amount", "Amount") + seg("pot", cap(potWord())) + "</div>" : "") + body);
+  }
   // what's saved: each savings account (and any pot a saving goes into) with what it's worth, what goes in this month,
   // and an Update for when the provider's app says something different
   function savedCard(d, p, per, g, now) {
@@ -757,7 +794,7 @@
       '<label class="f">What for<select id="peBud">' + (inn || !x.budget ? '<option value=""' + (x.budget ? "" : " selected") + ">" + (inn ? "Not for a budget" : "Nothing yet") + "</option>" : "") + buds.map(function (b) { return '<option value="' + esc(b.id) + '"' + (b.id === x.budget ? " selected" : "") + ">" + esc(b.name.replace(/ \(what's left\)/, "")) + "</option>"; }).join("") + "</select></label>" +
       '<label class="f">' + (inn ? "Paid into" : "Paid from") + '<select id="peAcc"' + lock + ">" + accs.map(function (a) { return '<option value="' + esc(a.id) + '"' + (a.id === x.account ? " selected" : "") + ">" + esc(a.name) + "</option>"; }).join("") + "</select></label>" +
       '<div class="two"><label class="f">Date<input type="date" id="peDate" value="' + esc(x.date) + '"' + lock + '></label><label class="f">Note<input type="text" id="peNote" value="' + esc(x.note || "") + '"></label></div>' +
-      (x.split ? '<p class="small muted" style="margin:8px 0 0">Split with ' + esc(person(partner()).name) + ": " + esc((d.byId[x.split] || {}).name || "half each") + "</p>" : "") +
+      (!inn && partner() && !isPoolBill(x.budget) ? '<label class="f">Split with ' + esc(shortName(person(partner()).name)) + '<select id="peSplit"><option value="">Not split</option>' + [{id: "half", name: "Half each"}].concat(d.splits.filter(function (s) { return s.id !== "half"; })).concat(x.split && !d.byId[x.split] && x.split !== "half" ? [{id: x.split, name: x.split}] : []).map(function (s) { return '<option value="' + esc(s.id) + '"' + (s.id === x.split ? " selected" : "") + ">" + esc(s.name) + "</option>"; }).join("") + "</select></label>" : "") +
       '<button type="button" class="btn wide" style="margin-top:14px" data-a="pesave">Save</button><button type="button" class="btn danger wide" style="margin-top:10px" data-a="pedel">Delete this ' + (inn ? "one" : "payment") + "</button>");
   }
   function isBankTx(x) { return !!x && (!!x.bankId || /^bk-/.test(String(x.id || ""))); }
@@ -1555,13 +1592,17 @@
   // ----- the occurrence sheet (Coming up, calendar)
   function occSheet(key) {
     var c = last.coming[key]; if (!c) return;
-    var it = db().byId[c.item], orig = key.split(/[@+]/)[1] || c.date, mine = canEditItem(c), html = "<h2>" + esc(c.name) + '</h2><p class="muted" style="margin:4px 0 10px">' + esc(B.nice(c.date)) + " · " + M(c.amount) + (c.account ? " · " + esc(c.account) : "") + "</p>";
+    var it = db().byId[c.item], orig = key.split(/[@+]/)[1] || c.date, mine = canEditItem(c), html = "<h2>" + esc(c.name) + '</h2><p class="muted" style="margin:4px 0 10px">' + esc(B.nice(c.date)) + " · " + M(c.amount) + (c.account ? " · " + esc(c.account) : "") + (c.skipId ? " · Skipped" : c.paid ? " · Paid" + (c.via === "bank" ? " (seen at your bank)" : "") : "") + "</p>";
     if (c.table === "loans") {
       var l = db().byId[c.item];
       html += '<button type="button" class="btn wide" data-a="loanpaid" data-v="' + esc(key) + '">' + (l.lender === me() ? "It's been paid to me" : "I've paid it") + "</button>";
     } else if (mine) {
-      html += '<div class="list">' + li("It didn't happen", "Just this one; the rest carry on", "", "occdo", "skip|" + key) + li("It was a different amount", "Just this one", "", "occdo", "amount|" + key) + li("It's on a different day", "Just this one", "", "occdo", "move|" + key) +
-        li("Change the " + (c.table === "income" ? "income" : c.table === "transfers" ? "regular payment" : "bill"), "Amount, dates, where it comes from", "", "occdo", "edit|" + key) + li("Stop it from today", "No more after today", "", "occdo", "stop|" + key) + "</div>";
+      var what = c.table === "income" ? "income" : c.table === "transfers" ? "regular payment" : "bill", edit = li("Change the " + what, "Amount, dates, where it comes from", "", "occdo", "edit|" + key);
+      // a skipped one can be put back; one marked paid can have the tick taken off (not one the bank saw: it can see it)
+      if (c.skipId) html += '<div class="list">' + li("Put it back", "It counts again", "", "occdo", "restore|" + key) + edit + "</div>";
+      else html += '<div class="list">' + (c.table === "income" ? "" : c.paid ? (c.via === "bank" ? "" : li("It hasn't been paid", "Take the tick off", "", "occdo", "unpaid|" + key)) : li("It's been paid", "Just this one", "", "occdo", "paid|" + key)) +
+        li("It didn't happen", "Just this one; the rest carry on", "", "occdo", "skip|" + key) + li("It was a different amount", "Just this one", "", "occdo", "amount|" + key) + li("It's on a different day", "Just this one", "", "occdo", "move|" + key) +
+        edit + li("Stop it from today", "No more after today", "", "occdo", "stop|" + key) + "</div>";
     } else html += '<p class="small muted">This one belongs to ' + esc(person((it || {}).person || (it || {}).from).name) + ", so only they can change it.</p>";
     S.ui.occ = {key: key, c: c, orig: orig, it: it};
     openSheet(html + '<button type="button" class="btn ghost wide" style="margin-top:12px" data-a="sheetclose">Close</button>');
@@ -1569,6 +1610,9 @@
   function occDo(kind) {
     var o = S.ui.occ, c = o.c, id = "x-" + c.item + "-" + o.orig;
     if (kind === "skip") { put("exceptions", {id: id + "-skip", item: c.item, date: o.orig, action: "skip"}); closeSheet(); toast(c.name + " on " + B.nice(c.date) + " won't count", {t: "exceptions", ids: [id + "-skip"]}); return; }
+    if (kind === "paid") { put("exceptions", {id: id + "-paid", item: c.item, date: o.orig, action: "paid"}); closeSheet(); toast(c.name + " marked as paid", {t: "exceptions", ids: [id + "-paid"]}); return; }
+    if (kind === "unpaid" && c.paidId) { del("exceptions", c.paidId, true); closeSheet(); toast("Tick taken off", {t: "exceptions", ids: [c.paidId], restore: true}); render(); return; }
+    if (kind === "restore" && c.skipId) { del("exceptions", c.skipId, true); closeSheet(); toast(c.name + " is back", {t: "exceptions", ids: [c.skipId], restore: true}); render(); return; }
     if (kind === "amount") { openSheet("<h2>" + esc(c.name) + '</h2><label class="f">What it really was<input type="text" inputmode="decimal" id="occAmt" value="' + c.amount + '"></label><button type="button" class="btn wide" style="margin-top:12px" data-a="occsave" data-v="amount">Save</button>'); return; }
     if (kind === "move") { openSheet("<h2>" + esc(c.name) + '</h2><label class="f">New date<input type="date" id="occDate" value="' + c.date + '"></label><button type="button" class="btn wide" style="margin-top:12px" data-a="occsave" data-v="move">Save</button>'); return; }
     if (kind === "edit") { openEditor(c.table, c.item); return; }
@@ -1598,6 +1642,16 @@
     connect: function () { var v = ($("#connectLink") || {}).value || ""; connectFrom(v); },
     connectswitch: function () { closeSheet(); S.ui.connectOk = true; connectFrom(S.ui.pendingLink || ""); },
     moneyview: function (v) { S.ui.money = v; render(); }, moneyjump: function (v) { S.ui.money = "month"; S.ui.monthOff = +v || 0; render(); window.scrollTo(0, 0); }, month: function (v) { S.ui.monthOff += +v; render(); }, cal: function (v) { S.ui.calOff += +v; render(); },
+    outsort: function (v) { LS.set("budgie.outSort", v === "amount" || v === "pot" ? v : "date"); render(); },
+    outrow: function (v) {
+      var r = (last.out || {})[v], d = db(); if (!r) return;
+      if (r.kind === "payment") { paymentSheet(r.id); return; }
+      if (r.pool) { go("pool", {bill: r.item, start: r.pool.start}); return; }
+      if (r.kind === "loan" && r.status === "paid") { openEditor("loans", r.item); return; }
+      last.coming[r.key] = {date: r.date, key: r.key, item: r.item, table: r.table, name: r.name, amount: r.kind === "loan" ? r.left : r.amount, sign: -1, account: B.accName(d, r.account), changed: r.changed,
+        paid: r.status === "paid", via: r.via, skipId: r.skipId, paidId: r.paidId};
+      occSheet(r.key);
+    },
     calday: function (v) { calDay(v); }, occ: function (v) { occSheet(v); }, occskip: function (v) { occSheet(v); occDo("skip"); }, occdo: function (v) { var k = v.split("|"); occDo(k[0]); },
     occsave: function (v) {
       var o = S.ui.occ, c = o.c, id = "x-" + c.item + "-" + o.orig;
@@ -1631,9 +1685,10 @@
       // (counted in a pooled bill, or not any more: that's remembered for the payee, as checking a new payment is)
       var nb = $("#peBud").value, poolSwap = isPoolBill(nb) !== isPoolBill(x.budget);
       if (poolSwap && isBankTx(x) && x.note) setting("bank.rule." + merchantKey(x.note), nb);
-      if (isBankTx(x)) { put("transactions", Object.assign({}, x, {budget: nb, note: $("#peNote").value}, isPoolBill(nb) ? {split: ""} : {}), true); closeSheet(); toast("Payment changed"); render(); return; }
+      var sp = $("#peSplit") ? {split: $("#peSplit").value} : {};
+      if (isBankTx(x)) { put("transactions", Object.assign({}, x, {budget: nb, note: $("#peNote").value}, sp, isPoolBill(nb) ? {split: ""} : {}), true); closeSheet(); toast("Payment changed"); render(); return; }
       var a = +String(($("#peAmt") || {}).value || "").replace(/[£,\s]/g, ""); if (!(a > 0)) { toast("Type the amount first"); return; }
-      put("transactions", Object.assign({}, x, {amount: B.round(+x.amount < 0 ? -a : a), budget: nb, account: $("#peAcc").value, date: $("#peDate").value || x.date, note: $("#peNote").value}, isPoolBill(nb) ? {split: ""} : {}), true);
+      put("transactions", Object.assign({}, x, {amount: B.round(+x.amount < 0 ? -a : a), budget: nb, account: $("#peAcc").value, date: $("#peDate").value || x.date, note: $("#peNote").value}, sp, isPoolBill(nb) ? {split: ""} : {}), true);
       closeSheet(); toast("Payment changed"); render();
     },
     pedel: function () { var id = S.ui.payEdit; del("transactions", id, true); closeSheet(); toast("Payment deleted", {t: "transactions", ids: [id], restore: true}); render(); },

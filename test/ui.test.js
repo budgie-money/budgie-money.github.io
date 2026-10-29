@@ -882,6 +882,97 @@ const fails = [], check = (name, cond, extra) => { if (cond) console.log("ok", n
     await page.context().close();
   }
 
+  // ===== Payments out (Money tab): every bill, regular payment, loan repayment and payment of the pay period in one list, each
+  // with where it stands, sorted by date, amount or pot (remembered per phone); a tap opens the sheet to fix or tick it
+  {
+    const kS2 = JSON.parse(Buffer.from(links.sophie.split("#connect=")[1], "base64url").toString()).k, ex = (key, ops) => page.request.post("http://localhost:" + PORT + "/exec", {data: JSON.stringify({key, ops})});
+    page = await newPage("2026-11-10");
+    await ex(kE12, [
+      {op: "put", table: "transactions", row: {id: "t-po1", date: "2026-11-03", person: "ethan", amount: 42.18, budget: "e-food-b", account: "e-food", note: "Weekly shop"}},
+      {op: "put", table: "transactions", row: {id: "t-po2", date: "2026-11-06", person: "ethan", amount: 8.4, budget: "", account: "e-main", note: "Corner shop"}},
+      {op: "put", table: "bills", row: {id: "e-po1", person: "ethan", name: "Streaming", amount: 11, account: "e-main", unit: "month", on: "2", start: "2026-11-01", category: "subscription"}},
+      {op: "put", table: "bills", row: {id: "e-po2", person: "ethan", name: "Broadband", amount: 30, account: "e-bills", unit: "month", on: "5", start: "2026-11-01", category: "home"}},
+      {op: "put", table: "bills", row: {id: "e-po3", person: "ethan", name: "Insurance", amount: 60, account: "e-bills", unit: "month", on: "20", start: "2026-11-01", category: "insurance"}},
+      {op: "put", table: "exceptions", row: {id: "x-e-po2-2026-11-05-paid", item: "e-po2", date: "2026-11-05", action: "paid"}}]);
+    await page.goto(links.ethan); await hiE(page);
+    await page.evaluate(() => { document.querySelector("#toast").innerHTML = ""; });
+    await page.click('nav [data-v="money"]'); await page.waitForTimeout(250);
+    const rowsOf = () => page.$$eval("main .outrow", els => els.map(e => ({id: e.dataset.v, name: e.querySelector(".what").textContent.trim(), date: e.querySelector(".date").textContent.replace(/\s+/g, " ").trim(), amt: +e.querySelector(".num").textContent.replace(/[£,]/g, ""), st: e.querySelector(".st").textContent.trim(), why: (e.querySelector(".why") || {textContent: ""}).textContent.trim()})));
+    const byName = rows => Object.fromEntries(rows.map(r => [r.name, r]));
+    let rows = await rowsOf(), R = byName(rows);
+    check("Money has a Payments out card in the Money tab, not a new tab", !!(await page.$('main [data-a="outsort"]')) && (await page.$$('nav [data-v]')).length === 5 && /Payments out/.test(T(await page.textContent("main"))));
+    check("it lists planned bills and payments made, each with a status", ["Streaming", "Broadband", "Insurance", "Weekly shop", "Corner shop"].every(n => R[n]), rows.map(r => r.name));
+    check("status words: a payment is Paid, a bill ticked paid is Paid, one in the future is Due, one past with nothing seen is Late", R["Weekly shop"].st === "Paid" && R["Broadband"].st === "Paid" && R["Insurance"].st === "Due" && /^(Late|Not seen)$/.test(R["Streaming"].st), rows.map(r => [r.name, r.st]));
+    check("each says its pot and what it's for", /Food pot/.test(R["Weekly shop"].why) && /Bills & Rent pot/.test(R["Insurance"].why) && /No budget yet/.test(R["Corner shop"].why), rows.map(r => r.why));
+    check("by default it's by date, earliest first", (await page.$eval('[data-a="outsort"][data-v="date"]', e => e.getAttribute("aria-pressed"))) === "true" && rows.length > 4 && rows.every((r, i) => !i || +rows[i - 1].date.match(/\d+/)[0] <= +r.date.match(/\d+/)[0]), rows.map(r => r.date));
+    const total = T(await page.textContent('main section.card:has([data-a="outsort"]) .khead + .num'));
+    check("the total is what's listed (skipped ones aren't counted)", +total.replace(/[£,]/g, "") === Math.round(rows.filter(r => r.st !== "Skipped").reduce((t, r) => t + r.amt, 0) * 100) / 100, [total, rows.length]);
+    // sort by amount
+    await page.click('[data-a="outsort"][data-v="amount"]'); await page.waitForTimeout(80);
+    const byAmt = await rowsOf();
+    check("Amount puts the biggest first", byAmt.length === rows.length && byAmt.every((r, i) => !i || byAmt[i - 1].amt >= r.amt) && JSON.stringify(byAmt.map(r => r.id)) !== JSON.stringify(rows.map(r => r.id)), byAmt.map(r => r.amt));
+    // by pot, with a subtotal for each
+    await page.click('[data-a="outsort"][data-v="pot"]'); await page.waitForTimeout(80);
+    const pot = await page.evaluate(() => [...document.querySelectorAll("main section.card .ghead")].map(h => ({name: h.children[0].textContent.trim(), sub: +h.children[1].textContent.replace(/[£,]/g, ""), rows: [...h.nextElementSibling.querySelectorAll(".outrow")].filter(r => r.querySelector(".st").textContent.trim() !== "Skipped").map(r => +r.querySelector(".num").textContent.replace(/[£,]/g, ""))})));
+    check("Pot groups them by account, each with its subtotal", pot.length >= 3 && pot.every(g => Math.abs(g.sub - g.rows.reduce((a, b) => a + b, 0)) < 0.011) && pot.some(g => /Food pot/.test(g.name)) && pot.some(g => /Bills & Rent pot/.test(g.name)), pot);
+    check("the pots keep their usual order (Main account first)", /Main account/.test(pot[0].name), pot.map(g => g.name));
+    check("the sort buttons are Date, Amount and Pot in one segmented row", JSON.stringify(await page.$$eval('main [data-a="outsort"]', els => els.map(e => e.textContent.trim()))) === JSON.stringify(["Date", "Amount", "Pot"]));
+    // remembered on this phone
+    await page.reload(); await hiE(page); await page.click('nav [data-v="money"]'); await page.waitForTimeout(250);
+    check("the choice is remembered on this phone", (await page.$eval('[data-a="outsort"][data-v="pot"]', e => e.getAttribute("aria-pressed"))) === "true" && (await page.evaluate(() => JSON.parse(localStorage.getItem("budgie.outSort")))) === "pot");
+    await page.click('[data-a="outsort"][data-v="date"]'); await page.waitForTimeout(60);
+    // tapping a payment opens the payment sheet, with budget, split, note and (hand-logged) the account
+    await page.click('main .outrow[data-v="t-po2"]'); await page.waitForTimeout(100);
+    const ps = T(await page.textContent("#sheets"));
+    check("tapping a payment opens the sheet to change it (what for, paid from, split, note)", /Change this payment/.test(ps) && !!(await page.$("#sheets #peBud")) && !!(await page.$("#sheets #peAcc:not([disabled])")) && !!(await page.$("#sheets #peSplit")) && !!(await page.$("#sheets #peNote")), ps.slice(0, 200));
+    await page.selectOption("#peBud", "e-fun"); await page.selectOption("#peSplit", "half"); await page.click('#sheets [data-a="pesave"]'); await page.waitForTimeout(200);
+    R = byName(await rowsOf());
+    check("re-tagging it moves it: now for Fun, and the split is saved", /Fun/.test(R["Corner shop"].why) && !/No budget yet/.test(R["Corner shop"].why) && (await page.evaluate(() => window.BudgieApp.S.data.tables.transactions.find(x => x.id === "t-po2").split)) === "half", R["Corner shop"]);
+    // a bill occurrence opens the per-occurrence sheet; ticking it paid
+    await page.evaluate(() => { document.querySelector("#toast").innerHTML = ""; });
+    await page.click('main .outrow[data-v="e-po1@2026-11-02"]'); await page.waitForTimeout(100);
+    const os = T(await page.textContent("#sheets"));
+    check("tapping a bill opens its options: paid, didn't happen, different amount, different day", /It's been paid/.test(os) && /It didn't happen/.test(os) && /different amount/.test(os) && /different day/.test(os), os.slice(0, 300));
+    await page.click('#sheets [data-a="occdo"][data-v^="paid"]'); await page.waitForTimeout(200);
+    R = byName(await rowsOf());
+    check("marked paid: it says Paid", R["Streaming"].st === "Paid", R["Streaming"]);
+    await page.evaluate(() => { document.querySelector("#toast").innerHTML = ""; });
+    await page.click('main .outrow[data-v="e-po1@2026-11-02"]'); await page.waitForTimeout(100);
+    check("and offers to take the tick off", /It hasn't been paid/.test(T(await page.textContent("#sheets"))));
+    await page.click('#sheets [data-a="occdo"][data-v^="unpaid"]'); await page.waitForTimeout(200);
+    R = byName(await rowsOf());
+    check("taking it off puts it back to Late", /^(Late|Not seen)$/.test(R["Streaming"].st), R["Streaming"]);
+    // skipping shows as Skipped (and isn't counted), and can be put back
+    await page.evaluate(() => { document.querySelector("#toast").innerHTML = ""; });
+    const before = +T(await page.textContent('main section.card:has([data-a="outsort"]) .khead + .num')).replace(/[£,]/g, "");
+    await page.click('main .outrow[data-v="e-po3@2026-11-20"]'); await page.waitForTimeout(100);
+    await page.click('#sheets [data-a="occdo"][data-v^="skip"]'); await page.waitForTimeout(200);
+    R = byName(await rowsOf());
+    const after = +T(await page.textContent('main section.card:has([data-a="outsort"]) .khead + .num')).replace(/[£,]/g, "");
+    check("a skipped one stays on the list as Skipped, and isn't in the total", R["Insurance"] && R["Insurance"].st === "Skipped" && Math.abs(before - after - 60) < 0.011, [R["Insurance"], before, after]);
+    await page.evaluate(() => { document.querySelector("#toast").innerHTML = ""; });
+    await page.click('main .outrow[data-v="e-po3@2026-11-20"]'); await page.waitForTimeout(100);
+    check("and the sheet offers to put it back", /Put it back/.test(T(await page.textContent("#sheets"))));
+    await page.click('#sheets [data-a="occdo"][data-v^="restore"]'); await page.waitForTimeout(200);
+    R = byName(await rowsOf());
+    check("putting it back makes it Due again", R["Insurance"] && R["Insurance"].st === "Due", R["Insurance"]);
+    // the (i) explains it
+    await page.click('main [data-a="info"][data-v="outs"]'); await page.waitForTimeout(80);
+    check("the (i) explains Paid and Not seen", /Not seen/.test(T(await page.textContent("#sheets"))) && /Paid means/.test(T(await page.textContent("#sheets"))));
+    await page.click('#sheets [data-a="sheetclose"]');
+    check("the old 'See all payments' row on Money has gone into it", !(await page.$('main [data-a="payments"][data-v$="|"]')));
+    await page.context().close();
+    // Sophie: her own list, not Ethan's
+    page = await newPage("2026-11-20");
+    await page.goto(links.sophie); await page.waitForFunction(() => /Hi Sophie/.test(document.querySelector("#top").textContent), null, {timeout: 8000});
+    await page.evaluate(() => { document.querySelector("#toast").innerHTML = ""; });
+    await page.click('nav [data-v="money"]'); await page.waitForTimeout(250);
+    const sr = await rowsOf();
+    check("Sophie's Payments out is her own: her gym and what she pays Ethan, none of his bills", sr.some(r => r.name === "Gym") && sr.some(r => /to Ethan/.test(r.name)) && !sr.some(r => /Streaming|Broadband|Insurance/.test(r.name)), sr.map(r => r.name));
+    check("(and her Pot sort says Space)", (await page.$$eval('main [data-a="outsort"]', els => els.map(e => e.textContent.trim()))).join() === "Date,Amount,Space");
+    await page.context().close();
+  }
+
   // ===== polish 2026-10-27 (1.4.15): on every screen and sheet, at 320, 384 and 412px, with Larger text and with the
   // phone's text at 130%, no button's text runs past its edge, no one-line button wraps, no row of buttons is ragged
   // (all on one line, even lines, or one under another) and nothing is wider than the screen. Long names, big amounts.
@@ -944,7 +1035,7 @@ const fails = [], check = (name, cond, extra) => { if (cond) console.log("ok", n
     const screens = ["today", "money", "add", "partner", "more", "payday", "pots", "bills", "goals", "lisa", "house", "networth", "debts", "insights", "gifts", "settings", "themes", "bank", "review", "linked", "emailset", "sharing", "sync", "importcsv", "list:income", "list:budgets", "list:accounts", "list:splits"];
     // [screen, what to tap for a sheet or form] (each tap is a data-a, and data-v if given)
     const taps = [["add", "adddatepick"], ["add", "addsplit2"], ["add", "addmode:bill"], ["today", "who"], ["payday", "payedit"], ["pots", "potcheck"], ["partner", "settle"], ["lisa", "lisapaid"], ["bank", "bankoff"], ["review", "revmore"], ["linked", "applink:peckish"],
-      ["list:budgets", "edit"], ["list:income", "new:income"], ["bills", "new:bills"], ["bills", "edit"], ["list:accounts", "new:accounts"], ["list:splits", "new:splits"], ["list:transfers", "new:transfers"], ["debts", "new:loans"], ["goals", "new:goals"], ["gifts", "new:gifts"], ["list:budgets", "new:budgets"]];
+      ["list:budgets", "edit"], ["list:income", "new:income"], ["bills", "new:bills"], ["bills", "edit"], ["list:accounts", "new:accounts"], ["list:splits", "new:splits"], ["list:transfers", "new:transfers"], ["debts", "new:loans"], ["goals", "new:goals"], ["gifts", "new:gifts"], ["list:budgets", "new:budgets"], ["money", "outsort:pot"], ["money", "outrow"]];
     const found = {};
     for (const [w, size, z] of [[320, "normal", 1], [320, "larger", 1], [384, "normal", 1], [384, "larger", 1], [412, "normal", 1], [412, "larger", 1], [384, "normal", 1.3], [412, "normal", 1.3], [295, "normal", 1]]) {
       const tag = w + "px " + size + (z !== 1 ? " text " + z * 100 + "%" : "");
