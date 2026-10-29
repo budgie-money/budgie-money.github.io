@@ -90,7 +90,8 @@
           rows
             .map(function (t) {
               var tag = partner ? "div" : "button",
-                over = t.left < -0.004;
+                left = isFinite(t.left) ? +t.left : B.round((+t.amount || 0) - (+t.spent || 0)),
+                over = left < -0.004;
               return (
                 "<" +
                 tag +
@@ -108,7 +109,7 @@
                 '</span><span class="c-amount ' +
                 (over ? "c-over" : "") +
                 '">' +
-                M(Math.abs(t.left)) +
+                M(Math.abs(left)) +
                 (over ? '<small class="c-over">over</small>' : "") +
                 "</span></" +
                 tag +
