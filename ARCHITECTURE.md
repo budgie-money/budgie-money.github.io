@@ -187,3 +187,8 @@ The guide uses compact category tiles with icons, daily contributions, remaining
 - No AI service runs any of this. Google services, bank reapproval, API changes, extraordinary holidays and private backup/recovery still need occasional human attention. Keep deployment access and a private data backup; retain the source and tests. Do not describe this as maintenance-free or certified by passing tests.
 
 Validation: `node test/accuracy.test.js` adds independent penny-ledger and dated-scenario checks; `node test/trust-ui.test.js` checks persistent choices and privacy defaults through the fake backend. Existing engine/backend/bank/extras/experience, scale, theme and browser suites remain required for releases. Restart the fake server between mutating browser suites.
+
+
+## Receipt recovery (1.5.7)
+
+The live audit found a bank receipt with no visible receipt/bill match. Receipt lookup now also distinguishes a removed receipt from a bank-linked move. Settings / Budget health / Removed payments lets the owner recover an accidentally removed row through the ordinary row-permission path, preserving immutable bank facts and sending it for checking. Lookup never restores anything automatically; intentional deletions stay deleted. A recovered receipt can be matched to the dated bill with the existing one-payment/one-occurrence workflow.

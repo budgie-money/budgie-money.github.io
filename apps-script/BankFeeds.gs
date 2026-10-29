@@ -186,10 +186,11 @@ function bankReceipts_(p,b) {
     var data=tok.provider==="monzo"?monzoRead_(p,false,false):starlingRead_(p,false,false), st=bankStatusFor_(p), tables=allTables_(), D=Budgie.load(tables), matches=[];
     data.txns.forEach(function(t){
       if(t.pot||String(t.name||"").toLowerCase().indexOf(query)<0)return;
-      var receipt=tables.transactions.filter(function(x){return x.person===p&&!bankTrue_(x.deleted)&&x.bankId===t.id;})[0];
+      var allReceipts=tables.transactions.filter(function(x){return x.person===p&&x.bankId===t.id;}),receipt=allReceipts.filter(function(x){return !bankTrue_(x.deleted);})[0];
+      var moveId="bk-"+tok.provider+"-"+t.id,moves=D.moves.filter(function(m){return m.person===p&&!m.dup&&(m.id===moveId||String(m.id).indexOf(moveId+"~")===0);}).map(function(m){return {from:Budgie.accName(D,m.from),to:Budgie.accName(D,m.to),amount:m.amount};});
       var links=tables.exceptions.filter(function(x){var it=D.byId[x.item]||{};return !bankTrue_(x.deleted)&&x.bankId===t.id&&(it.person===p||it.from===p)&&x.action==="paid";}).map(function(x){return (D.byId[x.item]||{}).name||"Planned payment";});
       var ext=st.accounts.filter(function(a){return a.extId===t.acc;})[0], mapped=ext&&ext.mappedTo||"", account=mapped?Budgie.accName(D,mapped):"Unmapped account";
-      matches.push({date:t.date,name:String(t.name||""),amount:t.amount,account:account,pending:!!t.pending,declined:!!t.declined,reversed:!!t.reversed,matched:links,recorded:!!receipt,review:!!receipt&&bankTrue_(receipt.review)});
+      matches.push({date:t.date,name:String(t.name||""),amount:t.amount,account:account,pending:!!t.pending,declined:!!t.declined,reversed:!!t.reversed,matched:links,moves:moves,removed:!receipt&&allReceipts.some(function(x){return bankTrue_(x.deleted);}),recorded:!!receipt,review:!!receipt&&bankTrue_(receipt.review)});
     });
     matches.sort(function(a,b){return a.date<b.date?1:a.date>b.date?-1:0;});
     return {ok:true,receipts:matches.slice(0,80),limited:matches.length>80,from:bankDate_(bankSince_(false,false)),potErrors:(data.potErrors||[]).map(function(e){return bankScrub_(p,e);})};
