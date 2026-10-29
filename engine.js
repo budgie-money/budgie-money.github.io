@@ -118,7 +118,9 @@
   }
   // occurrences with exceptions applied: [{key, item, orig, date, amount, changed}]
   function occurrences(db, it, from, to) { return it.id ? memo(db, "occ|" + it.id + "|" + from + "|" + to, function () { return occ0(db, it, from, to); }) : occ0(db, it, from, to); }
-  function occ0(db, it, from, to) {
+  // (all: the ones skipped too, marked skipped, for the Payments out list)
+  function occurrencesAll(db, it, from, to) { return it.id ? memo(db, "occa|" + it.id + "|" + from + "|" + to, function () { return occ0(db, it, from, to, true); }) : occ0(db, it, from, to, true); }
+  function occ0(db, it, from, to, all) {
     var pairs = scheduleDates(it, addDays(from, -45), addDays(to, 45), true), ex = db.byItem.exceptions[it.id] || [], out = [], seen = {};
     var pooled = !!(db.poolIds && db.poolIds[it.id]);
     pairs.forEach(function (pr) {
@@ -132,11 +134,14 @@
         if (x.date !== orig) return;
         var a = String(x.action || "").toLowerCase();
         if (asPlanned && /-bank(day)?-[^-]+$/.test(String(x.id)) && (a === "amount" || a === "actual" || a === "move")) return;
-        if (a === "skip") o.skipped = true;
+        if (a === "skip") { o.skipped = true; o.skipId = x.id; }
         if (a === "move" && x.newDate) { o.date = x.newDate; o.changed = true; }
         if ((a === "amount" || a === "actual") && x.amount !== "" && x.amount !== null && !isNaN(+x.amount)) { o.amount = +x.amount; o.changed = true; o.actual = true; }
+        // paid: you said so ("paid"), or the bank feed saw it go out (it says so, or it had to change its amount or day)
+        var bk = /-bank(paid|day)?-[^-]+$/.test(String(x.id));
+        if (a === "paid" || (bk && (a === "amount" || a === "actual" || a === "move"))) { o.paid = true; if (bk) o.via = "bank"; else if (!o.via) o.via = "ticked"; if (a === "paid") o.paidId = x.id; }
       });
-      if (!o.skipped && o.date >= from && o.date < to) out.push(o);
+      if ((all || !o.skipped) && o.date >= from && o.date < to) out.push(o);
     });
     // extra one-off occurrences added as exceptions ("add")
     ex.forEach(function (x) { if (String(x.action).toLowerCase() === "add" && x.newDate >= from && x.newDate < to) out.push({key: it.id + "+" + x.newDate, item: it, orig: x.newDate, sched: x.newDate, date: x.newDate, amount: x.amount !== "" ? +x.amount : amountAt(db, it, x.newDate), changed: true}); });
@@ -1538,6 +1543,56 @@
     });
   }
 
+  // ---------- payments out ----------
+  // Everything that goes out in one pay period, as one list: the bills planned, regular payments to your partner and loan
+  // repayments due, and the payments actually made (logged by hand or from the bank). Each says where it stands:
+  //   paid (you said so, or the bank saw it go out; a payment made is paid; a repayment that's been paid),
+  //   due (its day is today or still to come), late (its day has gone and nothing says it was paid), skipped (this one
+  //   isn't happening). A planned bill the bank has matched is that bill, paid: it never comes in as a payment as well.
+  // A pooled bill's estimate is one row (how much of it the real bills have used so far); those real bills are in it.
+  // [{kind: bill | transfer | loan | payment, status, via (bank | ticked | logged | ""), id, key (the occurrence or loan
+  //   repayment), item, table, name, date, amount, account, category, split, pool {actual, estimate, closed} | null,
+  //   skipId, paidId, left (a repayment part paid), review, bankId}]
+  function outgoings(db, p, per, today) {
+    var st = startOf(db, p), from = per.start, to = per.next, main = mainOf(db, p), out = [];
+    var stat = function (date, paid) { return paid ? "paid" : date < today ? "late" : "due"; };
+    db.bills.forEach(function (b) {
+      if (b.person !== p) return;
+      occurrencesAll(db, b, from, to).forEach(function (o) {
+        if (o.date < st) return;
+        var row = {kind: "bill", id: o.key, key: o.key, orig: o.orig, item: b.id, table: "bills", name: b.name, date: o.date, amount: o.amount, account: b.account || main, category: b.category || "", split: b.split || "",
+          changed: !!o.changed, skipId: o.skipId || "", paidId: o.paidId || "", via: o.via || "", pool: null};
+        var pm = !o.skipped && poolOn(db, b) && pooledOn(db, b, o.sched) ? poolMonthAt(db, b, o.sched) : null;
+        if (pm && pm.occKey === o.key) { row.pool = {actual: round(pm.actual), estimate: round(pm.estimate), closed: !!pm.closed, start: pm.start}; row.amount = round(pm.estimate); row.status = pm.closed || pm.actual >= pm.estimate - 0.004 ? "paid" : "due"; row.via = row.status === "paid" ? "logged" : ""; }
+        else row.status = o.skipped ? "skipped" : stat(o.date, !!o.paid);
+        out.push(row);
+      });
+    });
+    db.transfers.forEach(function (t) {
+      if (t.from !== p) return;
+      occurrencesAll(db, t, from, to).forEach(function (o) {
+        if (o.date < st) return;
+        out.push({kind: "transfer", id: o.key, key: o.key, orig: o.orig, item: t.id, table: "transfers", name: (t.name || "Transfer") + " to " + person(db, t.to).name, date: o.date, amount: o.amount, account: t.fromAccount || main, category: "",
+          split: "", changed: !!o.changed, skipId: o.skipId || "", paidId: o.paidId || "", via: o.via || "", pool: null, status: o.skipped ? "skipped" : stat(o.date, !!o.paid)});
+      });
+    });
+    db.loans.forEach(function (l) {
+      if (l.borrower !== p) return;
+      loanPlan(db, l).forEach(function (r) {
+        if (r.date < from || r.date >= to || r.date < st) return;
+        out.push({kind: "loan", id: r.key, key: r.key, orig: r.date, item: l.id, table: "loans", name: "Pay " + person(db, l.lender).name + " back", date: r.date, amount: r.amount, left: r.left, account: main, category: l.name || "Loan",
+          split: "", changed: false, skipId: "", paidId: "", via: r.paid ? "ticked" : "", pool: null, status: stat(r.date, r.paid)});
+      });
+    });
+    db.transactions.forEach(function (x) {
+      if (x.person !== p || !(+x.amount > 0) || x.date < from || x.date >= to || isPoolTx(db, x)) return;
+      var b = db.byId[x.budget], bank = !!x.bankId || /^bk-/.test(String(x.id));
+      out.push({kind: "payment", id: x.id, key: x.id, orig: x.date, item: x.id, table: "transactions", name: x.note || (b ? b.name : "Payment"), date: x.date, amount: round(+x.amount), account: x.account || main, category: b ? b.name : "", split: x.split || "",
+        changed: false, skipId: "", paidId: "", via: bank ? "bank" : "logged", pool: null, status: "paid", review: x.review === true || /^true$/i.test(String(x.review)), bank: bank});
+    });
+    return out.sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : a.name < b.name ? -1 : a.name > b.name ? 1 : 0; });
+  }
+
   // ---------- months and the year ----------
   function monthView(db, p, per) {
     var pl = planFor(db, p, per), st = budgetState(db, p, per);
@@ -1963,7 +2018,7 @@
 
   return {
     VERSION: VERSION, TABLES: TABLES,
-    load: load, occurrences: occurrences, scheduleDates: scheduleDates, isWorkingDay: isWorkingDay, bankHolidays: bankHolidays,
+    load: load, occurrences: occurrences, occurrencesAll: occurrencesAll, outgoings: outgoings, scheduleDates: scheduleDates, isWorkingDay: isWorkingDay, bankHolidays: bankHolidays,
     periods: periods, periodAt: periodAt, prevPeriod: prevPeriod, nextPeriod: nextPeriod, planFor: planFor, payday: payday,
     budgetState: budgetState, balances: balances, flows: flows, todo: todo, between: between, today: today, coming: coming,
     calendar: calendar, pots: pots, monthView: monthView, year: year, kindOf: kindOf, newMoney: newMoney, kinds: kinds,

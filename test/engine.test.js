@@ -1452,5 +1452,48 @@ const tickPay11 = (t, p, d) => { const L0 = B.load(t, d), per = B.periodAt(L0, p
   eq("X3: the item left is for one payment only, not £35 twice", covered.map(x => [x.amount, x.keys.length]), [[35, 1]]);
 }
 
+// --- Payments out: every planned bill, regular payment, loan repayment and payment made in a pay period, with where it stands (Y1-Y6)
+{
+  const day = "2026-11-10", mk = (mut) => { const t = fixture(); if (mut) mut(t); return t; };
+  const out = (t, d, who) => { const L = B.load(t, d || day); return B.outgoings(L, who || "ethan", B.periodAt(L, who || "ethan", d || day), d || day); };
+  const sum = (rows) => rows.map(r => [r.name, r.date, r.amount, r.status]);
+  const base = out(mk());
+  eq("Y1: Ethan's November planned bills, by date, with where each stands", sum(base), [["Household bills", "2026-11-01", 420, "late"], ["Phone", "2026-11-05", 20, "late"], ["Rent", "2026-11-16", 1200, "due"]]);
+  eq("Y1: each is a bill with its pot", base.map(r => [r.kind, r.account]), [["bill", "e-bills"], ["bill", "e-bills"], ["bill", "e-bills"]]);
+  // marked paid by you, or seen by the bank (it says so, or it had to change the amount): paid, and who says so
+  const paid = out(mk(t => { t.exceptions.push({id: "x-e-phone-2026-11-05-paid", item: "e-phone", date: "2026-11-05", action: "paid"}); t.exceptions.push({id: "x-e-flat-2026-11-01-bank-ethan", item: "e-flat", date: "2026-11-01", action: "amount", amount: 433.1}); }));
+  eq("Y2: ticked is paid; the bank's own change is paid, at its amount", paid.map(r => [r.name, r.status, r.via, r.amount]), [["Household bills", "paid", "bank", 433.1], ["Phone", "paid", "ticked", 20], ["Rent", "due", "", 1200]]);
+  eq("Y2: a bank 'paid' mark with nothing changed is paid by the bank", out(mk(t => t.exceptions.push({id: "x-e-phone-2026-11-05-bankpaid-ethan", item: "e-phone", date: "2026-11-05", action: "paid"}))).filter(r => r.name === "Phone").map(r => [r.status, r.via]), [["paid", "bank"]]);
+  // skipped ones are listed, as skipped (and aren't counted anywhere else)
+  const sk = out(mk(t => t.exceptions.push({id: "x-e-phone-2026-11-05-skip", item: "e-phone", date: "2026-11-05", action: "skip"})));
+  eq("Y3: a skipped one is still listed, as skipped", sk.filter(r => r.name === "Phone").map(r => [r.status, r.skipId]), [["skipped", "x-e-phone-2026-11-05-skip"]]);
+  eq("Y3: and the plan doesn't have it", B.occurrences(B.load(mk(t => t.exceptions.push({id: "s", item: "e-phone", date: "2026-11-05", action: "skip"})), day), B.load(mk(), day).byId["e-phone"], "2026-11-01", "2026-12-01").length, 0);
+  // the day decides due or late: today's is due; a moved one follows its new day
+  eq("Y4: due today is due, the day before is late", [out(mk(), "2026-11-05").find(r => r.name === "Phone").status, out(mk(), "2026-11-06").find(r => r.name === "Phone").status], ["due", "late"]);
+  eq("Y4: a bill moved to a later day follows it", out(mk(t => t.exceptions.push({id: "x-e-phone-2026-11-05-move", item: "e-phone", date: "2026-11-05", action: "move", newDate: "2026-11-12"}))).find(r => r.name === "Phone").status, "due");
+  // payments made: logged by hand or from the bank, own only, outgoing only, with their pot and budget
+  const pay = out(mk(t => {
+    t.transactions.push({id: "p1", date: "2026-11-03", person: "ethan", amount: 12.5, budget: "e-food-b", account: "e-food", note: "Shop"});
+    t.transactions.push({id: "bk-monzo-p2", date: "2026-11-08", person: "ethan", amount: 35, budget: "e-fuel", account: "e-main", bankId: "p2", review: true});
+    t.transactions.push({id: "p3", date: "2026-11-04", person: "ethan", amount: -8, budget: "", account: "e-main", note: "Sold a thing"});
+    t.transactions.push({id: "p4", date: "2026-11-04", person: "sophie", amount: 9, budget: "s-food", account: "s-main", note: "Her shop"});
+    t.transactions.push({id: "p5", date: "2026-10-20", person: "ethan", amount: 9, budget: "e-food-b", account: "e-food", note: "Last month"});
+  })).filter(r => r.kind === "payment");
+  eq("Y5: payments are listed paid, with what they were for and where from; money in and others' aren't", pay.map(r => [r.name, r.amount, r.status, r.via, r.category, r.account, !!r.review]), [["Shop", 12.5, "paid", "logged", "Food", "e-food", false], ["Fuel", 35, "paid", "bank", "Fuel", "e-main", true]]);
+  // a planned bill the bank matched is that bill: nothing extra comes in as a payment
+  eq("Y5: so one bill matched by the bank is one row", out(mk(t => t.exceptions.push({id: "x-e-phone-2026-11-05-bankpaid-ethan", item: "e-phone", date: "2026-11-05", action: "paid"}))).filter(r => /Phone/.test(r.name)).length, 1);
+  // Sophie's own list: her gym, and what she pays Ethan? (her regular payments to him), not his
+  const so = out(mk(), "2026-11-20", "sophie");
+  eq("Y6: Sophie's list is hers: her regular payments to Ethan and her gym", sum(so).map(r => r.slice(0, 3)), [["Bills share to Ethan", "2026-11-01", 140], ["Rent share to Ethan", "2026-11-13", 500], ["Gym", "2026-11-18", 40]]);
+  eq("Y6: none of Ethan's bills are in it", so.some(r => /Rent|Phone|Household/.test(r.name) && r.kind === "bill"), false);
+  // a loan repayment: due and late, then paid
+  const ln = (t) => { t.loans.push({id: "l2", lender: "sophie", borrower: "ethan", name: "Laptop", amount: 300, date: "2026-10-27", repay: 100, repayFrom: "2026-11-08", repayDay: "8"}); };
+  eq("Y7: a repayment due is listed, late once its day has gone", out(mk(ln)).filter(r => r.kind === "loan").map(r => [r.name, r.date, r.amount, r.status]), [["Pay Sophie back", "2026-11-08", 100, "late"]]);
+  eq("Y7: paid, it's paid", out(mk(t => { ln(t); t.settlements.push({id: "set1", date: "2026-11-09", from: "ethan", to: "sophie", amount: 100, loan: "l2", key: "loan:l2:2026-11-08"}); })).filter(r => r.kind === "loan").map(r => r.status), ["paid"]);
+  // a pooled bill's estimate is one row, with the real bills inside it
+  const pl = out(mk(t => { Object.assign(t.bills.find(b => b.id === "e-flat"), {amount: 450, pool: "2026-10-16", variable: ""}); t.transactions.push({id: "w1", date: "2026-11-03", person: "ethan", amount: 75, budget: "e-flat", account: "e-bills", note: "Water"}); }));
+  eq("Y8: a pooled bill is one row, with how much its real bills have used; those bills aren't rows too", [pl.filter(r => r.item === "e-flat").map(r => [r.amount, r.status, r.pool && r.pool.actual]), pl.filter(r => r.kind === "payment").length], [[[450, "due", 75]], 0]);
+}
+
 console.log(fails ? fails + " failed, " + passes + " passed" : "All " + passes + " passed");
 process.exit(fails ? 1 : 0);

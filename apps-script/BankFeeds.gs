@@ -988,6 +988,14 @@ function bankApply_(p, data, windowFrom, payCarry) {
       if (ex) { if (!same(+ex.amount, amount)) update("exceptions", id, {amount: amount, deleted: false}); }
       else create("exceptions", {id: id, item: itemId, date: orig, action: "amount", amount: amount, note: note});
     };
+    // a planned bill or payment to your partner the bank saw go out is marked paid on its date, so the Payments out list can
+    // say so (one that came out at another amount or on another day says it already, with the change above)
+    var paidMark = function (itemId, orig) {
+      var id = "x-" + itemId + "-" + orig + "-bankpaid-" + p, ex = byId_("exceptions", id);
+      if (ex && ex.item !== itemId) { Logger.log("Bank feed skipped " + id + ": that id is already used for something else."); return; }
+      if (ex) { if (bankTrue_(ex.deleted)) update("exceptions", id, {deleted: false}); }
+      else create("exceptions", {id: id, item: itemId, date: orig, action: "paid", note: "seen at " + label});
+    };
     // a planned bill or payment to your partner that went out on another day than planned (a day early, say) is moved
     // to that day: the balance the bank gives already has it taken off, so it isn't taken off again on the day it was
     // planned (which made a pot look short until then). Only within the same pay period, so no payday's moves change.
@@ -1179,7 +1187,7 @@ function bankApply_(p, data, windowFrom, payCarry) {
           if (po) {
             usedOcc[po.occ.key] = true;
             if (po.kind === "bill" && !same(t.amount, po.occ.amount)) exception(po.item.id, po.occ.orig, t.amount, "from " + label);
-            if (po.kind === "bill" || po.kind === "transfer") dayChange(po.occ, t.date);
+            if (po.kind === "bill" || po.kind === "transfer") { dayChange(po.occ, t.date); if (po.occ.item && po.occ.item.id) paidMark(po.occ.item.id, po.occ.orig); }
             return;
           }
         }

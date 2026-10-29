@@ -1101,6 +1101,10 @@ const grow = (G, t) => { G.c.CACHE_ = {}; return G.c.readTable_(t).rows; };
   G.c.CACHE_ = {}; const db = B.load(G.c.allTables_(), "2026-11-27");
   ok("T1c: the engine has it on the day it went out", B.occurrences(db, db.byId["e-voxi2"], "2026-11-01", "2026-12-01").map(o => o.date).join() === "2026-11-27", B.occurrences(db, db.byId["e-voxi2"], "2026-11-01", "2026-12-01"));
   ok("T1c: one paid the day before payday (another pay period) isn't moved", !mv().some(x => /e-gym2/.test(x.id)));
+  // the Payments out list needs to know which planned bills the bank saw go out, even when nothing about them changed
+  const pm = () => grow(G, "exceptions").filter(x => /bankpaid/.test(x.id));
+  ok("T1c: a planned bill the bank saw go out is marked paid on its date (once)", pm().some(x => x.id === "x-e-voxi2-2026-11-28-bankpaid-ethan" && x.action === "paid" && x.date === "2026-11-28") && pm().filter(x => /e-voxi2/.test(x.id)).length === 1, pm());
+  ok("T1c: and the engine says so", (() => { const d2 = B.load(G.c.allTables_(), "2026-11-27"), o = B.occurrencesAll(d2, d2.byId["e-voxi2"], "2026-11-01", "2026-12-01")[0]; return o.paid === true && o.via === "bank"; })());
   NOW += 20 * 60000; const n0 = grow(G, "exceptions").length, r2 = G.call({key: G.kE, action: "bank.syncNow"});
   ok("T1c: a later read finds the same bill and changes nothing", r2.ok && grow(G, "exceptions").length === n0 && mv().length === 1 && !grow(G, "transactions").some(r => r.id === "bk-monzo-tx_voxi"), {r2, ex: mv()});
 }

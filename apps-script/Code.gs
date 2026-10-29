@@ -54,7 +54,7 @@ var HELP = {
   transfers: "One of you paying the other on a schedule, like a rent share.", transactions: "Every payment you log.", moves: "Pot moves you ticked off in the app.",
   settlements: "One-off payments between you two. loan: a row id from loans if it repays one.", loans: "Money one of you owes the other. repay: amount each month from repayFrom.",
   goals: "owners: who it belongs to. accounts: which accounts count towards it.", valuations: "A balance you checked. Everything after its date is worked out.",
-  amounts: "A price or pay change for a bill, income or budget, from the start date. Or a split's new shares (item: the split's id).", exceptions: "A change to one date: skip, move (newDate) or amount (what it really was).",
+  amounts: "A price or pay change for a bill, income or budget, from the start date. Or a split's new shares (item: the split's id).", exceptions: "A change to one date: skip, move (newDate), amount (what it really was) or paid (it went out).",
   settings: "Settings for each person.", gifts: "Gift ideas and what you bought. Only you see your own list.", prices: "Fund prices for the LISA tracker, filled in by the script.", meta: "Housekeeping."
 };
 
