@@ -1101,6 +1101,10 @@ const grow = (G, t) => { G.c.CACHE_ = {}; return G.c.readTable_(t).rows; };
   G.c.CACHE_ = {}; const db = B.load(G.c.allTables_(), "2026-11-27");
   ok("T1c: the engine has it on the day it went out", B.occurrences(db, db.byId["e-voxi2"], "2026-11-01", "2026-12-01").map(o => o.date).join() === "2026-11-27", B.occurrences(db, db.byId["e-voxi2"], "2026-11-01", "2026-12-01"));
   ok("T1c: one paid the day before payday (another pay period) isn't moved", !mv().some(x => /e-gym2/.test(x.id)));
+  // the Payments out list needs to know which planned bills the bank saw go out, even when nothing about them changed
+  const pm = () => grow(G, "exceptions").filter(x => /bankpaid/.test(x.id));
+  ok("T1c: a planned bill the bank saw go out is marked paid on its date (once)", pm().some(x => x.id === "x-e-voxi2-2026-11-28-bankpaid-ethan" && x.action === "paid" && x.date === "2026-11-28") && pm().filter(x => /e-voxi2/.test(x.id)).length === 1, pm());
+  ok("T1c: and the engine says so", (() => { const d2 = B.load(G.c.allTables_(), "2026-11-27"), o = B.occurrencesAll(d2, d2.byId["e-voxi2"], "2026-11-01", "2026-12-01")[0]; return o.paid === true && o.via === "bank"; })());
   NOW += 20 * 60000; const n0 = grow(G, "exceptions").length, r2 = G.call({key: G.kE, action: "bank.syncNow"});
   ok("T1c: a later read finds the same bill and changes nothing", r2.ok && grow(G, "exceptions").length === n0 && mv().length === 1 && !grow(G, "transactions").some(r => r.id === "bk-monzo-tx_voxi"), {r2, ex: mv()});
 }
@@ -1272,7 +1276,7 @@ const grow = (G, t) => { G.c.CACHE_ = {}; return G.c.readTable_(t).rows; };
   ok("U1: connected", G.call({key: G.kS, action: "bank.starling.setToken", token: SECRET.starlingSpaces}).ok);
   G.call({key: G.kS, action: "bank.map", extId: "space-fun", account: "s-rent"}); NOW += 60000; G.call({key: G.kS, action: "bank.syncNow"});
   const tx = grow(G, "transactions").filter(r => /sfi-u1-/.test(r.id)), mv = grow(G, "moves").filter(r => /sfi-u1-/.test(r.id));
-  const pay = grow(G, "exceptions").filter(r => /^x-s-pay-/.test(r.id));
+  const pay = grow(G, "exceptions").filter(r => /^x-s-pay-/.test(r.id) && r.action === "amount");
   ok("U1: the Space's side of a move is never a payment, nor a Space Budgie can't see", tx.length === 0, tx.map(r => [r.id, r.amount, r.note]));
   ok("U1: each move comes in once, from the main account's side (named by its Space or its category)", mv.length === 2 && mv.some(m => m.id === "bk-starling-sfi-u1-tofun" && m.from === "s-main" && m.to === "s-rent" && m.amount === 1900) && mv.some(m => m.id === "bk-starling-sfi-u1-back" && m.from === "s-rent" && m.to === "s-main" && m.amount === 10), mv.map(m => [m.id, m.from, m.to, m.amount]));
   ok("U1: a top-up of a Space isn't taken for the pay", pay.every(x => +x.amount === 2100), pay.map(x => [x.id, x.amount]));
@@ -1288,8 +1292,9 @@ const grow = (G, t) => { G.c.CACHE_ = {}; return G.c.readTable_(t).rows; };
     mtx("tx_u2_isa", "2026-10-27", 240000, {counterparty: {name: "CASH ISA PROVIDER"}, category: "transfers", time: "07:00:00"})
   ]);
   const G = bankEnv(); connectMonzo(G, {acc_00009main: "e-main"});
-  const payX = () => grow(G, "exceptions").filter(r => /^x-e-pay-2026-10-29/.test(r.id)).map(r => +r.amount);
+  const payX = () => grow(G, "exceptions").filter(r => /^x-e-pay-2026-10-29/.test(r.id) && r.action === "amount").map(r => +r.amount);
   ok("U2: a top-up or a transfer from savings isn't taken for the pay", JSON.stringify(payX()) === "[2390]", payX());
+  ok("U2: the pay the bank saw is marked paid (so To do knows it has arrived)", grow(G, "exceptions").some(r => r.id === "x-e-pay-2026-10-29-bankpaid-ethan" && r.action === "paid"), grow(G, "exceptions").map(r => r.id));
   monzo.txns.push(mtx("tx_u2_later", "2026-10-31", 230000, {counterparty: {name: "A FRIEND"}, category: "general", time: "12:00:00"}));
   NOW = RealDate.parse("2026-12-03T12:00:00Z"); G.c.bankPoll();
   ok("U2: a read that doesn't reach back to the pay leaves its amount as it was", JSON.stringify(payX()) === "[2390]" && !G.call({key: G.kE, action: "bank.status"}).bank.lastError, payX());

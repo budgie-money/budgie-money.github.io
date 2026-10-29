@@ -1388,7 +1388,11 @@ const tickPay11 = (t, p, d) => { const L0 = B.load(t, d), per = B.periodAt(L0, p
   // a bank move written after it started pairing isn't old-style either
   const t3 = fixture(); Object.assign(t3.bills.find(b => b.id === "e-flat"), {amount: 450, pool: "2026-10-16", variable: ""}); t3.meta.push({key: "pot.pairFromAt", value: "1000"});
   t3.transactions.push({id: "old", date: "2026-11-03", person: "ethan", amount: 75, budget: "e-flat", account: "e-main"}); t3.moves.push({id: "bk-monzo-x", date: "2026-11-03", person: "ethan", from: "e-bills", to: "e-main", amount: 75, key: "bank:x", updated: 5000});
-  eq("P22: a bank move written after pairing began isn't an old-style payment", B.todo(B.load(t3, "2026-11-13"), "ethan", "2026-11-13").filter(x => x.from === "e-bills" && x.to === "e-main").map(x => x.amount), [75]);
+  // (it isn't an old-style payment, so the water isn't taken as paid from the pot: the bank move is what moved the £75 back,
+  // once, and To do no longer asks for it again, as it's done)
+  eq("P22: a bank move written after pairing began is the move back: To do doesn't ask again", B.todo(B.load(t3, "2026-11-13"), "ethan", "2026-11-13").filter(x => x.from === "e-bills" && x.to === "e-main").map(x => x.amount), []);
+  const t3b = JSON.parse(JSON.stringify(t3)); t3b.moves = [];
+  eq("P22: and it still moves £75 out of the pot, once", B.round(B.balances(B.load(t3b, "2026-11-13"), "2026-11-13")["e-bills"] - B.balances(B.load(t3, "2026-11-13"), "2026-11-13")["e-bills"]), 75);
   // P23 (e7): pooling stopped from 16 Nov, 16 Oct to 15 Nov recorded; a 10 Nov bill counted in afterwards has no month to
   // go into: it isn't offered, and if it's counted in anyway it changes nothing (nothing counted twice)
   const t7 = fixture(); Object.assign(t7.bills.find(b => b.id === "e-flat"), {amount: 450, pool: "2026-10-16, off 2026-11-16", variable: ""});
@@ -1402,6 +1406,119 @@ const tickPay11 = (t, p, d) => { const L0 = B.load(t, d), per = B.periodAt(L0, p
   const d7 = B.load(t7, "2026-12-20");
   eq("P23: counted in anyway: changes nothing", [B.between(d7, "sophie", "2026-12-20").net, B.poolMonths(d7, d7.byId["e-flat"], "2000-01-01", "2027-01-20").map(m => [m.start, m.actual, m.late.length]), B.isPoolTx(d7, t7.transactions.find(x => x.id === "late"))], [net0, [["2026-10-16", 150, 0]], true]);
   eq("P23: and isn't spending either", B.yearReview(d7, "ethan", "2026-04-06").spent.filter(x => /flat|household/i.test(x.name)).length, 0);
+}
+
+// --- a pot move made at the bank before the To do item appeared is done (X1-X4)
+{
+  // £35 of fuel paid from Main on 30 Oct (fuel's pot is the Car pot), so To do would ask for it back from the Car pot
+  const fuelTx = {id: "x1-fuel", date: "2026-10-30", person: "ethan", amount: 35, budget: "e-fuel", account: "e-main"};
+  const bankMv = (id, d, amount, from, to) => ({id: "bk-monzo-" + id, date: d || "2026-10-30", person: "ethan", from: from || "e-car", to: to || "e-main", amount: amount === undefined ? 35 : amount, key: "bank:" + id, updated: 100});
+  const day = "2026-11-02", asks = (t, d) => B.todo(B.load(t, d || day), "ethan", d || day).filter(x => x.type === "move" && x.from === "e-car" && x.to === "e-main").map(x => x.amount);
+  const mk = (mut) => { const t = fixture(); t.transactions.push(fuelTx); if (mut) mut(t); return t; };
+  eq("X1: nothing moved yet: To do asks for the £35", asks(mk()), [35]);
+  eq("X1: the same £35 already moved at the bank, same pay period: done, not asked for", asks(mk(t => t.moves.push(bankMv("x1a")))), []);
+  eq("X1: not to the penny (£34.99): still asked for (and the £34.99 stays a move of its own)", asks(mk(t => t.moves.push(bankMv("x1b", "2026-10-30", 34.99)))), [35]);
+  eq("X1: the other way round (Main to Car pot): not the same move", asks(mk(t => t.moves.push(bankMv("x1c", "2026-10-30", 35, "e-main", "e-car")))), [35]);
+  eq("X1: from the day before payday (an earlier pay period): not this one's", asks(mk(t => t.moves.push(bankMv("x1d", "2026-10-28")))), [35]);
+  eq("X1: for another account: not the same move", asks(mk(t => t.moves.push(bankMv("x1e", "2026-10-30", 35, "e-food", "e-main")))), [35]);
+  eq("X1: it counts as done later in the same period too", asks(mk(t => t.moves.push(bankMv("x1f"))), "2026-11-20"), []);
+  // the bank's move is a real move, counted once in the balance
+  const withMv = B.load(mk(t => t.moves.push(bankMv("x1g"))), day), noMv = B.load(mk(), day);
+  near("X1: the Car pot has the £35 gone once", B.balances(noMv, day)["e-car"] - B.balances(withMv, day)["e-car"], 35);
+  // the next period's plan sees it as already made (the move isn't still to come on top of the bank's)
+  const nx = "2026-11-27", plOf = t => B.planFor(B.load(t, nx), "ethan", B.periodAt(B.load(t, nx), "ethan", nx));
+  const plA = plOf(mk(t => t.moves.push(bankMv("x1h")))), plB = plOf(mk(t => t.moves.push({id: "x1-tick", date: day, person: "ethan", from: "e-car", to: "e-main", amount: 35, key: "back:e-fuel:2026-10-29:e-main"})));
+  eq("X1: the next plan is the same whether the bank moved it or it was ticked", [plA.totalIn, plA.totalOut, plA.remainder], [plB.totalIn, plB.totalOut, plB.remainder]);
+
+  // X2: ticked in the app after the bank moved it (the real case): both rows are there, and it is one move
+  const both = mk(t => { t.moves.push(bankMv("x2")); t.moves.push({id: "x2-tick", date: "2026-10-31", person: "ethan", from: "e-car", to: "e-main", amount: 35, key: "back:e-fuel:2026-10-29:e-main"}); });
+  const tickOnly = mk(t => t.moves.push({id: "x2-tick", date: "2026-10-31", person: "ethan", from: "e-car", to: "e-main", amount: 35, key: "back:e-fuel:2026-10-29:e-main"}));
+  eq("X2: tick and bank move together: not asked again", asks(both), []);
+  eq("X2: the bank's row is set aside as the same money (the tick is the move)", B.load(both, day).moves.map(m => [m.id, !!m.dup]), [["bk-monzo-x2", true], ["x2-tick", false]]);
+  near("X2: the Car pot has £35 gone, not £70", B.balances(B.load(tickOnly, day), day)["e-car"] - B.balances(B.load(both, day), day)["e-car"], 0);
+  near("X2: and Main has £35 in, not £70", B.balances(B.load(both, day), day)["e-main"] - B.balances(B.load(mk(), day), day)["e-main"], 35);
+  eq("X2: a tick in another pay period isn't the same money (the bank's move stays a move of its own)", B.load(mk(t => { t.moves.push(bankMv("x2b", "2026-11-30")); t.moves.push({id: "x2b-tick", date: "2026-11-30", person: "ethan", from: "e-car", to: "e-main", amount: 35, key: "back:e-fuel:2026-10-29:e-main"}); }), "2026-12-01").moves.map(m => !!m.dup), [false, false]);
+  eq("X2: a different amount isn't the same money", B.load(mk(t => { t.moves.push(bankMv("x2c", "2026-10-30", 20)); t.moves.push({id: "x2c-tick", date: day, person: "ethan", from: "e-car", to: "e-main", amount: 35, key: "back:e-fuel:2026-10-29:e-main"}); }), day).moves.map(m => !!m.dup), [false, false]);
+  eq("X2: one bank move is the same money as one tick only", B.load(mk(t => { t.moves.push(bankMv("x2d")); t.moves.push({id: "x2d-t1", date: "2026-10-31", person: "ethan", from: "e-car", to: "e-main", amount: 35, key: "back:e-fuel:2026-10-29:e-main"}); t.moves.push({id: "x2d-t2", date: day, person: "ethan", from: "e-car", to: "e-main", amount: 35, key: "back:e-tolls:2026-10-29:e-main"}); }), day).moves.filter(m => m.dup).length, 1);
+
+  // X3: two different payments the same size, to be moved the same way: a bank move takes one item, not both
+  const two = (mut) => mk(t => { t.budgets.push({id: "e-tolls", person: "ethan", name: "Tolls", amount: 400, mode: "daily", account: "e-car", carry: true}); t.transactions.push({id: "x3-toll", date: "2026-10-31", person: "ethan", amount: 35, budget: "e-tolls", account: "e-main"}); if (mut) mut(t); });
+  eq("X3: two payments of £35 from Main: asked as one move of £70", asks(two()), [70]);
+  eq("X3: one £35 move at the bank: £35 still to move (it was for one of them)", asks(two(t => t.moves.push(bankMv("x3a")))), [35]);
+  eq("X3: two £35 moves at the bank: both done", asks(two(t => { t.moves.push(bankMv("x3a")); t.moves.push(bankMv("x3b", "2026-10-31")); })), []);
+  eq("X3: one £70 move at the bank: both done", asks(two(t => t.moves.push(bankMv("x3c", "2026-10-31", 70)))), []);
+  // a bank move already used for one item isn't also the payday cover or another item
+  const covered = B.todo(B.load(two(t => t.moves.push(bankMv("x3a"))), day), "ethan", day).filter(x => x.type === "move" && x.from === "e-car" && x.to === "e-main");
+  eq("X3: the item left is for one payment only, not £35 twice", covered.map(x => [x.amount, x.keys.length]), [[35, 1]]);
+}
+
+// --- Payments out: every planned bill, regular payment, loan repayment and payment made in a pay period, with where it stands (Y1-Y6)
+{
+  const day = "2026-11-10", mk = (mut) => { const t = fixture(); if (mut) mut(t); return t; };
+  const out = (t, d, who) => { const L = B.load(t, d || day); return B.outgoings(L, who || "ethan", B.periodAt(L, who || "ethan", d || day), d || day); };
+  const sum = (rows) => rows.map(r => [r.name, r.date, r.amount, r.status]);
+  const base = out(mk());
+  eq("Y1: Ethan's November planned bills, by date, with where each stands", sum(base), [["Household bills", "2026-11-01", 420, "late"], ["Phone", "2026-11-05", 20, "late"], ["Rent", "2026-11-16", 1200, "due"]]);
+  eq("Y1: each is a bill with its pot", base.map(r => [r.kind, r.account]), [["bill", "e-bills"], ["bill", "e-bills"], ["bill", "e-bills"]]);
+  // marked paid by you, or seen by the bank (it says so, or it had to change the amount): paid, and who says so
+  const paid = out(mk(t => { t.exceptions.push({id: "x-e-phone-2026-11-05-paid", item: "e-phone", date: "2026-11-05", action: "paid"}); t.exceptions.push({id: "x-e-flat-2026-11-01-bank-ethan", item: "e-flat", date: "2026-11-01", action: "amount", amount: 433.1}); }));
+  eq("Y2: ticked is paid; the bank's own change is paid, at its amount", paid.map(r => [r.name, r.status, r.via, r.amount]), [["Household bills", "paid", "bank", 433.1], ["Phone", "paid", "ticked", 20], ["Rent", "due", "", 1200]]);
+  eq("Y2: a bank 'paid' mark with nothing changed is paid by the bank", out(mk(t => t.exceptions.push({id: "x-e-phone-2026-11-05-bankpaid-ethan", item: "e-phone", date: "2026-11-05", action: "paid"}))).filter(r => r.name === "Phone").map(r => [r.status, r.via]), [["paid", "bank"]]);
+  // skipped ones are listed, as skipped (and aren't counted anywhere else)
+  const sk = out(mk(t => t.exceptions.push({id: "x-e-phone-2026-11-05-skip", item: "e-phone", date: "2026-11-05", action: "skip"})));
+  eq("Y3: a skipped one is still listed, as skipped", sk.filter(r => r.name === "Phone").map(r => [r.status, r.skipId]), [["skipped", "x-e-phone-2026-11-05-skip"]]);
+  eq("Y3: and the plan doesn't have it", B.occurrences(B.load(mk(t => t.exceptions.push({id: "s", item: "e-phone", date: "2026-11-05", action: "skip"})), day), B.load(mk(), day).byId["e-phone"], "2026-11-01", "2026-12-01").length, 0);
+  // the day decides due or late: today's is due; a moved one follows its new day
+  eq("Y4: due today is due, the day before is late", [out(mk(), "2026-11-05").find(r => r.name === "Phone").status, out(mk(), "2026-11-06").find(r => r.name === "Phone").status], ["due", "late"]);
+  eq("Y4: a bill moved to a later day follows it", out(mk(t => t.exceptions.push({id: "x-e-phone-2026-11-05-move", item: "e-phone", date: "2026-11-05", action: "move", newDate: "2026-11-12"}))).find(r => r.name === "Phone").status, "due");
+  // payments made: logged by hand or from the bank, own only, outgoing only, with their pot and budget
+  const pay = out(mk(t => {
+    t.transactions.push({id: "p1", date: "2026-11-03", person: "ethan", amount: 12.5, budget: "e-food-b", account: "e-food", note: "Shop"});
+    t.transactions.push({id: "bk-monzo-p2", date: "2026-11-08", person: "ethan", amount: 35, budget: "e-fuel", account: "e-main", bankId: "p2", review: true});
+    t.transactions.push({id: "p3", date: "2026-11-04", person: "ethan", amount: -8, budget: "", account: "e-main", note: "Sold a thing"});
+    t.transactions.push({id: "p4", date: "2026-11-04", person: "sophie", amount: 9, budget: "s-food", account: "s-main", note: "Her shop"});
+    t.transactions.push({id: "p5", date: "2026-10-20", person: "ethan", amount: 9, budget: "e-food-b", account: "e-food", note: "Last month"});
+  })).filter(r => r.kind === "payment");
+  eq("Y5: payments are listed paid, with what they were for and where from; money in and others' aren't", pay.map(r => [r.name, r.amount, r.status, r.via, r.category, r.account, !!r.review]), [["Shop", 12.5, "paid", "logged", "Food", "e-food", false], ["Fuel", 35, "paid", "bank", "Fuel", "e-main", true]]);
+  // a planned bill the bank matched is that bill: nothing extra comes in as a payment
+  eq("Y5: so one bill matched by the bank is one row", out(mk(t => t.exceptions.push({id: "x-e-phone-2026-11-05-bankpaid-ethan", item: "e-phone", date: "2026-11-05", action: "paid"}))).filter(r => /Phone/.test(r.name)).length, 1);
+  // Sophie's own list: her gym, and what she pays Ethan? (her regular payments to him), not his
+  const so = out(mk(), "2026-11-20", "sophie");
+  eq("Y6: Sophie's list is hers: her regular payments to Ethan and her gym", sum(so).map(r => r.slice(0, 3)), [["Bills share to Ethan", "2026-11-01", 140], ["Rent share to Ethan", "2026-11-13", 500], ["Gym", "2026-11-18", 40]]);
+  eq("Y6: none of Ethan's bills are in it", so.some(r => /Rent|Phone|Household/.test(r.name) && r.kind === "bill"), false);
+  // a loan repayment: due and late, then paid
+  const ln = (t) => { t.loans.push({id: "l2", lender: "sophie", borrower: "ethan", name: "Laptop", amount: 300, date: "2026-10-27", repay: 100, repayFrom: "2026-11-08", repayDay: "8"}); };
+  eq("Y7: a repayment due is listed, late once its day has gone", out(mk(ln)).filter(r => r.kind === "loan").map(r => [r.name, r.date, r.amount, r.status]), [["Pay Sophie back", "2026-11-08", 100, "late"]]);
+  eq("Y7: paid, it's paid", out(mk(t => { ln(t); t.settlements.push({id: "set1", date: "2026-11-09", from: "ethan", to: "sophie", amount: 100, loan: "l2", key: "loan:l2:2026-11-08"}); })).filter(r => r.kind === "loan").map(r => r.status), ["paid"]);
+  // a pooled bill's estimate is one row, with the real bills inside it
+  const pl = out(mk(t => { Object.assign(t.bills.find(b => b.id === "e-flat"), {amount: 450, pool: "2026-10-16", variable: ""}); t.transactions.push({id: "w1", date: "2026-11-03", person: "ethan", amount: 75, budget: "e-flat", account: "e-bills", note: "Water"}); }));
+  eq("Y8: a pooled bill is one row, with how much its real bills have used; those bills aren't rows too", [pl.filter(r => r.item === "e-flat").map(r => [r.amount, r.status, r.pool && r.pool.actual]), pl.filter(r => r.kind === "payment").length], [[[450, "due", 75]], 0]);
+}
+
+// --- payday before the pay has arrived (Z1-Z5): nothing is topped up from the fallback pot for the pay that's missing
+{
+  const day = "2026-10-29";   // Ethan's payday (last Thursday)
+  // the bank's balance read in the small hours: it has the day's flows in it as far as balances go, but not the pay
+  const mk = (mut) => { const t = fixture(); t.valuations.push({id: "bk-acc_main-" + day, account: "e-main", date: day, amount: 120, updated: 5000, note: "from Monzo"}); if (mut) mut(t); return t; };
+  const td = (t, d) => B.todo(B.load(t, d || day), "ethan", d || day);
+  const topUps = (items) => items.filter(x => x.type === "move" && x.from === "e-emergency" && x.to === "e-main").map(x => x.amount);
+  const t0 = td(mk());
+  eq("Z1: pay not in yet: no top-up of Main from the Emergency pot", topUps(t0), []);
+  eq("Z1: and no warning that Main is short either", t0.filter(x => x.type === "warn").length, 0);
+  const pdi = t0.filter(x => x.payday);
+  eq("Z1: payday's moves are marked as waiting for the pay", [pdi.length > 0, pdi.every(x => x.waiting === true && !x.short)], [true, true]);
+  eq("Z1: the plan says it's waiting", B.payPending(B.load(mk(), day), "ethan", B.periodAt(B.load(mk(), day), "ethan", day), day), true);
+  // the bank has seen the pay (marked paid on its date): not waiting any more, and the same as without that
+  const seen = mk(t => t.exceptions.push({id: "x-e-pay-2026-10-29-bankpaid-ethan", item: "e-pay", date: day, action: "paid"}));
+  eq("Z2: the bank has seen the pay: not waiting", [B.payPending(B.load(seen, day), "ethan", B.periodAt(B.load(seen, day), "ethan", day), day), td(seen).filter(x => x.payday).some(x => x.waiting)], [false, false]);
+  // a move of payday's already ticked says the pay is in
+  eq("Z3: a payday move already ticked: not waiting", B.payPending(B.load(mk(t => t.moves.push({id: "m1", date: day, person: "ethan", from: "e-main", to: "e-bills", amount: 100, key: "pay:2026-10-29:e-bills"})), day), "ethan", B.periodAt(B.load(fixture(), day), "ethan", day), day), false);
+  // no bank feed: the pay is taken to be in on its day, as before
+  const nobank = fixture();
+  eq("Z4: without a bank feed it's never waiting", B.payPending(B.load(nobank, day), "ethan", B.periodAt(B.load(nobank, day), "ethan", day), day), false);
+  // a late pay: still waiting two days on, until the bank sees it
+  eq("Z5: a late pay is still waited for on the 31st, and no top-up", [B.payPending(B.load(mk(), "2026-10-31"), "ethan", B.periodAt(B.load(mk(), "2026-10-31"), "ethan", "2026-10-31"), "2026-10-31"), topUps(td(mk(), "2026-10-31"))], [true, []]);
+  eq("Z5: after a week it isn't waited for any more", B.payPending(B.load(mk(), "2026-11-06"), "ethan", B.periodAt(B.load(mk(), "2026-11-06"), "ethan", "2026-11-06"), "2026-11-06"), false);
 }
 
 console.log(fails ? fails + " failed, " + passes + " passed" : "All " + passes + " passed");

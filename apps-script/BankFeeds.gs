@@ -888,7 +888,8 @@ function bankApply_(p, data, windowFrom, payCarry) {
     var TODO_KEY_ = /^(back|cover|fill|lent|late|refund):|^pay:\d{4}-\d{2}-\d{2}:cover$/, openTodo = null, todoTaken = {}, appTaken = {};
     var todoMatch = function (from, to, amount, date) {
       if (D.diff(date, today) > 7) return null;
-      if (openTodo === null) { try { openTodo = D.todo(db, p, today).filter(function (x) { return x.type === "move" && !x.payday && x.keys && x.keys.length && x.keys.every(function (k) { return TODO_KEY_.test(k.key); }); }); } catch (e) { openTodo = []; } }
+      // (looking at it as if no pot move had been made at the bank yet, so one saved under the bank's own key is found too)
+      if (openTodo === null) { try { db.looseOff = true; db._c = {}; openTodo = D.todo(db, p, today).filter(function (x) { return x.type === "move" && !x.payday && x.keys && x.keys.length && x.keys.every(function (k) { return TODO_KEY_.test(k.key); }); }); } catch (e) { openTodo = []; } db.looseOff = false; db._c = {}; }
       for (var i = 0; i < openTodo.length; i++) { var it = openTodo[i]; if (!todoTaken[i] && it.from === from && it.to === to && same(it.amount, amount)) { todoTaken[i] = true; return it; } }
       return null;
     };
@@ -986,6 +987,14 @@ function bankApply_(p, data, windowFrom, payCarry) {
       if (ex && ex.item !== itemId) { Logger.log("Bank feed skipped " + id + ": that id is already used for something else."); return; }
       if (ex) { if (!same(+ex.amount, amount)) update("exceptions", id, {amount: amount, deleted: false}); }
       else create("exceptions", {id: id, item: itemId, date: orig, action: "amount", amount: amount, note: note});
+    };
+    // a planned bill or payment to your partner the bank saw go out is marked paid on its date, so the Payments out list can
+    // say so (one that came out at another amount or on another day says it already, with the change above)
+    var paidMark = function (itemId, orig) {
+      var id = "x-" + itemId + "-" + orig + "-bankpaid-" + p, ex = byId_("exceptions", id);
+      if (ex && ex.item !== itemId) { Logger.log("Bank feed skipped " + id + ": that id is already used for something else."); return; }
+      if (ex) { if (bankTrue_(ex.deleted)) update("exceptions", id, {deleted: false}); }
+      else create("exceptions", {id: id, item: itemId, date: orig, action: "paid", note: "seen at " + label});
     };
     // a planned bill or payment to your partner that went out on another day than planned (a day early, say) is moved
     // to that day: the balance the bank gives already has it taken off, so it isn't taken off again on the day it was
@@ -1178,7 +1187,7 @@ function bankApply_(p, data, windowFrom, payCarry) {
           if (po) {
             usedOcc[po.occ.key] = true;
             if (po.kind === "bill" && !same(t.amount, po.occ.amount)) exception(po.item.id, po.occ.orig, t.amount, "from " + label);
-            if (po.kind === "bill" || po.kind === "transfer") dayChange(po.occ, t.date);
+            if (po.kind === "bill" || po.kind === "transfer") { dayChange(po.occ, t.date); if (po.occ.item && po.occ.item.id) paidMark(po.occ.item.id, po.occ.orig); }
             return;
           }
         }
@@ -1198,7 +1207,7 @@ function bankApply_(p, data, windowFrom, payCarry) {
           // money from your partner is never your pay, however much it is
           if (mine || namesPartner(t)) return;
           var pi = payIn(t);
-          if (pi) { usedOcc[pi.o.key] = true; if (!same(-t.amount, pi.o.amount)) exception(pi.i.id, pi.o.orig, -t.amount, "from " + label); }
+          if (pi) { usedOcc[pi.o.key] = true; if (!same(-t.amount, pi.o.amount)) exception(pi.i.id, pi.o.orig, -t.amount, "from " + label); paidMark(pi.i.id, pi.o.orig); }
           // other money in that isn't planned (selling something, a friend paying you back, interest): kept as a payment of
           // less than nothing, for no budget, so it shows up in Recent and in the account it went into, and spends nothing.
           // Money that matches a planned income or a regular payment to you (Sophie's share of the rent) is already in the plan.
