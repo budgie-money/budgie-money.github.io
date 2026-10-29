@@ -6,7 +6,7 @@
   else root.Budgie = factory();
 })(this, function () {
   "use strict";
-  var VERSION = "1.5.2";
+  var VERSION = "1.5.3";
 
   // ---------- dates ----------
   function D(s) { var p = String(s).split("-"); return new Date(Date.UTC(+p[0], +p[1] - 1, +p[2])); }
@@ -1048,7 +1048,7 @@
     db.bills.forEach(function (b) {
       // a pooled estimate: only what's not been paid yet (the real payments are the money that goes out)
       var on = poolOn(db, b), acc = b.account || mainOf(db, b.person);
-      occurrences(db, b, from, to).forEach(function (o) { if (o.date >= startOf(db, b.person) && !o.moveId && !(on && pooledOn(db, b, o.sched))) { var receipt = db.transactions.filter(function (x) { return x.isBillPayment && x.billId === b.id && x.billDate === o.orig && x.person === b.person; })[0]; push(o.date, receipt ? receipt.account || mainOf(db, b.person) : acc, -o.amount, b.name, o.key, receipt && receipt.updated, !!(receipt && receipt.bankId)); if (b.toAccount) push(o.date, b.toAccount, o.amount, b.name, o.key); var credit = db.byId[b.creditAccount]; if (credit && credit.owner === b.person && credit.kind === "credit") push(o.date, credit.id, o.amount, b.name, o.key); } });
+      occurrences(db, b, from, to).forEach(function (o) { if (o.date >= startOf(db, b.person) && !o.moveId && !(on && pooledOn(db, b, o.sched))) { var receipt = db.transactions.filter(function (x) { return x.isBillPayment && x.billId === b.id && x.billDate === o.orig && x.person === b.person; })[0]; push(o.date, receipt ? receipt.account || mainOf(db, b.person) : acc, -o.amount, b.name, o.key, receipt && receipt.updated, !!(receipt && receipt.bankId)); if (b.toAccount) push(o.date, b.toAccount, o.amount, b.name, o.key); var credit = db.byId[b.creditAccount]; if (credit && credit.owner === b.person && credit.kind === "credit" && (!db.today || o.date > db.today || o.paid)) push(o.date, credit.id, o.amount, b.name, o.key); } });
       if (on) poolFlows(db, b, from, to).forEach(function (f) { push(f.date, acc, -f.amount, b.name, f.key); });
     });
     db.transfers.forEach(function (t) { occurrences(db, t, from, to).forEach(function (o) { if (o.date >= startOf(db, t.from)) { push(o.date, t.fromAccount || mainOf(db, t.from), -o.amount, t.name, o.key); push(o.date, t.toAccount || mainOf(db, t.to), o.amount, t.name, o.key); } }); });
