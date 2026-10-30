@@ -2181,5 +2181,38 @@ ok("sync without an action is unchanged", call({key: kE}).ok === true && Array.i
  const Gap=make(t=>{t.settings.find(x=>x.key==='start').value='2026-10-26';t.valuations.find(x=>x.account==='e-food').amount=100;t.valuations.push({id:'gap-before',account:'e-food',date:'2026-10-29',amount:60,updated:1});t.transactions[0].amount=150;});
  Gap.c.bankApply_('ethan',{provider:'monzo',accounts:[{extId:'pot_food',kind:'pot',balance:50}],txns:[{id:'gap-net',acc:'acc_main',pot:'pot_food',date:'2026-10-29',amount:-10,name:'',category:'savings'}]},'2026-10-01',[]);let gapMove=rows(Gap,'moves')[0];ok('NET: budget catch-up and reimbursement share one actual bank move',gapMove&&gapMove.amount===10&&/^net:/.test(gapMove.key));Gap.c.CACHE_={};near('NET: budget cash gap stays funded after bank import',B.paydaySteps(B.load(Gap.c.allTables_(),'2026-10-29'),'ethan','2026-10-29').steps.find(x=>x.account==='e-food').fill,0);
 }
+// Scheduled non-salary income is a confirmed occurrence, never a silently
+// discarded incoming receipt. All amounts and names in this fixture are invented.
+{
+ NOW=RealDate.parse('2026-10-30T20:00:00Z');
+ const make=extra=>bankEnv(t=>{
+  for(const k of ['income','bills','budgets','transfers','transactions','moves','loans','loanItems','settlements','goals','valuations','amounts','exceptions','settings'])t[k]=[];
+  t.income=[{id:'support',person:'sophie',name:'Family support example',amount:240,account:'s-main',unit:'month',on:'last working day',start:'2026-10-01'},
+   {id:'salary',person:'sophie',name:'NHS example',amount:1800,isPay:true,account:'s-main',unit:'month',on:'27',start:'2026-11-01'}];
+  t.settings=[{person:'sophie',key:'start',value:'2026-10-25'},{person:'sophie',key:'bank.map.example-main',value:'s-main'},{person:'sophie',key:'bank.map.example-pot',value:'s-rent'}];
+  if(extra)extra(t);
+ });
+ const tx=(id='support-receipt',extra={})=>Object.assign({id,acc:'example-main',date:'2026-10-30',amount:-240,name:'Example sender'},extra);
+ const read=(G,txns)=>G.c.bankApply_('sophie',{provider:'starling',accounts:[],txns},'2026-10-01',[]);
+ const marks=G=>rows(G,'exceptions').filter(x=>x.item==='support'&&x.action==='paid'&&!x.deleted);
+ const G=make();read(G,[tx()]);
+ ok('INC: non-salary income gets bank-paid evidence',marks(G).length===1&&marks(G)[0].bankId==='support-receipt');
+ ok('INC: matched income is not also a transaction',rows(G,'transactions').length===0);
+ G.c.CACHE_={};let d=B.load(G.c.allTables_(),'2026-10-30');
+ ok('INC: confirmed income remains outside salary periods',B.periodAt(d,'sophie','2026-10-30').opening&&B.occurrencesAll(d,d.byId.support,'2026-10-30','2026-10-31')[0].via==='bank');
+ read(G,[tx()]);ok('INC: repeated read is idempotent',marks(G).length===1&&rows(G,'transactions').length===0);
+ read(G,[tx(),tx('extra-receipt',{date:'2026-10-31'})]);ok('INC: one occurrence cannot swallow a second receipt',rows(G,'transactions').filter(x=>!x.deleted&&x.bankId==='extra-receipt').length===1&&marks(G).length===1);
+ read(G,[tx('support-receipt',{reversed:true}),tx('extra-receipt',{date:'2026-10-31'})]);ok('INC: reversal removes original evidence',marks(G).length===0);
+ const A=make(t=>t.income.push({...t.income[0],id:'second-support',name:'Other support example'}));read(A,[tx()]);ok('INC: two equally plausible rules stay unresolved',!marks(A).length&&rows(A,'transactions').filter(x=>!x.deleted).length===1);
+ const C=make();read(C,[tx('one'),tx('two')]);ok('INC: two equally plausible receipts are both retained',!marks(C).length&&rows(C,'transactions').filter(x=>!x.deleted).length===2);
+ const E=make();read(E,[tx('early',{date:'2026-10-29'})]);ok('INC: early receipt records actual day without changing salary rule',marks(E).length===1&&rows(E,'exceptions').some(x=>x.item==='support'&&x.action==='move'&&x.newDate==='2026-10-29')&&!rows(E,'exceptions').some(x=>x.item==='salary'));
+ const L=make();read(L,[tx('late',{date:'2026-10-31'})]);ok('INC: late receipt records actual day',marks(L).length===1&&rows(L,'exceptions').some(x=>x.item==='support'&&x.action==='move'&&x.newDate==='2026-10-31'));
+ const M=make(t=>t.moves.push({id:'known-move',person:'sophie',date:'2026-10-30',from:'s-savings',to:'s-main',amount:240}));read(M,[tx()]);ok('INC: known own-account withdrawal is not family support',marks(M).length===0);
+ const P=make();read(P,[tx(),tx('pot-withdrawal',{pot:'example-pot',amount:-240})]);ok('INC: raw Space withdrawal is not income evidence',marks(P).length===0);
+ for(const [label,extra] of [['load',{load:true}],['card refund',{card:true}],['declined',{declined:true}],['reversed',{reversed:true}],['Moneybox',{name:'Moneybox withdrawal'}],['wrong amount',{amount:-250}],['outside window',{date:'2026-10-24'}]]){
+  const X=make();read(X,[tx('excluded',extra)]);ok('INC: excludes '+label,marks(X).length===0);
+ }
+ const S=make(t=>t.income.push({id:'other-owner',person:'ethan',name:'Private support',amount:241,account:'e-main',unit:'once',start:'2026-10-30'}));read(S,[tx('other',{amount:-241})]);ok('INC: cannot mark another person income paid',!rows(S,'exceptions').some(x=>x.item==='other-owner'));
+}
 console.log(fails ? fails + " failed, " + passes + " passed" : "All " + passes + " passed");
 process.exit(fails ? 1 : 0);

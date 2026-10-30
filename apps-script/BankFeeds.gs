@@ -1059,12 +1059,39 @@ function bankApply_(p, data, windowFrom, payCarry) {
     var last = {}; data.txns.forEach(function (t, i) { if (t && t.id) last[t.id] = i; });
     var txList = data.txns.filter(function (t, i) { return t && t.id && last[t.id] === i; }).sort(function (x, y) { return x.date < y.date ? -1 : x.date > y.date ? 1 : 0; });
     payScan(txList.concat((payCarry || []).filter(function (x) { return x && x.id && x.date && !bankHas_(last, x.id); }).map(function (x) { return {id: String(x.id), acc: x.acc, date: String(x.date), amount: +x.amount, name: String(x.name || "")}; })));
+    // Other scheduled income needs receipt evidence too. Match exact amounts
+    // globally, once each, rather than silently dropping every amount-sized
+    // receipt. Ambiguous matches stay as real receipts for the owner to review.
+    var otherPairs = [], otherTook = {};
+    txList.forEach(function (t) {
+      if (!t.date || !payCand(t) || payPick[t.id] || /moneybox/i.test(t.name)) return;
+      var acc = accOf(t.acc, true), amount = -t.amount, ownId = "bk-" + provider + "-" + t.id;
+      if (txList.some(function (w) { return w.pot && w.amount < 0 && accOf(w.acc, true) === acc && near(-w.amount, amount) && Math.abs(D.diff(w.date, t.date)) <= 3; })) return;
+      if (Object.keys(moveRows).some(function (id) { var m = moveRows[id]; return m && m.id !== ownId && m.person === p && !bankTrue_(m.deleted) && m.to === acc && near(+m.amount, amount) && Math.abs(D.diff(m.date, t.date)) <= 3; })) return;
+      var words = bankMerchantKey_(t.name).split(" ").filter(function (w) { return w.length > 2; });
+      db.income.forEach(function (i) {
+        if (i.person !== p || i.isPay || (i.account || main) !== acc) return;
+        var names = bankMerchantKey_(i.name).split(" "), named = words.some(function (w) { return names.indexOf(w) >= 0; });
+        D.occurrences(db, i, D.addDays(t.date, -10), D.addDays(t.date, 11)).forEach(function (o) {
+          var gap = Math.abs(D.diff(planDay(o), t.date));
+          if (gap > 3 || !near(amount, o.amount)) return;
+          if (db.exceptions.some(function (x) { return x.item === i.id && x.date === o.orig && /-bankpaid-/.test(String(x.id)) && x.bankId && x.bankId !== t.id; })) return;
+          otherPairs.push({t:t, i:i, o:o, score:(named ? 0 : 10) + gap});
+        });
+      });
+    });
+    otherPairs.sort(function (a,b) { return a.score - b.score; });
+    otherPairs.forEach(function (x) {
+      if (otherTook[x.o.key] || payPick[x.t.id]) return;
+      if (otherPairs.some(function (y) { return y !== x && y.score === x.score && !otherTook[y.o.key] && !payPick[y.t.id] && (y.o.key === x.o.key || y.t.id === x.t.id); })) return;
+      otherTook[x.o.key] = true; payPick[x.t.id] = {i:x.i, o:x.o, t:x.t};
+    });
     // Pay that came in early (the day before payday, say) starts the new pay period the day it came in: its day is moved
     // there, as a bill's is, and the rest of this read (payday's moves into your pots that same day) is weighed with it
     // there. Pay that comes in late isn't moved: the period had already started, and what was ticked on payday stays.
     var payDays = [];
     Object.keys(payPick).forEach(function (tid) {
-      var pk = payPick[tid], o = pk.o, it = o.item, date = pk.t && pk.t.date; if (!it || !it.id || !date) return;
+      var pk = payPick[tid], o = pk.o, it = o.item, date = pk.t && pk.t.date; if (!pk.i.isPay || !it || !it.id || !date) return;
       var id = "x-" + it.id + "-" + o.orig + "-bankday-" + p, ex = byId_("exceptions", id), live = !!ex && !bankTrue_(ex.deleted), plan = planDay(o);
       if (ex && ex.item !== it.id) { Logger.log("Bank feed skipped " + id + ": that id is already used for something else."); return; }
       if (date >= plan) { if (live) { update("exceptions", id, {deleted: true}); payDays.push({id: id}); } return; }
@@ -1270,14 +1297,13 @@ function bankApply_(p, data, windowFrom, payCarry) {
           // money from your partner is never your pay, however much it is
           if (mine || namesPartner(t)) return;
           var pi = payIn(t);
-          if (pi) { usedOcc[pi.o.key] = true; if (!same(-t.amount, pi.o.amount)) exception(pi.i.id, pi.o.orig, -t.amount, "from " + label, t.id); paidMark(pi.i.id, pi.o.orig, t.id); }
+          if (pi) { usedOcc[pi.o.key] = true; if (!same(-t.amount, pi.o.amount)) exception(pi.i.id, pi.o.orig, -t.amount, "from " + label, t.id); if (!pi.i.isPay) dayChange(pi.o, t.date, t.id); paidMark(pi.i.id, pi.o.orig, t.id); }
           // other money in that isn't planned (selling something, a friend paying you back, interest): kept as a payment of
           // less than nothing, for no budget, so it shows up in Recent and in the account it went into, and spends nothing.
           // Money that matches a planned income or a regular payment to you (Sophie's share of the rent) is already in the plan.
           var inAmt = -t.amount, plannedIn = false;
           var inWin = function (item) { return D.occurrences(db, item, D.addDays(t.date, -10), D.addDays(t.date, 11)).filter(function (o) { var d = planDay(o); return d >= D.addDays(t.date, -3) && d < D.addDays(t.date, 4); }); };
           // (anything pay-sized near a payday is left for the pay check, which might not have seen that payday yet when a first read comes in parts)
-          db.income.forEach(function (i) { if (i.person === p && !i.isPay) inWin(i).forEach(function (o) { if (near(inAmt, o.amount)) plannedIn = true; }); });
           if (pi) plannedIn = true;
           db.transfers.forEach(function (tr) { if (tr.to === p) inWin(tr).forEach(function (o) { if (near(inAmt, o.amount)) plannedIn = true; }); });
           if (plannedIn || movedIn()) return;
