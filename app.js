@@ -1,7 +1,7 @@
 /* Budgie app: screens, syncing and offline queue. The maths lives in engine.js. */
 (function () {
   "use strict";
-  var B = window.Budgie, TH = window.BudgieThemes, APP_VERSION = "1.7.0";
+  var B = window.Budgie, TH = window.BudgieThemes, APP_VERSION = "1.7.1";
   var $ = function (s) { return document.querySelector(s); };
   var esc = function (s) { return String(s === undefined || s === null ? "" : s).replace(/[&<>"']/g, function (c) { return {"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]; }); };
   // wiped: Budgie's copy at the old address has been wiped (it's moving across), so nothing is saved here again
@@ -365,7 +365,7 @@
     if (S.view.s === "edit" && $("#main").querySelector("[data-f]")) readForm();
     var fn = SCREENS[S.view.s] || SCREENS.today, html = "";
     try { html = fn(S.view.p); } catch (e) { html = card('<h2>Something went wrong</h2><p class="muted small">' + esc(e && e.message) + '</p><button class="btn ghost sm" type="button" data-a="tab" data-v="today">Back to Today</button>'); console.error(e); }
-    $("#main").innerHTML = (S.newVersion && !demoOn() ? '<button type="button" class="banner li" data-a="reload" style="padding:10px 14px;border:0"><span class="grow"><span class="what">A new version of Budgie is ready</span><span class="why">Tap to update. It takes a second.</span></span></button>' : "") + (demoOn() ? '<button type="button" class="banner demo li" data-a="demoinfo" style="padding:10px 14px;border:0;color:var(--accent-ink)"><span class="grow"><span class="what">Show and tell is on</span><span class="why" style="color:inherit;opacity:.9">Made-up people and money. Tap to switch person or turn it off.</span></span></button>' : "") + html;
+    $("#main").innerHTML = (S.newVersion && !demoOn() ? '<button type="button" class="banner li" data-a="reload" style="padding:10px 14px;border:0"><span class="grow"><span class="what">A new version of Budgie is ready</span><span class="why">Tap to update. It takes a second.</span></span></button>' : "") + (demoOn() ? '<button type="button" class="banner demo li" data-a="demoinfo" style="padding:10px 14px;border:0;color:var(--accent-ink)"><span class="grow"><span class="what">Show and tell is on</span><span class="why" style="color:inherit;opacity:.9">Made-up people and money. Tap to switch person or turn it off.</span></span></button>' : "") + (S.bankSyncing ? '<div class="banner small" role="status">' + esc(S.bankSyncing) + "</div>" : "") + html;
     // the first time on this phone: a short walkthrough (it comes first; the things to check follow)
     if (false && S.view.s === "today" && !S.ui.tourShown && !sheetOpen() && S.lastSync && tourDue()) { S.ui.tourShown = true; setTimeout(function () { if (!sheetOpen() && S.view.s === "today" && tourDue()) { LS.set(tourKey(), true); S.ui.tourI = 0; tourSheet(); } else S.ui.tourShown = false; }, 500); }
     // once a day, until they're all confirmed, pop up the figures Budgie guessed
@@ -1320,9 +1320,9 @@
   };
 
   // ----- Bank connection (read-only: balances, payments, pots or Spaces)
-  async function bankCall(action, extra) {
+  async function bankCall(action, extra, signal) {
     if (demoOn() || !S.cfg) throw new Error("Not connected to your sheet");
-    var j = await askSheet(Object.assign({key: S.cfg.k, action: action}, extra || {})); if (!j.ok) throw new Error(sheetSaid(j));
+    var j = await askSheet(Object.assign({key: S.cfg.k, action: action}, extra || {}), signal); if (!j.ok) throw new Error(sheetSaid(j));
     return j;
   }
   function bankRefresh() { if (S.bankRefreshing) return S.bankRefreshing; S.bankRefreshing = bankCall("bank.status").then(function (j) { S.bank = j.bank || {}; S.bank.at = Date.now(); render(true); return S.bank; }, function (e) { S.bank = Object.assign(S.bank || {}, {err: e.message}); render(true); }).finally(function () { S.bankRefreshing = null; }); return S.bankRefreshing; }
@@ -1370,7 +1370,7 @@
         '<div class="small muted">' + (b.lastSync ? "Last checked " + esc(ago(b.lastSync)) + ". " : "") + "Budgie checks every 15 minutes." + (b.reapproveBy ? " Approve it again in the Monzo app by " + esc(B.nice(String(b.reapproveBy).slice(0, 10))) + "." : "") + "</div>" +
         (b.lastError ? '<p class="small bad">' + esc(b.lastError) + "</p>" : "") +
         (reN ? '<button type="button" class="btn wide" style="margin-top:12px" data-a="go" data-v="review">Check ' + reN + " new payment" + (reN === 1 ? "" : "s") + "</button>" : "") +
-        '<div class="two fit" style="margin-top:12px"><button type="button" class="btn ghost" data-a="banksync">Check now</button>' + (b.needsReconnect && b.provider === "monzo" ? '<button type="button" class="btn" data-a="bankmonzo2">Reconnect</button>' : "") + "</div>") +
+        '<div class="two fit" style="margin-top:12px"><button type="button" class="btn ghost" data-a="banksync"' + (S.bankSyncing ? ' disabled aria-busy="true"' : "") + '>' + (S.bankSyncing ? "Checking…" : "Check now") + '</button>' + (b.needsReconnect && b.provider === "monzo" ? '<button type="button" class="btn" data-a="bankmonzo2">Reconnect</button>' : "") + "</div>") +
       (rows ? '<h2 class="h2">Which is which' + infoBtn("bankmap") + "</h2>" + card('<div class="list">' + rows + "</div>", "flush") + (nGuess ? '<button type="button" class="btn wide" style="margin-top:10px" data-a="bankguess">Match ' + (nGuess === 1 ? "it" : "all " + nGuess) + " as suggested</button>" : "") : "") +
       safety + '<button type="button" class="btn danger wide" style="margin-top:14px" data-a="bankoff">Disconnect ' + esc(bankName()) + "</button>";
   };
@@ -2061,7 +2061,33 @@
       toast("Saving…");
       ids.reduce(function (pr, id) { return pr.then(function () { return bankCall("bank.map", {extId: id, account: g[id]}); }); }, Promise.resolve()).then(function () { toast("Saved"); return bankRefresh(); }, function (e) { toast(e.message); });
     },
-    banksync: function () { toast("Checking…"); bankCall("bank.syncNow").then(function (j) { toast(j.added || j.updated ? (j.added || 0) + " new, " + (j.updated || 0) + " updated" : "Nothing new"); sync(false); return bankRefresh(); }, function (e) { toast(e.message); }); },
+    banksync: async function () {
+      if (S.bankSyncing) return;
+      var cfgAt = S.cfg, dataAt = S.data, ctl = typeof AbortController === "function" ? new AbortController() : null;
+      var timer = ctl ? setTimeout(function () { ctl.abort(); }, 90000) : null;
+      S.bankSyncing = "Checking " + bankName() + " for payments and balances…"; render();
+      try {
+        var j = await bankCall("bank.syncNow", {}, ctl ? ctl.signal : undefined);
+        if (S.cfg !== cfgAt || S.data !== dataAt) return;
+        S.bankSyncing = "Bank check finished. Updating your budget…"; render(true);
+        // An earlier sheet sync may have started before the bank import finished.
+        // Let it finish, then fetch the ledger produced by this bank check.
+        var until = Date.now() + 95000;
+        while (S.syncing && Date.now() < until) await new Promise(function (resolve) { setTimeout(resolve, 100); });
+        if (S.cfg !== cfgAt || S.data !== dataAt) return;
+        if (S.syncing) throw new Error("Bank checked, but your budget is still syncing. Try Sync now shortly.");
+        await sync(false);
+        if (S.cfg !== cfgAt || S.data !== dataAt) return;
+        if (S.lastError) throw new Error("Bank checked, but your budget could not update: " + S.lastError);
+        // Do not reuse a status request that began before this import.
+        if (S.bankRefreshing) await S.bankRefreshing;
+        await bankRefresh();
+        if (S.bank && S.bank.err) throw new Error("Budget updated, but bank status could not refresh: " + S.bank.err);
+        toast(j.added || j.updated ? "Bank checked and budget updated: " + (j.added || 0) + " new, " + (j.updated || 0) + " updated" : "Bank checked and budget updated. Nothing new.");
+      } catch (e) {
+        toast(e && e.name === "AbortError" ? "The bank check took too long. It may still finish; check again shortly." : e.message);
+      } finally { clearTimeout(timer); S.bankSyncing = ""; render(true); }
+    },
     bankoff: function () { openSheet("<h2>Disconnect " + esc(bankName()) + '?</h2><p class="muted">Budgie stops reading your bank and forgets its key. Payments it already brought in stay.' + (bankName() === "Starling" ? " Also delete the token on developer.starlingbank.com, so it can't be used again." : "") + "</p>" + '<button type="button" class="btn danger wide" data-a="bankoff2">Disconnect</button><button type="button" class="btn ghost wide" style="margin-top:10px" data-a="sheetclose">Keep it</button>'); },
     bankoff2: function () { closeSheet(); bankCall("bank.disconnect").then(function () { toast("Disconnected"); return bankRefresh(); }, function (e) { toast(e.message); }); },
     revbud: function (v) { var k = v.split("|"); reviewSave(k[0], {budget: k[1]}, false); closeSheet(); render(); },
