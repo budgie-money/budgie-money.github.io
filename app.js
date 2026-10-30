@@ -1,7 +1,7 @@
 /* Budgie app: screens, syncing and offline queue. The maths lives in engine.js. */
 (function () {
   "use strict";
-  var B = window.Budgie, TH = window.BudgieThemes, APP_VERSION = "1.6.1";
+  var B = window.Budgie, TH = window.BudgieThemes, APP_VERSION = "1.6.2";
   var $ = function (s) { return document.querySelector(s); };
   var esc = function (s) { return String(s === undefined || s === null ? "" : s).replace(/[&<>"']/g, function (c) { return {"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]; }); };
   // wiped: Budgie's copy at the old address has been wiped (it's moving across), so nothing is saved here again
@@ -214,10 +214,18 @@
     else if (S.view.s !== "today") { S.view = {s: "today", p: {}}; render(); window.scrollTo(0, 0); }
     else { try { history.back(); } catch (e) {} } // nothing left in Budgie: let the phone leave the app
   });
-  document.addEventListener("keydown", function (e) { if (e.key === "Escape" && sheetOpen()) closeSheet(); });
+  document.addEventListener("keydown", function (e) {
+    if (!sheetOpen()) return;
+    if (e.key === "Escape") { e.preventDefault(); closeSheet(); return; }
+    if (e.key !== "Tab") return;
+    var dialog = $("#sheets .sheet"), controls = Array.prototype.slice.call(dialog.querySelectorAll('a[href],button,input,select,textarea,[tabindex]')).filter(function (x) { return !x.disabled && x.tabIndex >= 0 && x.getClientRects().length; }), first = controls[0], last = controls[controls.length - 1];
+    if (!first) { e.preventDefault(); dialog.focus(); }
+    else if (!dialog.contains(document.activeElement) || e.shiftKey && document.activeElement === first) { e.preventDefault(); (e.shiftKey ? last : first).focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+  });
 
   // ---------- sheets and toasts ----------
-  var sheetOpen = function () { return !!$("#sheets").firstChild; };
+  var sheetOpen = function () { return !!$("#sheets").firstChild; }, sheetReturnFocus = null;
   // explanations that are good to know but needn't always be on show: a small (i) beside a heading opens them
   var INFO = {
     outs: ["Payments out", "Everything that goes out in this pay period: bills, regular payments, loan repayments and the payments you've made. Paid means you ticked it or your bank showed it going out. Not seen means its day has gone and your bank hasn't shown it yet. Tap one to change it, tick it or put it right."],
@@ -234,13 +242,14 @@
   };
   function infoBtn(k) { return '<button type="button" class="info" data-a="info" data-v="' + k + '" aria-label="' + esc(INFO[k][0]) + '">' + icon("info", 18) + "</button>"; }
   function openSheet(html) {
+    if (!sheetOpen()) sheetReturnFocus = document.activeElement;
     var t = (html.match(/<h2[^>]*>([\s\S]*?)<\/h2>/) || [])[1];
-    $("#sheets").innerHTML = '<div class="sheet-bg" data-a="sheetbg"><div class="sheet" role="dialog" aria-modal="true"' + (t ? ' aria-label="' + esc(t.replace(/<[^>]+>/g, "")) + '"' : "") + ">" + html + "</div></div>";
+    $("#sheets").innerHTML = '<div class="sheet-bg" data-a="sheetbg"><div class="sheet" role="dialog" aria-modal="true" tabindex="-1"' + (t ? ' aria-label="' + esc(t.replace(/<[^>]+>/g, "")) + '"' : "") + ">" + html + "</div></div>";
     if (!NAV.sheet) { histPush(); NAV.sheet = true; }
-    var f = $("#sheets").querySelector("input,select,button.btn"); if (f && f.tagName !== "BUTTON") setTimeout(function () { f.focus(); }, 60); else if (f) setTimeout(function () { f.focus({preventScroll: true}); }, 60);
+    var f = $("#sheets").querySelector("input,select,button.btn") || $("#sheets .sheet"); setTimeout(function () { if(f.isConnected)f.focus({preventScroll: f.tagName === "BUTTON"}); }, 60);
   }
   // closing a sheet ourselves undoes the history entry it added, without going back a screen
-  function closeSheet() { if (!sheetOpen() && !NAV.sheet) return; $("#sheets").innerHTML = ""; if (NAV.sheet) { NAV.sheet = false; histBack(1); } }
+  function closeSheet() { if (!sheetOpen() && !NAV.sheet) return; $("#sheets").innerHTML = ""; if (NAV.sheet) { NAV.sheet = false; histBack(1); } if(sheetReturnFocus&&sheetReturnFocus.isConnected)sheetReturnFocus.focus({preventScroll:true});sheetReturnFocus=null; }
   var toastTimer = null;
   function toast(msg, undo) {
     var el = $("#toast"); el.innerHTML = '<div class="toast"><span>' + esc(msg) + "</span>" + (undo ? '<button type="button" data-a="undo">Undo</button>' : "") + "</div>";
@@ -998,7 +1007,7 @@
     else if (pr && pr.basis === "history") course = "Recent account growth: " + M0(pr.perMonth) + " a month";
     var joint = fl && String((d.byId[g.id] || {}).owners || "").split(/[,\s]+/).filter(Boolean).length > 1;
     var flow = fl && fl.lines.length ? '<div class="row small" style="margin-top:10px;font-weight:600"><span>' + (joint ? "Your part this pay period" : "This pay period") + "</span>" + num(M0(fl.total) + " in") + "</div>" + fl.lines.map(function (l) { return '<div class="row tiny muted" style="padding-top:2px"><span>' + esc(l.label) + (l.names && l.names.length ? " (" + esc(l.names.join(", ")) + ")" : "") + (l.kind === "direct-repaid" || l.kind === "direct-oneoff" ? (l.done ? "" : " · to move") : "") + "</span><span>" + M(l.amount) + "</span></div>"; }).join("") : "";
-    if (B.goalForecast) flow = '<div class="small muted" style="margin-top:12px">Saved by account</div><div class="list">' + (g.parts || []).map(function(x){return li(esc(x.name),'',num(M(x.amount)));}).join('') + '</div>';
+    if (B.goalForecast) flow = '<div class="small muted" style="margin-top:12px">Saved by account</div><div class="list">' + (g.parts || []).map(function(x){return li(esc(x.name),esc(x.owner===me()?'Yours':person(x.owner).name+"’s"),num(M(x.amount)));}).join('') + '</div>';
     return '<div class="row"><span style="font-weight:700">' + esc(g.name) + "</span>" + num(g.pct + "%") + '</div><div style="margin:8px 0 6px">' + bar(g.pct, null, "var(--k-save)") + '</div><div class="row small"><span class="num" style="font-weight:600">' + M0(g.saved) + " of " + M0(g.target) + '</span><span class="muted">' + (g.due ? "by " + esc(monthYear(String(g.due).slice(0, 10))) : "") + "</span></div>" +
       (course ? '<div class="small" style="margin-top:6px">' + course + "</div>" : "") + extra + flow;
   }

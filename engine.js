@@ -6,7 +6,7 @@
   else root.Budgie = factory();
 })(this, function () {
   "use strict";
-  var VERSION = "1.6.1";
+  var VERSION = "1.6.2";
 
   // ---------- dates ----------
   function D(s) { var p = String(s).split("-"); return new Date(Date.UTC(+p[0], +p[1] - 1, +p[2])); }
@@ -912,7 +912,7 @@
     // money already sitting in a pot when the period starts (bills came in cheaper, a pot topped up early) counts
     // towards that pot's needs; a pot that ended short gets caught up; what's left in the main account carries
     // into the new month. Worked out once the period has started, and estimated for the next payday.
-    var pv0 = db.today && from > addDays(db.today, 1) ? prevPeriod(db, p, per) : null, upcoming = !!(pv0 && pv0.start <= db.today);
+    var pv0 = db.today && from > db.today ? prevPeriod(db, p, per) : null, upcoming = !!(pv0 && pv0.start <= db.today);
     // money saved into a pot for something later (a sinking fund) is kept for that pot's bills, carried from period to period
     var pvR = per.opening ? null : prevPeriod(db, p, per), prevPl = pvR && pvR.start < from && pvR.next > st ? planFor(db, p, pvR) : null;
     // saIn: what's been set aside so far for each yearly cost (by bill), kept apart from the saving-budget reserve
@@ -935,8 +935,8 @@
       // but a balance checked on or after the move already includes it, so that side is left alone
       var vd=dict(),vbank=dict(),vtime=dict();db.valuations.forEach(function(v){if(v.date<=dayBefore&&(v.date>(vd[v.account]||"")||v.date===vd[v.account]&&(+v.updated||0)>=(vtime[v.account]||0))){vd[v.account]=v.date;vtime[v.account]=+v.updated||0;vbank[v.account]=/^bk-/.test(String(v.id));}});
       var pendMove = function (from2, to2, amt, when, pendingBankDay) {
-        if (bal[from2] !== undefined && (!(vd[from2] >= when) || pendingBankDay && vbank[from2] && vd[from2] === when)) bal[from2] = round(bal[from2] - amt);
-        if (bal[to2] !== undefined && (!(vd[to2] >= when) || pendingBankDay && vbank[to2] && vd[to2] === when)) bal[to2] = round(bal[to2] + amt);
+        if (bal[from2] !== undefined && (!(vd[from2] >= when) || pendingBankDay && vbank[from2] && vd[from2] >= when)) bal[from2] = round(bal[from2] - amt);
+        if (bal[to2] !== undefined && (!(vd[to2] >= when) || pendingBankDay && vbank[to2] && vd[to2] >= when)) bal[to2] = round(bal[to2] + amt);
       };
       // (a move ticked from payday on, say last month's on payday morning, isn't in the balance the day before, so it
       // still counts as one to do: ticking it doesn't change this month's plan)
@@ -1718,7 +1718,7 @@
     // A funded spending allowance is usable while its money is still in Main.
     // Reserve every other pending allocation and Main's upcoming payments first.
     // Moving the same money into its pot must not change the daily guide.
-    var fundingInMain=0, projectedPot=dict();
+    var fundingInMain=0, projectedPot=dict(),rules=spareRules(db,p,date),held=rules?Math.max(0,+rules.buffer||0):0;
     if(per.pay&&!per.opening&&!payPending(db,p,per,date)){
       var pd=payday(db,p,per), other=0,spending=0,mainDue=0;
       var journey=paydaySteps(db,p,date,per);
@@ -1726,12 +1726,12 @@
       else pd.moves.forEach(function(m){var left=Math.max(0,round(m.amount-ticked(db,p,"pay:"+per.start+":"+m.to)));if(spendAccs[m.to]){spending+=left;projectedPot[m.to]=(projectedPot[m.to]||0)+left;}else other+=left;});
       flows(db,date,addDays(per.next,-1)).forEach(function(f){if(f.account===main&&f.amount<0)mainDue-=f.amount;});
       unseenBills(db,p,date).forEach(function(r){if(r.account===main)mainDue+=r.amount;});
-      var rules=spareRules(db,p,date),held=rules?Math.max(0,+rules.buffer||0):0;
       fundingInMain=round(Math.min(spending,Math.max(0,(bal[main]||0)-other-mainDue-held)));
-      if(spendAccs[main])committed-=other+held;else cash=round(cash+fundingInMain);
+      if(spendAccs[main])committed-=other;else cash=round(cash+fundingInMain);
       // A yearly-cost allocation arriving in a spending pot remains reserved.
       var used=0;Object.keys(plan.setAside||{}).forEach(function(id){var b=db.byId[id],acc=b?b.account||main:"",extra=Math.min(Math.max(0,plan.setAside[id]-Math.max(0,bal[acc]||0)),projectedPot[acc]||0,Math.max(0,fundingInMain-used));if(spendAccs[acc]){committed-=extra;used+=extra;}});
     }
+    if(spendAccs[main])committed-=held;
     var cashFree = round(Math.max(0, cash + committed));
     // Rebase only when money changes, not merely when the calendar advances.
     var anchor = maxS(per.start, startOf(db, p));
@@ -2142,10 +2142,10 @@
   }
   // A dated scenario, separate from actual balances. Full period commitments are reserved before
   // saving a surplus; no interest, unspent-budget windfalls, possible sales or unconfirmed loans.
-  function goalForecast(db, p, goalId, date, deadline) {
+  function goalForecast(db, p, goalId, date, deadline, accessibleOnly) {
     var g = db.byId[goalId], actual = goals(db, p, date).filter(function (x) { return x.id === goalId; })[0];
     if (!g || !actual || !isIso(deadline) || deadline < date || diff(date, deadline) > 730) return null;
-    var accs = goalAccIds(g), mine = function (a) { return accs.indexOf(a) >= 0 && (db.byId[a] || {}).owner === p; }, rows = [], warnings = [], total = actual.saved;
+    var accs = goalAccIds(g).filter(function(id){var a=db.byId[id]||{};return !accessibleOnly||(a.owner===p&&!/^(lisa|pension|credit)$/.test(a.kind));}), mine = function (a) { return accs.indexOf(a) >= 0 && (db.byId[a] || {}).owner === p; }, rows = [], warnings = [], saved=accessibleOnly?round(accs.reduce(function(n,id){return n+Math.max(0,accountValue(db,id,date));},0)):actual.saved,total=saved;
     var cfg = spareRules(db, p, date), routed = !cfg || mine(cfg.savings), bufferNeed=cfg?Math.max(0,+cfg.buffer||0):0, emergencyNeed=cfg&&cfg.emergency?Math.max(0,(+cfg.target||0)-accountValue(db,cfg.emergency,date)):0;
     if (cfg && !routed) warnings.push("Spare money goes to " + accName(db, cfg.savings) + ", outside this goal.");
     if (String(g.owners || "").split(/[,\s]+/).filter(Boolean).length > 1) warnings.push("Only your future contributions are included.");
@@ -2194,7 +2194,7 @@
     }
     rows.sort(function (a,b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : 0; });
     rows.forEach(function (r) { total = round(total + r.amount); });
-    return {date:date, deadline:deadline, saved:actual.saved, projected:total, target:actual.target, gap:round(Math.max(0, actual.target - total)), rows:rows, warnings:warnings, routed:routed, onTrack:actual.target > 0 && total >= actual.target - 0.004};
+    return {date:date, deadline:deadline, saved:saved, projected:total, target:actual.target, gap:round(Math.max(0, actual.target - total)), rows:rows, warnings:warnings, routed:routed, onTrack:actual.target > 0 && total >= actual.target - 0.004};
   }
   function purchaseCheck(db,p,date,budgetId,amount,goalId,funding) {
     amount=round(+amount||0);var per=periodAt(db,p,date),state=budgetState(db,p,per),s=state[budgetId],t=today(db,p,date),g=goals(db,p,date).filter(function(x){return x.id===goalId;})[0],forecast=g&&g.due?goalForecast(db,p,g.id,date,g.due):null;
@@ -2204,7 +2204,8 @@
     flows(db,date,addDays(per.next,-1)).forEach(function(f){if(f.account===home&&f.amount<0)committed-=f.amount;});
     unseenBills(db,p,date).forEach(function(r){if(r.account===home)committed+=r.amount;});
     Object.keys(t.plan.setAside||{}).forEach(function(id){if((db.byId[id]||{}).account===home)committed+=t.plan.setAside[id];});
-    var ownCash=Math.max(0,(bal[home]||0)-homeOther-committed),cash=round(Math.min(left,Math.max(ownCash,t.cashFree-other,0))),excess=round(Math.max(0,amount-left));
+    var cfg=spareRules(db,p,date),buffer=home===mainOf(db,p)&&cfg?Math.max(0,+cfg.buffer||0):0;
+    var ownCash=Math.max(0,(bal[home]||0)-homeOther-committed-buffer),cash=round(Math.min(left,Math.max(ownCash,t.cashFree-other,0))),excess=round(Math.max(0,amount-left));
     var accessible=0;if(g)goalAccIds(g).forEach(function(id){var a=db.byId[id];if(a&&a.owner===p&&!/^(lisa|pension|credit)$/.test(a.kind))accessible+=Math.max(0,bal[id]||0);});
     var fromGoal=funding==='goal',impact=fromGoal?amount:excess;
     return {amount:amount,budget:budgetId,budgetLeft:left,leftAfter:round(left-amount),cashAvailable:cash,budgetFits:amount<=left+.004,cashFits:amount<=cash+.004,excess:excess,funding:fromGoal?'goal':'budget',goal:g?{id:g.id,name:g.name,saved:g.saved,accessible:round(accessible),projected:forecast?forecast.projected:null,after:forecast?round(forecast.projected-impact):null,target:g.target,due:g.due,impact:impact}:null,unknown:t.todo.some(function(x){return x.type==='warn';})||db.transactions.some(function(x){return x.person===p&&x.review&&x.date<=date;})};
@@ -2216,7 +2217,7 @@
     return {principal:principal,apr:apr,months:months,payment:round(payment),total:round(payment*months),interest:round(payment*months-principal),rate:r};
   }
   function goalScenario(db,p,goalId,date,input) {
-    input=input||{};var g=goals(db,p,date).filter(function(x){return x.id===goalId;})[0],deadline=parseDate(input.deadline||g&&g.due),buy=parseDate(input.buyDate||deadline),base=g&&goalForecast(db,p,goalId,date,deadline);
+    input=input||{};var g=goals(db,p,date).filter(function(x){return x.id===goalId;})[0],deadline=parseDate(input.deadline||g&&g.due),buy=parseDate(input.buyDate||deadline),base=g&&goalForecast(db,p,goalId,date,deadline,true);
     if(!g||!base||!buy||buy<date||buy>deadline)return null;
     function moneyInput(k){var v=+input[k]||0;return isFinite(v)&&v>=0&&v<=1000000?round(v):null;}
     var price=moneyInput('price'),deposit=moneyInput('deposit'),extra=moneyInput('extra'),running=moneyInput('running'),sale=moneyInput('sale'),loan=moneyInput('loan'),repay=moneyInput('repay'),fees=moneyInput('fees');
@@ -2224,7 +2225,7 @@
     var financed=input.mode==='finance',quote=financed?financeQuote(Math.max(0,price-deposit),input.apr,input.months):null;if(financed&&(!quote||deposit>price))return null;
     var saleDate=sale?parseDate(input.saleDate):'',loanDate=loan?parseDate(input.loanDate):'',repayDate=repay?parseDate(input.repayDate):'';
     if(sale&&(!saleDate||saleDate<date)||loan&&(!loanDate||loanDate<date)||repay&&(!repayDate||repayDate<loanDate))return null;
-    var rows=[],upfront=financed?deposit:price,atBuy=goalForecast(db,p,goalId,date,buy),paydays=payDates(db,p,addDays(date,1),addDays(deadline,1));
+    var rows=[],upfront=financed?deposit:price,atBuy=goalForecast(db,p,goalId,date,buy,true),paydays=payDates(db,p,addDays(date,1),addDays(deadline,1));
     paydays.forEach(function(d){if(extra)rows.push({date:d,name:'Extra saving per future payday',amount:extra});});
     if(sale)rows.push({date:saleDate,name:'Possible sale proceeds',amount:sale});if(loan)rows.push({date:loanDate,name:'Possible family loan received',amount:loan});if(repay)rows.push({date:repayDate,name:'Family loan repaid',amount:-repay});
     rows.push({date:buy,name:financed?'Deposit and upfront fees':'Cash purchase and upfront costs',amount:-round(upfront+fees)});
@@ -2234,8 +2235,8 @@
     dates.forEach(function(d){if(quote&&payments<quote.months){var charge=balance*quote.rate,paid=payments===quote.months-1?balance+charge:Math.min(balance+charge,quote.payment);balance=Math.max(0,balance+charge-paid);interest+=charge;payments++;rows.push({date:d,name:'Finance payment',amount:-round(paid)});}if(running)rows.push({date:d,name:'Additional running costs above current budget',amount:-running});});
     var delta=rows.filter(function(r){return r.date<=deadline;}).reduce(function(n,r){return n+r.amount;},0),beforeBuy=rows.filter(function(r){return r.date<=buy&&r.amount>0||r.date<buy&&r.amount<0;}).reduce(function(n,r){return n+r.amount;},0),available=round(atBuy.projected+beforeBuy),required=round(upfront+fees);
     var shortfalls=[],runningDelta=0,dated=rows.filter(function(r){return r.date<=deadline;}).sort(function(a,b){return a.date.localeCompare(b.date);}),byDay=dict();dated.forEach(function(r){byDay[r.date]=(byDay[r.date]||0)+r.amount;});
-    Object.keys(byDay).sort().forEach(function(day){runningDelta=round(runningDelta+byDay[day]);var f=goalForecast(db,p,goalId,date,day),cash=round(f.projected+runningDelta);if(cash<-.004)shortfalls.push({date:day,amount:-cash});});
-    return {baseline:base.projected,after:round(base.projected+delta),deadline:deadline,buyDate:buy,available:available,required:required,gap:round(Math.max(0,required-available)),price:price,quote:quote,financeRemaining:round(balance),payments:payments,interestByDate:round(interest),familyRemaining:loanDate&&loanDate<=deadline?round(loan-(repayDate&&repayDate<=deadline?repay:0)):0,rows:dated,shortfalls:shortfalls,conditional:!!(sale||loan),extraPaydays:paydays.length};
+    Object.keys(byDay).sort().forEach(function(day){runningDelta=round(runningDelta+byDay[day]);var f=goalForecast(db,p,goalId,date,day,true),cash=round(f.projected+runningDelta);if(cash<-.004)shortfalls.push({date:day,amount:-cash});});
+    return {baseline:base.projected,after:round(base.projected+delta),excluded:round(Math.max(0,g.saved-base.saved)),warnings:base.warnings,deadline:deadline,buyDate:buy,available:available,required:required,gap:round(Math.max(0,required-available)),price:price,quote:quote,financeRemaining:round(balance),payments:payments,interestByDate:round(interest),familyRemaining:loanDate&&loanDate<=deadline?round(loan-(repayDate&&repayDate<=deadline?repay:0)):0,rows:dated,shortfalls:shortfalls,conditional:!!(sale||loan),extraPaydays:paydays.length};
   }
   function addMonthsDay(day,n){var y=+day.slice(0,4),m=+day.slice(5,7)-1+n;return dayInMonth(y+Math.floor(m/12),((m%12)+12)%12,+day.slice(8));}
   function reconcile(db,p,date,per) {
@@ -2249,11 +2250,13 @@
       else if(a.kind==='lisa'||a.kind==='pension'||a.kind==='credit'){row.status='Provider balance confirmed';row.investment=a.kind!=='credit';}
       else if(!open){row.status='Opening balance needed';issues.push({text:a.name+' has no earlier opening balance to compare',kind:'opening',account:a.id});}
       else{row.open={date:open.date,amount:open.amount,id:open.id,updated:open.updated||0};var expected=open.amount;flows(db,open.date,close.date).forEach(function(f){if(f.account===a.id&&(facts[f.src]||paid[f.src]))expected+=f.amount;});row.expected=round(expected);row.difference=round(close.amount-row.expected);row.status=Math.abs(row.difference)<.005?'Balances agree':'Difference to investigate';if(Math.abs(row.difference)>.004)issues.push({text:a.name+' differs by '+money(row.difference),kind:'difference',account:a.id});}
+      if(close&&close.date>=per.start&&close.date<end){row.stale=true;issues.push({text:a.name+' needs a closing balance through '+nice(end)+' (last checked '+nice(close.date)+')',kind:'stale',account:a.id});}
       accounts.push(row);
     });
     var categories=budgetState(db,p,per),budgetRows=Object.keys(categories).map(function(k){var x=categories[k];return {id:k,name:x.budget.name,allowance:x.avail,spent:x.spent,left:x.left};}),out=outgoings(db,p,per,end);
     out.filter(function(r){return r.status==='late'&&r.date<=end&&r.kind!=='payment';}).forEach(function(r){issues.push({text:r.name+' has no confirmed payment',kind:'bill'});});
-    var actual=recordedSaving(db,p,per.start,end),payload=JSON.stringify({accounts:accounts,budgets:budgetRows,issues:issues,saving:actual,receipts:db.transactions.filter(function(x){return x.person===p&&x.date>=per.start&&x.date<=end;}).map(function(x){return [x.id,x.amount,x.budget,x.account,x.billId,x.refundOf,x.updated];})}),h=2166136261;
+    function evidence(rows,owns){return rows.filter(function(x){return owns(x)&&x.date>=per.start&&x.date<=end;}).slice().sort(function(a,b){return String(a.id).localeCompare(String(b.id));});}
+    var actual=recordedSaving(db,p,per.start,end),payload=JSON.stringify({through:end,accounts:accounts,budgets:budgetRows,issues:issues,saving:actual,receipts:evidence(db.transactions,function(x){return x.person===p;}),moves:evidence(db.moves,function(x){return x.person===p;}),settlements:evidence(db.settlements,function(x){return x.from===p||x.to===p;})}),h=2166136261;
     for(var i=0;i<payload.length;i++){h^=payload.charCodeAt(i);h=Math.imul(h,16777619);}
     var signature=(h>>>0).toString(16)+'-'+payload.length,stored=null;try{stored=JSON.parse(setting(db,p,'reconcile.'+per.start,''));}catch(e){}
     return {period:per,through:end,accounts:accounts,budgets:budgetRows,issues:issues,saved:actual,signature:signature,review:stored,current:per.next>date,changed:!!stored&&stored.signature!==signature};
@@ -2267,7 +2270,7 @@
       if (x.budget && !db.byId[x.budget]) add("budget", (x.note || "Payment") + " refers to a missing budget", x.id);
       if (x.refundOf && !db.transactions.some(function (a) { return a.id === x.refundOf; })) add("refund", "A refund refers to a missing purchase", x.id);
     });
-    unseenBills(db, p, date).filter(function (r) { return r.date >= per.start; }).forEach(function (r) { add("bill", r.name + " · " + nice(r.date) + " · receipt not found", r.item || r.id); });
+    unseenBills(db, p, date).filter(function (r) { return r.date >= per.start && r.date < date; }).forEach(function (r) { add("bill", r.name + " · " + nice(r.date) + " · receipt not found", r.item || r.id); });
     var pl = planFor(db, p, per);
     if (pl.shortfall > 0.004) add("shortfall", "This period's plan exceeds its funding by " + money(pl.shortfall));
     accountsOf(db, p).filter(function (a) { return /^(credit|isa|lisa)$/.test(a.kind); }).forEach(function (a) { var latest = db.valuations.filter(function (v) { return v.account === a.id && v.date <= date; }).sort(function (x,y) { return x.date < y.date ? 1 : -1; })[0]; if (!latest || diff(latest.date, date) > 31) add("balance", a.name + " needs a current balance", a.id); });
