@@ -34,7 +34,7 @@
       document.head.appendChild(style);
       style.textContent += ".c-activity .li,.c-guide-sheet .li{align-items:flex-start}.c-budget-row{align-items:start}.c-budget-row strong,.c-budget-row .c-amount{font-size:1em;line-height:1.4}.c-budget-row .c-amount{display:block;font-size:clamp(14px,4.8vw,1em)}.c-budget-row small{line-height:1.4;min-height:1.4em}.c-guide{color:var(--hero-ink);background:var(--hero);position:relative}.c-guide-top{display:flex;justify-content:space-between;align-items:center;gap:12px}.c-guide-top>span{font-size:13px;font-weight:700}.c-guide-link{border:1px solid color-mix(in srgb,var(--hero-ink) 35%,transparent);border-radius:20px;padding:6px 10px;font-size:11px!important}.c-guide-total{display:flex;align-items:baseline;gap:9px;margin:10px 0 16px}.c-guide-total .big{margin:0;font-size:40px}.c-guide-total .small{font-size:13px;opacity:.9}.c-guide-parts{border-color:color-mix(in srgb,var(--hero-ink) 25%,transparent);align-items:stretch}.c-guide-parts>div{display:flex;flex-direction:column;justify-content:space-between;gap:7px}.c-guide-parts span{opacity:1;min-height:3em}.c-guide-parts b{line-height:1.4}.c-guide-until{font-size:12px;margin-top:10px;opacity:.9}.c-choice-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin:18px 0}.c-choice-grid .btn{min-width:0;font-size:13px;padding:12px 8px;white-space:normal}.c-choice-list{display:grid;gap:10px}.c-partner-overview{display:grid;gap:0}.c-partner-overview .li{align-items:start}.c-partner-overview .num{line-height:1.4}.c-budget-caption{font-size:12px;color:var(--muted);margin:10px 0 0;line-height:1.5}";
       style.textContent += ".c-guide{padding:18px}.c-guide-top{margin-bottom:14px}.c-guide-link{border:0;padding:0;font-size:12px!important}.c-guide-main{display:flex;align-items:center;justify-content:space-between;gap:14px;margin-bottom:18px}.c-guide-total{display:block;margin:0}.c-guide-total .big{font-size:42px;line-height:1.15;letter-spacing:-1.2px}.c-guide-total .small{display:block;margin-top:4px;font-size:13px;opacity:1}.c-guide-payday{display:grid;grid-template-columns:24px auto;align-items:center;column-gap:8px;text-align:left}.c-guide-payday svg{grid-row:1/4}.c-guide-payday span{display:block;font-size:11px;line-height:1.5}.c-guide-payday strong{display:block;font-size:14px;line-height:1.5}.c-guide-parts{border:0;padding:0;gap:8px}.c-guide-parts>div{display:grid;grid-template-rows:minmax(34px,auto) auto minmax(28px,auto) 4px;align-content:start;justify-content:normal;gap:7px;background:color-mix(in srgb,var(--hero-ink) 4%,var(--hero));border:1px solid color-mix(in srgb,var(--hero-ink) 18%,transparent);border-radius:12px;padding:11px 9px}.c-guide-parts>div.is-active{border-color:color-mix(in srgb,var(--hero-ink) 65%,transparent)}.c-guide-parts>div.is-over{border-style:dashed}.c-guide-parts .c-guide-icon{height:24px;min-height:0;display:flex;align-items:center}.c-guide-parts .c-guide-name{font-size:12px;font-weight:650;line-height:1.4;min-height:0}.c-guide-parts b{font-size:clamp(14px,4.6vw,18px);line-height:1.3;white-space:nowrap;align-self:start}.c-guide-parts .c-guide-state{font-size:10px;line-height:1.4;min-height:0;align-self:start}.c-guide-parts .c-guide-meter{height:4px;min-height:0;border-radius:3px;background:color-mix(in srgb,var(--hero-ink) 14%,transparent);overflow:hidden;align-self:end}.c-guide-meter i{display:block;height:100%;background:currentColor;border-radius:3px}.c-guide-context{display:flex;align-items:center;gap:6px;margin-top:13px;font-size:12px;line-height:1.5}.c-guide-context svg{flex:none}.c-guide-context span{min-width:0}@media(max-width:340px){.c-guide{padding:15px}.c-guide-main{gap:8px}.c-guide-total .big{font-size:36px}.c-guide-payday{column-gap:5px;grid-template-columns:19px auto}.c-guide-payday strong{font-size:12px}.c-guide-parts{gap:6px}.c-guide-parts>div{padding:10px 7px}.c-guide-parts .c-guide-name{font-size:11px}}";
-      style.textContent += ".c-guide-parts .c-guide-category{display:flex;align-items:center;gap:5px;min-height:34px}.c-guide-parts .c-guide-icon{flex:none;width:21px}.c-guide-parts .c-guide-state{min-height:28px}.c-guide-parts .c-guide-name{min-width:0}@supports(grid-template-rows:subgrid){.c-guide-parts>div{grid-row:span 4;grid-template-rows:subgrid}}";
+      style.textContent += ".c-guide-rate{display:block;font-size:12px;line-height:1.5;margin-top:7px}.c-allowance-detail{padding:9px 0 13px;border-bottom:1px solid var(--line2)}.c-allowance-detail:last-child{border:0}.c-allowance-detail .li{padding-bottom:5px}.c-allowance-detail p{margin:4px 0}.c-guide-parts .c-guide-category{display:flex;align-items:center;gap:5px;min-height:34px}.c-guide-parts .c-guide-icon{flex:none;width:21px}.c-guide-parts .c-guide-state{min-height:28px}.c-guide-parts .c-guide-name{min-width:0}@supports(grid-template-rows:subgrid){.c-guide-parts>div{grid-row:span 4;grid-template-rows:subgrid}}";
       A.TITLES.money = function () {
         return ["Money", ""];
       };
@@ -122,41 +122,12 @@
             .join("")
         );
       }
-      function guideParts(t) {
-        var list = t.tiles.filter(function (x) {
-            return x.day !== null && x.mode !== "saving";
-          }),
-          total = list.reduce(function (n, x) {
-            return n + Math.max(0, x.left);
-          }, 0),
-          used = 0,
-          lastFunded = list.reduce(function (last, x, i) { return x.left > 0.004 ? i : last; }, -1);
-        return list.map(function (x, i) {
-          var a =
-            x.left <= 0.004 ? 0 : i === lastFunded
-              ? B.round(Math.max(0, t.safe - used))
-              : B.round(total ? (Math.max(0, x.left) / total) * t.safe : 0);
-          a = Math.min(a, Math.max(0, B.round(t.safe - used)));
-          used = B.round(used + a);
-          return { name: x.name, left: x.left, amount: a, limit: x.amount };
-        });
-      }
+      function guideParts(t) { return B.dailyAllowances(db(),me(),now(),t).parts; }
       ACT.herosheet = function () {
-        var t = B.today(db(), me(), now());
-        A.openSheet(
-          '<h2>Daily guide</h2><div class="c-guide-sheet list">' +
-            guideParts(t)
-              .map(function (x) {
-                return A.li(
-                  E(x.name),
-                  x.left < -0.004 ? M(-x.left) + " over budget" : M(Math.max(0, x.left)) + " left until payday",
-                  A.num(M(x.amount) + " / day"),
-                );
-              })
-              .join("") +
-            '</div><p class="small muted">A guide for pacing these budgets until payday. Spending is still deducted from its own category.</p>' +
-            button("Got it", "sheetclose", undefined, "wide"),
-        );
+        var t=B.today(db(),me(),now()),bank=B.dailyAllowances(db(),me(),now(),t);
+        A.openSheet('<h2>Daily guide</h2><p class="small muted">Day '+bank.elapsed+' of '+bank.days+' · '+M(bank.daily)+' daily allowance</p><div class="c-guide-sheet list">'+bank.parts.map(function(x){
+          return '<div class="c-allowance-detail">'+A.li(E(x.name),M(x.daily)+' per day',A.num(M(x.available)))+'<p class="small muted">'+(x.carry?M(x.carry)+' carried + ':'')+M(x.earned)+' built up − '+M(x.spent)+' spent</p>'+(x.early>.004?'<p class="small warn">'+M(x.early)+' used from future days. This category builds back up before more becomes available.</p>':'')+'<p class="small muted">'+(x.left<-.004?M(-x.left)+' over budget':M(x.left)+' left in the full pay-period budget')+'</p></div>';
+        }).join('')+'</div>'+(bank.cashLimited?'<p class="small warn">'+M(bank.builtUp)+' has built up in your allowances; available cash limits spending to '+M(bank.available)+'.</p>':'')+'<p class="small muted">Unused allowance builds up each day. Spending reduces only its own category. These are budget allowances, separate from your bank-pot balances. Your existing payday rollover settings still apply.</p>'+button('Got it','sheetclose',undefined,'wide'));
       };
       function feasibleActions(t) {
         var balance = B.balances(db(), now()),
@@ -324,6 +295,7 @@
           return oldToday();
         var t = B.today(d, p, now()),
           parts = guideParts(t),
+          bank = B.dailyAllowances(d,p,now(),t),
           html = "";
         if (S.storageError || S.lastError)
           html += A.li(
@@ -335,25 +307,20 @@
           );
         var days = Math.max(0, B.diff(now(), t.nextPay)),
           paydayWord = days === 0 ? "Today" : days === 1 ? "Tomorrow" : days + " days",
-          shortName = function (name) { return name.replace(/^Fun and spending$/i, "Fun"); },
-          active = parts.filter(function (x) { return x.amount > 0.004; }),
-          context = t.budgetDay > t.cashDay + .004 ? "Available cash is limiting today’s guide"
-            : active.length === 1 ? "Today’s guide comes from " + shortName(active[0].name)
-            : !active.length ? "No daily allowance available"
+          shortName = function (name) { return name.replace(/^Fun and spending$/i, "Fun").replace(/^Entertainment$/i,"Ents"); },
+          active = parts.filter(function (x) { return x.available > 0.004; }),
+          early = parts.filter(function(x){return x.early>.004;}),
+          context = bank.cashLimited ? "Available cash is limiting what you can spend"
             : t.fundingInMain > .004 ? "Includes budget money still in Main — sort payday to fund your pots"
-            : "Split across your daily budgets";
-        html +=
-          '<button type="button" id="c-guide" class="hero card c-guide" data-a="herosheet"><div class="c-guide-top"><span>Daily guide</span><span class="c-guide-link">View breakdown ↗</span></div><div class="c-guide-main"><div class="c-guide-total"><div class="big">' +
-          M(t.safe) +
-          '</div><span class="small">per day</span></div><div class="c-guide-payday">' + A.icon("cal",22) + '<span>Payday</span><strong>' + E(paydayWord) + '</strong><span>' + E(B.nice(t.nextPay)) + '</span></div></div><div class="c-guide-parts">' +
-          parts.map(function (x) {
-            var over = x.left < -0.004, left = Math.max(0,x.left),
-              fill = left ? Math.min(100, Math.round(x.limit > 0 ? left / x.limit * 100 : 100)) : 0,
-              state = over ? M(-x.left) + " over" : left > 0.004 ? M(left) + " left" : "Budget used",
-              symbol = /food|grocer/i.test(x.name) ? "basket" : /fuel|travel|petrol/i.test(x.name) ? "fuel" : "spark";
-            return '<div class="' + (over ? "is-over" : x.amount > 0.004 ? "is-active" : "") + '"><span class="c-guide-category"><span class="c-guide-icon">' + A.icon(symbol,21) + '</span><span class="c-guide-name">' + E(shortName(x.name)) + '</span></span><b>' + M(x.amount) + '</b><span class="c-guide-state">' + state + '</span><span class="c-guide-meter" aria-hidden="true"><i style="width:' + fill + '%"></i></span></div>';
-          }).join("") +
-          '</div><div class="c-guide-context">' + A.icon("info",14) + '<span>' + E(context) + '</span></div></button>';
+            : early.length ? shortName(early[0].name)+" has used some future days’ allowance"
+            : active.length===1 ? "Built up in "+shortName(active[0].name)
+            : "Unused allowances build up each day";
+        html += '<button type="button" id="c-guide" class="hero card c-guide" data-a="herosheet"><div class="c-guide-top"><span>Daily guide</span><span class="c-guide-link">View breakdown ↗</span></div><div class="c-guide-main"><div class="c-guide-total"><div class="big">'+M(bank.available)+'</div><span class="small">built up to spend</span><span class="c-guide-rate">'+M(bank.daily)+' daily allowance</span></div><div class="c-guide-payday">'+A.icon("cal",22)+'<span>Payday</span><strong>'+E(paydayWord)+'</strong><span>'+E(B.nice(t.nextPay))+'</span></div></div><div class="c-guide-parts">'+parts.map(function(x){
+          var over=x.left<-.004,fill=x.limit>0?Math.min(100,Math.round(x.available/x.limit*100)):0,
+              state=over?M(-x.left)+" over budget":x.left<.005?"Budget used":x.early>.004?M(x.early)+" used early":M(x.daily)+" per day",
+              symbol=/food|grocer/i.test(x.name)?"basket":/fuel|travel|petrol/i.test(x.name)?"fuel":"spark";
+          return '<div class="'+(over||x.early>.004?"is-over":x.available>.004?"is-active":"")+'"><span class="c-guide-category"><span class="c-guide-icon">'+A.icon(symbol,21)+'</span><span class="c-guide-name">'+E(shortName(x.name))+'</span></span><b>'+M(x.available)+'</b><span class="c-guide-state">'+state+'</span><span class="c-guide-meter" aria-hidden="true"><i style="width:'+fill+'%"></i></span></div>';
+        }).join('')+'</div><div class="c-guide-context">'+A.icon("info",14)+'<span>'+E(context)+'</span></div></button>';
         if (t.plan.shortfall > 0.004)
           html += A.li(
             "Budget needs attention",
@@ -1085,7 +1052,7 @@
         var t = B.today(db(), me(), now()), q = A.person(A.partner()).name || "Your partner";
         var example = '<div class="c-budget-head"><span>Budget</span><span>Spent</span><span>Left</span></div><div class="c-budget-row"><span><strong>Food</strong><small>£200 budget</small></span><span>£45</span><span>£155</span></div>';
         return [
-          {t:"Your daily guide",s:"This is a pace for Food, Fuel and Fun until payday, limited by available cash after commitments. Each category still has its own budget. Tap the card to see the per-day breakdown.",m:'<div class="hero card"><div class="big">'+M(t.safe)+'</div><span>per day</span></div>',show:"guide"},
+          {t:"Your daily guide",s:"Each category builds up its own allowance every day. A week without spending leaves seven days of allowance available. Buying something reduces only that category; using future days is shown as used early. Tap for the daily rates and calculation. Cash and your existing payday rollover rules still apply.",m:'<div class="hero card"><div class="big">'+M(B.dailyAllowances(db(),me(),now(),t).available)+'</div><span>built up to spend</span></div>',show:"guide"},
           {t:"What needs doing",s:"To do comes before the budget. It shows bank moves you can actually fund and payments to check. Budgie reads your bank; it never moves money for you. A budget going over does not, by itself, mean Main needs emergency money.",m:'<p>Check → move in your bank → confirm</p>',show:"actions"},
           {t:"Budget, Spent and Left",s:"Budget is the allowance for this pay period. Spent is your share of recorded expenses, less linked refunds. Left is the difference; an overspend stays visible. Tap a category to see the expenses behind it.",m:example,show:"budget"},
           {t:"Your payments",s:"Activity starts with the most recent receipts. Money in and Money out are filters; Due next contains scheduled payments. Opening a receipt lets you check its budget, link a refund or match a bill.",m:'<p>Recent · Due next<br>All · Money out · Money in</p>',show:"activity"},
@@ -1120,7 +1087,8 @@
         var next = sm.nextPay ? 'Next payday · ' + B.nice(sm.nextPay) : "";
         var overview = '<section id="c-partner"><div class="card"><div class="row"><h2>' + E(A.person(q).name) + '</h2></div><p class="small muted">' + E(next) + '</p><div class="list c-partner-overview">';
         overview += sm.mainBalance ? A.li("Current account", "Last balance · " + E(B.nice(sm.mainBalance.date)), A.num(M(sm.mainBalance.amount))) : A.li("Current account", "Bank balance isn’t shared", "");
-        if (sm.safe !== undefined) overview += A.li("Daily guide", "Cash-limited budget pace", A.num(M(sm.safe)));
+        if(sm.accumulated) overview+=A.li("Built up to spend",M(sm.accumulated.daily)+" daily allowance"+(sm.accumulated.cashLimited?" · cash limited":""),A.num(M(sm.accumulated.available)));
+        else if (sm.safe !== undefined) overview += A.li("Daily guide", "Cash-limited budget pace", A.num(M(sm.safe)));
         if (sm.billDetails && sm.billDetails.length) overview += '<details class="trust-details"><summary>Bill breakdown · ' + M(sm.bills || sm.billDetails.reduce(function(n,l){return n+l.amount;},0)) + '</summary><div class="list">' + sm.billDetails.map(function(l){return A.li(E(l.name), E(l.date ? B.nice(l.date) : "Set aside this payday") + (l.estimate ? " · estimate" : ""), A.num(M(l.amount)));}).join("") + '</div></details>';
         if (sm.saved > 0.004) overview += A.li("Saving this pay period", "Planned contributions", A.num(M(sm.saved)));
         overview += '</div></div></section>';

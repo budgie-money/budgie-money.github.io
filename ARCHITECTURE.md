@@ -222,6 +222,16 @@ The 1.6.1 live check exposed an older pot/carry mismatch. Spending pots now also
 
 Client 1.6.3 also recomputes the purchase/scenario result basis on render. A changed date or synced financial fact that changes the result hides the old advice and requires a fresh comparison. Identical financial results remain usable. This client-only correction retains engine 1.6.2 and deployment version 32.
 
+## Accumulated category allowances (1.7.0)
+
+`dailyAllowances` derives an envelope for each paced spending category: its existing carry-in plus the fraction of this period's allocation earned through today, minus actual category spending through today. The first day receives one day's allowance. Weekly spending categories also build daily in this view. One-off and saving categories are excluded. Purchases, refunds and own-account transfers use the existing ledger; no daily records, bank movements or budget edits are created.
+
+Each daily rate comes from that category's original period allocation and does not rebase when another category is spent. Accrual rounds the cumulative fraction, so final pennies settle to the exact period allocation. Early spending reduces only that envelope: spendable allowance is zero until it catches up, with the future allowance used shown separately. Existing per-category rollover settings and carry caps are retained, as requested.
+
+The Today guide shows accumulated amounts, daily rates and the next payday. Its combined spendable headline is capped by available cash after commitments; category balances remain visible when cash limits the total. The drilldown shows carry, earned amount, spending and full-period remainder. Purchase previews distinguish an in-budget purchase that uses future days from one covered by accumulated allowance. Partner totals include a sanitized accumulated summary only under the existing totals-sharing permission; no bank balance permission is added.
+
+`test/allowance.test.js` independently checks the £15/day → £105/week example, category isolation, early use, refunds, carry, pennies, partial periods, future dates, cash limits and privacy. `test/allowance-ui.test.js` exercises the same example and the next day's original rates through the UI across responsive themes.
+
 The LISA guard aggregates confirmed contributions across that person's LISAs, excludes bonuses, fees and transfers between LISAs, and never restores contribution room for a withdrawal. It reserves earlier planned and known future direct contributions before capping a new saving line. Recorded allocations stay intact, including an actual overpayment. A provider statement representing multiple partial transfers is reconciled once. The guard's accuracy depends on complete provider history and the paid-before-tracking figure; it does not connect Moneybox or change provider instructions.
 
 `purchaseCheck` distinguishes an existing spending allowance from taking money directly from a goal. An in-budget purchase does not reduce a forecast that already reserves the full budget again. Cash belonging to another category is protected. A purchase over allowance shows the conditional impact of funding the excess from the chosen goal. Goal cash excludes LISA, pension and credit balances.

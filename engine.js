@@ -6,7 +6,7 @@
   else root.Budgie = factory();
 })(this, function () {
   "use strict";
-  var VERSION = "1.6.2";
+  var VERSION = "1.7.0";
 
   // ---------- dates ----------
   function D(s) { var p = String(s).split("-"); return new Date(Date.UTC(+p[0], +p[1] - 1, +p[2])); }
@@ -1751,6 +1751,18 @@
       nextPayAmount: (nplan.lines.filter(function (l) { return l.isPay; })[0] || {}).amount || 0, spare: spare,
       todo: todo(db, p, date), coming: coming(db, p, date, 14)};
   }
+  // Daily allowance envelopes: the original period allocation accrues independently
+  // in each category. Purchases never rebase the other categories' earning rate.
+  // Carry-in is available on day one; existing rollover rules remain in budgetState.
+  function dailyAllowances(db,p,date,t) {
+    t=t||today(db,p,date);var per=t.period,from=maxS(per.start,startOf(db,p)),days=Math.max(1,diff(from,per.next)),elapsed=Math.max(0,Math.min(days,diff(from,date)+1)),state=budgetState(db,p,per),parts=[];
+    Object.keys(state).forEach(function(id){var s=state[id],mode=s.budget.mode||'daily';if(!s.current||!isSpend(db,s.budget)||mode==='oneoff')return;
+      var base=Math.max(0,s.amount),earned=round(base*elapsed/days),spent=spentOn(db,p,s.budget,from,minS(addDays(date,1),per.next)),balance=round(s.carryIn+earned-spent),left=round(s.avail-spent);
+      parts.push({id:id,name:s.budget.name,daily:round(base/days),carry:s.carryIn,earned:earned,spent:spent,balance:balance,available:round(Math.max(0,Math.min(balance,left))),early:round(Math.max(0,-balance)),left:left,limit:s.avail,days:elapsed});
+    });
+    var available=round(parts.reduce(function(n,x){return n+x.available;},0)),cashAvailable=round(Math.min(available,Math.max(0,t.cashFree)));
+    return {date:date,period:per,from:from,days:days,elapsed:elapsed,parts:parts,daily:round(parts.reduce(function(n,x){return n+x.daily;},0)),builtUp:available,available:cashAvailable,cashLimited:cashAvailable<available-.004};
+  }
   function coming(db, p, date, days) {
     var to = addDays(date, days + 1), out = [], from = addDays(date, 1);
     var add = function (o, kind, name, amount, account, sign) { out.push({date: o.date, key: o.key, item: o.item.id, table: kind, name: name, amount: round(amount), sign: sign, account: accName(db, account), changed: o.changed}); };
@@ -2208,7 +2220,8 @@
     var ownCash=Math.max(0,(bal[home]||0)-homeOther-committed-buffer),cash=round(Math.min(left,Math.max(ownCash,t.cashFree-other,0))),excess=round(Math.max(0,amount-left));
     var accessible=0;if(g)goalAccIds(g).forEach(function(id){var a=db.byId[id];if(a&&a.owner===p&&!/^(lisa|pension|credit)$/.test(a.kind))accessible+=Math.max(0,bal[id]||0);});
     var fromGoal=funding==='goal',impact=fromGoal?amount:excess;
-    return {amount:amount,budget:budgetId,budgetLeft:left,leftAfter:round(left-amount),cashAvailable:cash,budgetFits:amount<=left+.004,cashFits:amount<=cash+.004,excess:excess,funding:fromGoal?'goal':'budget',goal:g?{id:g.id,name:g.name,saved:g.saved,accessible:round(accessible),projected:forecast?forecast.projected:null,after:forecast?round(forecast.projected-impact):null,target:g.target,due:g.due,impact:impact}:null,unknown:t.todo.some(function(x){return x.type==='warn';})||db.transactions.some(function(x){return x.person===p&&x.review&&x.date<=date;})};
+    var accrued=dailyAllowances(db,p,date,t).parts.filter(function(x){return x.id===budgetId;})[0];
+    return {amount:amount,budget:budgetId,budgetLeft:left,leftAfter:round(left-amount),cashAvailable:cash,budgetFits:amount<=left+.004,cashFits:amount<=cash+.004,accrued:accrued?{available:accrued.available,after:round(Math.max(0,accrued.balance-amount)),earlyAfter:round(Math.max(0,amount-accrued.balance)),usesFuture:amount>accrued.available+.004}:null,excess:excess,funding:fromGoal?'goal':'budget',goal:g?{id:g.id,name:g.name,saved:g.saved,accessible:round(accessible),projected:forecast?forecast.projected:null,after:forecast?round(forecast.projected-impact):null,target:g.target,due:g.due,impact:impact}:null,unknown:t.todo.some(function(x){return x.type==='warn';})||db.transactions.some(function(x){return x.person===p&&x.review&&x.date<=date;})};
   }
   function financeQuote(principal,apr,months) {
     principal=round(+principal||0);apr=+apr||0;months=Math.floor(+months||0);
@@ -2578,7 +2591,7 @@
     // "on track" or "over budget" says how the money's going, so it's only there when some of it is shared
     if (share("totals", true) || share("cats", true)) out.status = t.status;
     // saving as the Money tab counts it: money put by for a yearly bill is bills money, not saved
-    if (share("totals", true)) { out.safe = t.safe; out.saved = kinds(t.plan.lines).save; out.bills = kinds(t.plan.lines).bill; }
+    if (share("totals", true)) { var allowance=dailyAllowances(db,p,date,t);out.accumulated={available:allowance.available,builtUp:allowance.builtUp,daily:allowance.daily,cashLimited:allowance.cashLimited};out.safe = t.safe; out.saved = kinds(t.plan.lines).save; out.bills = kinds(t.plan.lines).bill; }
     if (share("cats", true)) out.tiles = t.tiles.map(function (x) { return {name: x.name, spent: x.spent, amount: x.amount, left: x.left, pct: x.pct, paceMark: x.paceMark, mode: x.mode}; });
     // Account observations are only shared with the existing full payment/balance permission.
     // A budget remainder is not evidence of that much money in the bank.
@@ -2611,7 +2624,7 @@
   }
 
   return {
-    VERSION: VERSION, TABLES: TABLES, planningRule:planningRule, confirmedLisa:confirmedLisa, purchaseCheck:purchaseCheck, financeQuote:financeQuote, goalScenario:goalScenario, reconcile:reconcile,
+    VERSION: VERSION, TABLES: TABLES, dailyAllowances:dailyAllowances, planningRule:planningRule, confirmedLisa:confirmedLisa, purchaseCheck:purchaseCheck, financeQuote:financeQuote, goalScenario:goalScenario, reconcile:reconcile,
     load: load, payPending: payPending, occurrences: occurrences, occurrencesAll: occurrencesAll, outgoings: outgoings, scheduleDates: scheduleDates, isWorkingDay: isWorkingDay, bankHolidays: bankHolidays,
     periods: periods, periodAt: periodAt, prevPeriod: prevPeriod, nextPeriod: nextPeriod, planFor: planFor, payday: payday, paydaySteps:paydaySteps, netParts:netParts, partialNetKey:partialNetKey,
     budgetState: budgetState, balances: balances, flows: flows, todo: todo, between: between, today: today, coming: coming,
