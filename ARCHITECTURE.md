@@ -224,6 +224,10 @@ Client 1.6.3 also recomputes the purchase/scenario result basis on render. A cha
 
 ## Accumulated category allowances (1.7.0)
 
+Client 1.7.1 retains engine 1.7.0 and the existing backend. Money's remaining-payments total includes bills, outgoing shared transfers and the unpaid part of loan repayments; an open pooled bill contributes only its unused estimate. Due Activity uses the same remaining amounts. With bank-fed evidence present, scheduled income stays pending until an occurrence is confirmed; the receipt distinguishes bank matching from manual confirmation. Unconnected calendar budgets retain their existing behaviour.
+
+Check now remains visibly busy across navigation until the bank request, a subsequent ledger sync and a fresh bank-status read finish. A sheet request begun before the import cannot stand in for the subsequent ledger refresh. Repeated taps are guarded and the bank request times out after 90 seconds with an uncertain-completion message. These client changes neither move money nor classify receipts. `test/income-ui.test.js` covers invented pre-salary support, shared commitments, partial repayments, receipt evidence, slow checks, an overlapping sheet sync and failure recovery.
+
 `dailyAllowances` derives an envelope for each paced spending category: its existing carry-in plus the fraction of this period's allocation earned through today, minus actual category spending through today. The first day receives one day's allowance. Weekly spending categories also build daily in this view. One-off and saving categories are excluded. Purchases, refunds and own-account transfers use the existing ledger; no daily records, bank movements or budget edits are created.
 
 Each daily rate comes from that category's original period allocation and does not rebase when another category is spent. Accrual rounds the cumulative fraction, so final pennies settle to the exact period allocation. Early spending reduces only that envelope: spendable allowance is zero until it catches up, with the future allowance used shown separately. Existing per-category rollover settings and carry caps are retained, as requested.

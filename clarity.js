@@ -380,21 +380,21 @@
           p = me(),
           rows = categories(per),
           all = B.outgoings(d, p, per, now()).filter(function (r) {
-            return r.kind === "bill" && r.status !== "skipped";
+            return ["bill", "transfer", "loan"].indexOf(r.kind) >= 0 && r.status !== "skipped";
           }),
           due = all
             .filter(function (r) {
               return r.status !== "paid";
             })
             .reduce(function (n, r) {
-              return n + r.amount;
+              return n + Math.max(0, r.kind === "loan" ? r.left : r.pool ? r.amount - r.pool.actual : r.amount);
             }, 0);
         return (
           card("<h2>Spending</h2>" + budgetTable(rows, per, false)) +
           card(
             '<div class="list">' +
               A.li(
-                "Bills",
+                "Payments still due",
                 M(due) + " left in this pay period",
                 "",
                 "cDue",
@@ -418,8 +418,20 @@
         var d = db(),
           p = me(),
           date = now(),
+          // A scheduled date is not a bank receipt. Keep calendar-only behaviour
+          // for unconnected budgets, but require evidence once a feed is present.
+          bankFed = d.valuations.some(function (v) {
+            return /^bk-/.test(String(v.id)) && (d.byId[v.account] || {}).owner === p;
+          }) || d.transactions.some(function (x) {
+            return x.person === p && (!!x.bankId || /^bk-/.test(String(x.id)));
+          }),
           rows = B.outgoings(d, p, per, date).map(function (r) {
-            return Object.assign({}, r, { incoming: false });
+            return Object.assign({}, r, {
+              incoming: false,
+              amount: r.status !== "paid"
+                ? Math.max(0, r.kind === "loan" ? r.left : r.pool ? r.amount - r.pool.actual : r.amount)
+                : r.amount,
+            });
           });
         d.transactions
           .filter(function (x) {
@@ -468,10 +480,11 @@
                   date: o.date,
                   amount: o.amount,
                   account: x.account || B.mainOf(d, p),
+                  via: o.via || "",
                   status: o.skipped
                     ? "skipped"
                     : o.paid ||
-                        (o.date <= date &&
+                        (!bankFed && o.date <= date &&
                           (!x.isPay ||
                             !B.payPending(
                               d,
@@ -643,7 +656,7 @@
             E(B.accName(db(), r.account)) +
             "</p>" +
             (r.status === "paid"
-              ? '<p class="small muted">Recorded in your activity.</p>'
+              ? '<p class="small muted">' + (r.via === "bank" ? "Matched to a bank receipt." : r.via === "ticked" ? "Marked as received or paid in Budgie." : "Recorded in your activity.") + '</p>'
               : '<p class="small muted">' +
                 (r.date < now()
                   ? "Budgie has not found the bank receipt. Check Activity before recording or matching it."
