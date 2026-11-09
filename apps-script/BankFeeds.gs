@@ -384,19 +384,27 @@ function bankSince_(full, wide) { return full ? null : new Date(Date.now() - (wi
 // maxPages: how many pages a first read takes in one run, across all accounts (fewer after a run that was cut off)
 function monzoRead_(p, full, wide, cursor, deadline, maxPages) {
   var out = {provider: "monzo", accounts: [], txns: [], cursor: null, cut: false, pages: 0}, resuming = !!cursor, stopped = false, cap = maxPages || BANK_MAX_PAGES_;
-  // only your own current account: a joint account (your partner's card spending too) or Flex stays out
-  var accounts = (monzoGet_(p, "/accounts", {account_type: "uk_retail"}).accounts || []).filter(function (a) { return a && a.id && !a.closed && (!a.type || a.type === "uk_retail"); });
+  // your own current account, and Monzo Flex (a credit account: what you buy on it is owed, not paid from the current
+  // account). A joint account (your partner's card spending too) stays out. The current account comes first, so a first
+  // read that carries on over several runs has read a repayment's current-account side before its Flex side.
+  var all = (monzoGet_(p, "/accounts", {}).accounts || []).filter(function (a) { return a && a.id && !a.closed; });
+  var accounts = all.filter(function (a) { return !a.type || a.type === "uk_retail"; }).concat(all.filter(function (a) { return bankFlexType_(a.type); }));
+  // Flex is only read from the day you started Budgie: what you bought on it before then was paid for before then
+  var flexFrom = accounts.some(function (a) { return bankFlexType_(a.type); }) ? bankStartOf_(p) : "";
   accounts.forEach(function (a) {
-    var kind = /flex|loan|credit/i.test(String(a.type || "")) ? "credit" : "main";
+    var kind = bankFlexType_(a.type) ? "credit" : "main";
     var bal = monzoGet_(p, "/balance", {account_id: a.id});
-    out.accounts.push({extId: a.id, name: a.description && !/^user_/.test(a.description) ? a.description : (kind === "credit" ? "Monzo Flex" : "Monzo current account"), kind: kind, balance: bal && bal.balance !== undefined && bal.balance !== null ? bankMinor_(bal.balance) : null});
+    out.accounts.push({extId: a.id, name: a.description && !/^(user|monzoflex)_/.test(a.description) ? a.description : (kind === "credit" ? "Monzo Flex" : "Monzo current account"), kind: kind, balance: bal && bal.balance !== undefined && bal.balance !== null ? bankMinor_(bal.balance) : null});
     var pots = [];
     if (kind === "main") { try { pots = monzoGet_(p, "/pots", {current_account_id: a.id}).pots || []; } catch (e) { if (e.bank !== "missing") throw e; } }
     pots.forEach(function (x) { if (x && x.id && !x.deleted) out.accounts.push({extId: x.id, name: x.name || "Pot", kind: "pot", balance: x.balance !== undefined && x.balance !== null ? bankMinor_(x.balance) : null}); });
     var q = {account_id: a.id, limit: 100, "expand[]": "merchant"};
     // an account a first read already went through to the end only needs its last 35 days
     var whole = full && !(resuming && cursor[a.id] === undefined);
-    var since = bankSince_(whole, wide); if (since) q.since = since.toISOString();
+    var since = bankSince_(whole, wide);
+    // (Flex: never before the day you started; a day early, as Monzo's times are UTC and Budgie's days are London's)
+    if (kind === "credit" && flexFrom) { var ff = new Date(Budgie.addDays(flexFrom, -1) + "T00:00:00Z"); if (!since || since < ff) since = ff; }
+    if (since) q.since = since.toISOString();
     if (whole && resuming && cursor[a.id] !== "start") q.since = cursor[a.id];
     // out of time before this account: it starts here next time
     if (whole && (stopped || out.cut)) { (out.cursor = out.cursor || {})[a.id] = q.since && /^tx_/.test(q.since) ? q.since : "start"; return; }
@@ -409,7 +417,7 @@ function monzoRead_(p, full, wide, cursor, deadline, maxPages) {
         throw e;
       }
       out.pages++;
-      list.forEach(function (t) { var n = monzoTxn_(t, a.id); if (n) out.txns.push(n); });
+      list.forEach(function (t) { var n = monzoTxn_(t, a.id, kind === "credit"); if (n) out.txns.push(n); });
       if (list.length < 100) break;
       q.since = list[list.length - 1].id;   // Monzo pages by "since the last id"
       // out of time (or pages) for this run: carry on from here next time
@@ -450,21 +458,33 @@ function monzoPotCards_(p, pots, out, wide) {
     }
   });
 }
-function monzoTxn_(t, accId) {
+// credit: read from a Monzo Flex account
+function monzoTxn_(t, accId, credit) {
   if (!t || !t.id || !t.created) return null;
   var meta = t.metadata || {}, merchant = t.merchant && typeof t.merchant === "object" ? t.merchant : null;
   // (a description is only taken for a pot when it's a pot's id: a payment with a reference like "pot_luck" is a payment)
-  var desc = String(t.description || ""), pot = meta.pot_id || (/^pot_[0-9A-Za-z]{16,}$/.test(desc) && /\d/.test(desc) ? desc : "");
-  var minor = Math.round(+t.amount || 0);
+  var desc = String(t.description || ""), pot = credit ? "" : meta.pot_id || (/^pot_[0-9A-Za-z]{16,}$/.test(desc) && /\d/.test(desc) ? desc : "");
+  var minor = Math.round(+t.amount || 0), scheme = String(t.scheme || "");
+  // Flex: a card payment (or its refund) on the Flex card, which may come without a merchant
+  var card = !!t.merchant || (!!credit && (scheme === "mastercard" || bankTrue_(meta.is_flex_direct_virtual_card_tx)));
+  // money between the current account and Flex (a repayment, seen on both): Monzo's own scheme, never a card payment
+  var flexMove = !card && !pot && (scheme === "monzo_flex" || !!meta.flex_transaction_type);
   return {
     id: String(t.id), acc: accId, date: bankDate_(t.created), amount: -minor / 100, pending: !t.settled, declined: !!t.decline_reason,
     name: (merchant && merchant.name) || (t.counterparty && t.counterparty.name) || (pot ? "" : String(t.description || "")),
-    category: String(t.category || ""), pot: pot, card: !!t.merchant, load: !!t.is_load,
+    category: String(t.category || ""), pot: pot, card: card, load: !!t.is_load, credit: !!credit, flexRepay: flexMove, flexId: String(meta.monzo_flex_id || ""),
     // (a bill paid from a bills pot: the pot it names, the moment, and why a pot's money came out)
     at: Date.parse(t.created) || 0, billsPot: String(meta.bills_pot_id || ""), trigger: String(meta.trigger || ""),
     // (the pot's own ledger account, which a pot's virtual card spends from; and whether this is money into or out of a pot)
     potAcc: String(meta.pot_account_id || ""), potMove: t.scheme === "uk_retail_pot" || !!meta.pot_deposit_id || !!meta.pot_withdrawal_id
   };
+}
+// Monzo Flex's account type (uk_monzo_flex); a joint account or anything else isn't
+function bankFlexType_(type) { return String(type || "") === "uk_monzo_flex"; }
+// the day you started Budgie (the setting "start"; the engine's own default if there isn't one)
+function bankStartOf_(p) {
+  var rows = readTable_("settings").rows.filter(function (r) { return r.person === p && !bankTrue_(r.deleted); });
+  return Budgie.startOf(Budgie.load({settings: rows}), p);
 }
 
 // ---------- Starling ----------
@@ -591,8 +611,13 @@ function starlingTxn_(f, accId, spaces, own, fromSpace) {
 function bankMap_(me, b) {
   var extId = String(b.extId || ""), acc = b.account === null || b.account === undefined ? "" : String(b.account);
   var s = bankStatus_(me);
-  if (!extId || !(s.accounts || []).some(function (a) { return a.extId === extId; })) return {ok: false, error: "That isn't one of your bank accounts."};
-  if (acc) { var a = byId_("accounts", acc); if (!a || a.owner !== me || bankTrue_(a.deleted)) return {ok: false, error: "That isn't one of your accounts in Budgie."}; }
+  var ext = (s.accounts || []).filter(function (a) { return a.extId === extId; })[0];
+  if (!extId || !ext) return {ok: false, error: "That isn't one of your bank accounts."};
+  if (acc) {
+    var a = byId_("accounts", acc); if (!a || a.owner !== me || bankTrue_(a.deleted)) return {ok: false, error: "That isn't one of your accounts in Budgie."};
+    // credit (Flex) is what you owe, not money you have: it only goes with a credit account in Budgie, and the other way round
+    if ((ext.kind === "credit") !== (a.kind === "credit")) return {ok: false, error: ext.kind === "credit" ? "Choose a credit account in Budgie for " + (ext.name || "this") + "." : "A credit account in Budgie is only for a credit account at the bank."};
+  }
   var lock = LockService.getScriptLock(); lock.waitLock(25000);
   // (one taken off in the sheet is brought back: it's the mapping you've just chosen)
   try { applyOne_(me, {op: "put", table: "settings", row: {id: me + ":bank.map." + extId, person: me, key: "bank.map." + extId, value: acc, deleted: false}}, Date.now(), me); SpreadsheetApp.flush(); }
@@ -669,7 +694,7 @@ function bankRun_(p) {
     var payTail = function (d) {
       var to = lastOf(d); if (!to) return [];
       var from = Budgie.addDays(to, -7), have = {};
-      var tail = d.txns.filter(function (t) { return t && t.amount < 0 && !t.pot && !t.card && !t.load && !t.declined && !t.reversed && t.date >= from; })
+      var tail = d.txns.filter(function (t) { return t && t.amount < 0 && !t.pot && !t.card && !t.load && !t.credit && !t.flexRepay && !t.declined && !t.reversed && t.date >= from; })
         .map(function (t) { have[t.id] = true; return {id: t.id, acc: t.acc, date: t.date, amount: t.amount, name: String(t.name || "").slice(0, 40)}; });
       // (a short part, of a few days, keeps what the part before it carried from that week too)
       var before = cursor && Array.isArray(s.payCarry) ? s.payCarry.filter(function (x) { return x && x.id && !have[x.id] && String(x.date) >= from; }) : [];
@@ -793,15 +818,20 @@ function bankApply_(p, data, windowFrom, payCarry) {
     var today = Utilities.formatDate(new Date(), tz_(), "yyyy-MM-dd"), db = Budgie.load(allTables_(), today);
     var provider = data.provider, label = BANK_NAMES_[provider], main = Budgie.mainOf(db, p), st = Budgie.startOf(db, p), D = Budgie;
     var extKind = {}; data.accounts.forEach(function (a) { extKind[a.extId] = a.kind; });
+    // (Flex from the day you started only: what you bought on it before then was paid for before then)
+    data = Object.assign({}, data, {txns: data.txns.filter(function (t) { return !(t && extKind[t.acc] === "credit" && t.date && t.date < st); })});
     // Budgie's accounts by id, from the accounts tab only (not db.byId, which another tab's row could share an id with)
     var accRow = {}; db.accounts.forEach(function (a) { accRow[a.id] = a; });
     // until it's mapped, the bank's first current account stands for your main account (any others wait to be mapped)
     var primary = (data.accounts.filter(function (a) { return a.kind === "main"; })[0] || {}).extId;
     // where each bank account goes: a Budgie account, "" to ignore it, or not set yet
     var maps = {}; db.settings.forEach(function (r) { if (r.person === p && /^bank\.map\./.test(String(r.key))) maps[String(r.key).slice(9)] = String(r.value === undefined || r.value === null ? "" : r.value); });
+    // A credit account (Flex) is never the main account: its payments wait until it's mapped to a credit account in
+    // Budgie (what's bought on it isn't paid from the current account)
     var accOf = function (ext, forPayment) {
-      if (bankHas_(maps, ext)) { var id = maps[ext]; return id && accRow[id] && accRow[id].owner === p ? id : null; }
-      return ext === primary || (forPayment && extKind[ext] !== "main") ? main : null;
+      var credit = extKind[ext] === "credit";
+      if (bankHas_(maps, ext)) { var id = maps[ext]; return id && accRow[id] && accRow[id].owner === p && (accRow[id].kind === "credit") === credit ? id : null; }
+      return ext === primary || (forPayment && extKind[ext] !== "main" && !credit) ? main : null;
     };
     var rawTx = readTable_("transactions").rows, byBank = {}, byIdRow = {};
     // only your own rows are ever linked to your bank: a row of your partner's that names one of your payments (left
@@ -811,7 +841,7 @@ function bankApply_(p, data, windowFrom, payCarry) {
     var rank = function (r) { return (bankTrue_(r.deleted) ? 2 : 0) + (/^bk-/.test(String(r.id)) ? 1 : 0); };
     rawTx.forEach(function (r) { if (r.bankId && r.person === p) { var k = String(r.bankId), cur = byBank[k]; if (!cur || rank(r) < rank(cur)) byBank[k] = r; } byIdRow[r.id] = r; });
     var moveRows = {}; readTable_("moves").rows.forEach(function (r) { moveRows[r.id] = r; });
-    var used = Object.create(null), usedOcc = {}, newRows = {transactions: [], moves: [], valuations: [], exceptions: []}, updates = [];
+    var used = Object.create(null), usedOcc = {}, newRows = {transactions: [], moves: [], valuations: [], exceptions: [], settlements: []}, updates = [];
     var near = function (a, b) { return Math.abs(a - b) <= 0.0105; };
     // (matching allows a penny either way; what's kept is the bank's amount, to the penny)
     var same = function (a, b) { return Math.abs(a - b) < 0.005; };
@@ -865,6 +895,9 @@ function bankApply_(p, data, windowFrom, payCarry) {
       if (t.date && String(dupe.r.date) !== t.date) link.date = t.date;
       // a shop logged without an account (Peckish's) was paid from the account the bank says (a spending Space, say)
       var acc = accOf(t.acc, true); if (acc && (dupe.r.account === undefined || dupe.r.account === null || dupe.r.account === "")) link.account = acc;
+      // and one logged against a pot but paid on credit (Flex) is marked as paid on credit: the pot still has the money,
+      // and what's owed goes up (the account you logged it against is kept, as the engine keeps it, alongside)
+      else if (acc && accRow[acc] && accRow[acc].kind === "credit" && dupe.r.account !== acc && dupe.r.creditAccount !== acc) link.creditAccount = acc;
       update("transactions", dupe.r.id, link);
     };
 
@@ -990,7 +1023,8 @@ function bankApply_(p, data, windowFrom, payCarry) {
       db.transfers.forEach(function (tr) { if (tr.from === p) win(tr).forEach(function (o) { if (near(a, o.amount)) out.push({kind: "transfer", occ: o, score: (toPartner ? 0 : 10) + Math.abs(D.diff(planDay(o), t.date)) + 0.001}); }); });
       // a payment between you two logged by your partner only counts if the bank names them (else a made-up one could
       // hide one of your payments)
-      db.settlements.forEach(function (s) { if (s.from === p && near(a, +s.amount) && Math.abs(D.diff(s.date, t.date)) <= 2 && (/^(|sheet)$/.test(String(s.by || "")) || s.by === p || toPartner)) out.push({kind: "settlement", occ: {key: "set:" + s.id}, score: (toPartner ? 0 : 10) + Math.abs(D.diff(s.date, t.date)) + 0.002}); });
+      // (a payment that names your partner is matched to one below, as a payment between you: settleUp)
+      if (!toPartner) db.settlements.forEach(function (s) { if (s.from === p && near(a, +s.amount) && Math.abs(D.diff(s.date, t.date)) <= 2 && (/^(|sheet)$/.test(String(s.by || "")) || s.by === p)) out.push({kind: "settlement", occ: {key: "set:" + s.id}, score: 10 + Math.abs(D.diff(s.date, t.date)) + 0.002}); });
       return out;
     };
     // Which payment each planned item is: the one most like it over the whole read, as for the pay. Going through the
@@ -1005,7 +1039,8 @@ function bankApply_(p, data, windowFrom, payCarry) {
     // A payday whose pay could be before the start of this read was settled by an earlier read, which saw it.
     var payPick = {}, payFrom = /^\d{4}-\d{2}-\d{2}$/.test(String(windowFrom || "")) && windowFrom < "9999" ? D.addDays(windowFrom, 3) : "";
     var payPairs = [];
-    var payCand = function (t) { return t.amount < 0 && !t.pot && !t.card && !t.load && !t.declined && !t.reversed && !(byBank[t.id] || byIdRow["bk-" + provider + "-" + t.id]) && !namesPartner(t) && !!accOf(t.acc, true); };
+    // (never money into a credit account, or between the current account and Flex)
+    var payCand = function (t) { return t.amount < 0 && !t.pot && !t.card && !t.load && !t.credit && !t.flexRepay && !t.declined && !t.reversed && !(byBank[t.id] || byIdRow["bk-" + provider + "-" + t.id]) && !namesPartner(t) && !!accOf(t.acc, true); };
     var payScan = function (list) {
       list.forEach(function (t) {
         if (!t.date || !payCand(t)) return;
@@ -1058,6 +1093,31 @@ function bankApply_(p, data, windowFrom, payCarry) {
     // windows that meet on its time): a second copy would find its bill already used and come in as a payment too
     var last = {}; data.txns.forEach(function (t, i) { if (t && t.id) last[t.id] = i; });
     var txList = data.txns.filter(function (t, i) { return t && t.id && last[t.id] === i; }).sort(function (x, y) { return x.date < y.date ? -1 : x.date > y.date ? 1 : 0; });
+    // Money between the current account and Flex (a repayment) is in both feeds: on Flex (scheme monzo_flex, money in)
+    // and on the current account (money out, the same amount, the same moment). The two are one move. Each Flex side is
+    // paired with its current-account side in this read (the same Flex id if both say, else the same amount within 3
+    // days, nearest first), so a current-account side that doesn't say it's Flex is known by its pair.
+    var flexTwin = {}, byTx = {};
+    txList.forEach(function (t) { byTx[t.id] = t; });
+    var flexSides = txList.filter(function (t) { return t.credit && t.flexRepay && t.amount && !t.declined && !t.reversed; }), flexPairs = [];
+    flexSides.forEach(function (f) {
+      txList.forEach(function (m) {
+        // (only one that says it's Flex: Monzo's scheme, or its name)
+        if (m.credit || m.card || m.pot || m.declined || m.reversed || !m.date || !same(m.amount, -f.amount) || !(m.flexRepay || /\bflex\b/i.test(String(m.name || "")))) return;
+        var gap = Math.abs(D.diff(m.date, f.date)); if (gap > 3) return;
+        var idHit = !!f.flexId && m.flexId === f.flexId, at = m.at && f.at ? Math.abs(m.at - f.at) / 86400000 : 0;
+        flexPairs.push({f: f, m: m, score: (idHit ? 0 : 10) + (m.flexRepay ? 0 : 5) + gap + Math.min(at, 1)});
+      });
+    });
+    flexPairs.sort(function (x, y) { return x.score - y.score; });
+    flexPairs.forEach(function (x) { if (flexTwin[x.f.id] || flexTwin[x.m.id]) return; flexTwin[x.f.id] = x.m.id; flexTwin[x.m.id] = x.f.id; x.m.flexRepay = true; });
+    // the Budgie credit account a Flex move goes to: its Flex side's, else the only Flex account there is
+    var creditExts = data.accounts.filter(function (a) { return a.kind === "credit"; });
+    var flexCreditOf = function (t) {
+      if (t.credit) return accOf(t.acc, false);
+      var tw = flexTwin[t.id] && byTx[flexTwin[t.id]]; if (tw) return accOf(tw.acc, false);
+      return creditExts.length === 1 ? accOf(creditExts[0].extId, false) : null;
+    };
     payScan(txList.concat((payCarry || []).filter(function (x) { return x && x.id && x.date && !bankHas_(last, x.id); }).map(function (x) { return {id: String(x.id), acc: x.acc, date: String(x.date), amount: +x.amount, name: String(x.name || "")}; })));
     // Other scheduled income needs receipt evidence too. Match exact amounts
     // globally, once each, rather than silently dropping every amount-sized
@@ -1109,7 +1169,7 @@ function bankApply_(p, data, windowFrom, payCarry) {
     var lisaAcc = D.accountsOf(db, p).filter(function (a) { return a.kind === "lisa"; })[0], isaAcc = D.accountsOf(db, p).filter(function (a) { return a.kind === "isa"; })[0];
     var planPairs = [];
     txList.forEach(function (t, i) {
-      if (!t.date || t.declined || t.reversed || !(t.amount > 0) || t.pot || !accOf(t.acc, true)) return;
+      if (!t.date || t.declined || t.reversed || !(t.amount > 0) || t.pot || t.flexRepay || !accOf(t.acc, true)) return;
       if (byBank[t.id] || byIdRow["bk-" + provider + "-" + t.id]) return;
       var mv = moveRows["bk-" + provider + "-" + t.id]; if (mv && mv.person === p && !bankTrue_(mv.deleted)) return;
       if (/moneybox/i.test(t.name) && (lisaAcc || isaAcc || paydayMatch(null, t.amount, t.date, /lisa|isa/))) return;
@@ -1147,7 +1207,7 @@ function bankApply_(p, data, windowFrom, payCarry) {
       if (oldRow(byBank[t.id] || byIdRow["bk-" + provider + "-" + t.id]) || oldRow(moveRows["bk-" + provider + "-" + w.id])) { potOld[t.id] = t.date; potOld[w.id] = w.date; return false; }
       return true;
     };
-    var outs = txList.filter(function (t) { return !t.pot && t.amount > 0 && t.date && !t.declined && !t.reversed && !!accOf(t.acc, true); });
+    var outs = txList.filter(function (t) { return !t.pot && !t.credit && t.amount > 0 && t.date && !t.declined && !t.reversed && !!accOf(t.acc, true); });
     var wds = txList.filter(function (w) { return w.pot && w.amount < 0 && w.date && !w.declined && !w.reversed && !!potOf(w.pot) && !!accOf(w.acc, false); });
     var wTaken = {};
     // the bill names its pot: that pot, when its withdrawal (the same amount at the same moment) is there too (without
@@ -1178,7 +1238,7 @@ function bankApply_(p, data, windowFrom, payCarry) {
     // - the bank's copy, checked as food: a Peckish shop that names the shop
     var linkPairs = [];
     txList.forEach(function (t, ti) {
-      if (!t.date || t.declined || t.reversed || !(t.amount > 0) || t.pot || !accOf(t.acc, true)) return;
+      if (!t.date || t.declined || t.reversed || !(t.amount > 0) || t.pot || t.flexRepay || !accOf(t.acc, true)) return;
       var mine = byBank[t.id] || byIdRow["bk-" + provider + "-" + t.id], mv = moveRows["bk-" + provider + "-" + t.id];
       if ((mine && mine.person !== p) || (mv && mv.person === p && !bankTrue_(mv.deleted))) return;
       var box = /moneybox/i.test(t.name) && !!(lisaAcc || isaAcc || paydayMatch(null, t.amount, t.date, /lisa|isa/)), mode = null;
@@ -1192,6 +1252,124 @@ function bankApply_(p, data, windowFrom, payCarry) {
     linkPairs.sort(function (x, y) { return x.d.score - y.d.score || x.ti - y.ti || x.d.i - y.d.i; });
     var linkTook = Object.create(null); linkPairs.forEach(function (x) { if (linkTook[x.d.r.id] || linkPick[x.t.id]) return; linkTook[x.d.r.id] = true; linkPick[x.t.id] = x.d; });
     var activeOccurrence = function (item, orig) { return Object.keys(planPick).some(function (id) { var h = planPick[id]; return h.occ.item && h.occ.item.id === item && h.occ.orig === orig; }) || Object.keys(payPick).some(function (id) { var h = payPick[id]; return h.i.id === item && h.o.orig === orig; }); };
+    // A move between your own accounts that the bank made (a pot move, or money between the current account and Flex):
+    // a payday move it matches (pm), one To do asked for, one you'd already ticked in the app, or else a move of its own
+    var ownMove = function (t, from, to, amt, pm, note) {
+      if (!pm) {
+        var exM = moveRows["bk-" + provider + "-" + t.id], loose = !exM || /^bank:/.test(String(exM.key || ""));
+        if (exM && (exM.person !== p || bankTrue_(exM.deleted) || !loose)) { if (exM.person === p && !loose && !(bankTrue_(exM.deleted) && exM.by === "bank")) return; }
+        else {
+          var tm = todoMatch(from, to, amt, t.date);
+          if (tm) { putTodoMove(t, from, to, tm, exM); return; }
+          if (!exM && appTicked(from, to, amt, t.date)) return;
+        }
+      }
+      putMove(t, from, to, amt, pm ? pm.key : "bank:" + t.id, false, note);
+    };
+    // ----- Flex: money between the current account and Flex is one move, whichever side the bank has shown so far -----
+    var inRead = function (bankId) { return !!bankId && bankHas_(byTx, String(bankId)); };
+    var flexClaim = {};
+    // its other side, from an earlier read (not in this one): the bank's move for it, the payment it was checked as, or
+    // the Flex statement it paid (the same amount, within 3 days)
+    var flexCovered = function (t, credit, cash, amt, intoCredit) {
+      var pre = "bk-" + provider + "-", own = pre + t.id;
+      var mv = Object.keys(moveRows).filter(function (k) { var m = moveRows[k]; return m && m.id === k && m.id !== own && !flexClaim[m.id] && m.person === p && m.id.indexOf(pre) === 0 && !bankTrue_(m.deleted) && (m.to === credit || m.from === credit) && same(+m.amount, amt) && Math.abs(D.diff(D.parseDate(m.date), t.date)) <= 3 && !inRead(m.id.slice(pre.length).split("~")[0]); })[0];
+      if (mv) { flexClaim[mv] = true; return true; }
+      var tx = rawTx.filter(function (r) { return r.person === p && !bankTrue_(r.deleted) && !flexClaim[r.id] && (r.bankId || /^bk-/.test(String(r.id))) && !inRead(r.bankId) && r.account === cash && same(+r.amount, intoCredit ? amt : -amt) && Math.abs(D.diff(D.parseDate(r.date), t.date)) <= 3 && /flex/i.test(String(r.note || "")); })[0];
+      if (tx) { flexClaim[tx.id] = true; return true; }
+      return db.exceptions.some(function (x) { var b = db.byId[x.item]; return /-bankpaid-/.test(String(x.id)) && String(x.id).slice(-p.length - 1) === "-" + p && b && b.creditAccount === credit && !inRead(x.bankId) && Math.abs(D.diff(x.date, t.date)) <= 4; });
+    };
+    // a repayment is the payment of a Flex statement you planned as a bill (one with this credit account), when there is
+    // one that day (3 days either way) for that amount (or within half of it, for a statement that varies)
+    var stmtPick = function (t, credit, amt) {
+      if (bankTrue_(D.setting(db, p, "bank.undo." + t.id, ""))) return null;
+      var best = null;
+      db.bills.forEach(function (b) {
+        if (b.person !== p || b.creditAccount !== credit || b.toAccount) return;
+        D.occurrences(db, b, D.addDays(t.date, -10), D.addDays(t.date, 11)).forEach(function (o) {
+          var d = planDay(o); if (usedOcc[o.key] || d < D.addDays(t.date, -3) || d >= D.addDays(t.date, 4)) return;
+          var base = D.amountAt(db, b, o.orig), exact = near(amt, base) || (!bankX[b.id + "|" + o.orig] && near(amt, o.amount));
+          if (!exact && !(b.variable && base > 0 && Math.abs(amt - base) <= base * 0.5)) return;
+          var score = Math.abs(D.diff(d, t.date)) + (exact ? 0 : 1 + Math.abs(amt - base) / base);
+          if (!best || score < best.score) best = {kind: "bill", item: b, occ: o, score: score};
+        });
+      });
+      return best;
+    };
+    // ----- payments between the two of you that weren't planned: one settlement (settling up), seen from either side -----
+    // Each of your bank payments it stands for is listed on it (bankId: "<person>:<bank id>", comma-separated), so your
+    // partner's bank feed finds the same one rather than adding another, and every read finds its own again.
+    var setRows = null, setTaken = {};
+    var setTags = function (s) { return String(s.bankId || "").split(",").map(function (x) { return x.trim(); }).filter(Boolean); };
+    var setAll = function () { if (setRows === null) setRows = readTable_("settlements").rows; return setRows; };
+    // a repayment due on a loan between you (the same amount, 3 days either way): the settlement is that repayment
+    var loanDueFor = function (from, to, amt, date) {
+      var hit = null;
+      D.loans(db, p, date).forEach(function (l) { if (hit || l.lender !== to || l.borrower !== from) return; (l.plan || []).forEach(function (r) { if (!hit && !r.paid && Math.abs(D.diff(r.date, date)) <= 3 && (near(r.left, amt) || near(r.amount, amt))) hit = {l: l, r: r}; }); });
+      return hit;
+    };
+    // money in from your partner that's a regular payment between you (a rent share): already in the plan
+    var partnerPlanned = function (t) {
+      var a = -t.amount, hit = false;
+      db.transfers.forEach(function (tr) { if (tr.to === p) D.occurrences(db, tr, D.addDays(t.date, -10), D.addDays(t.date, 11)).forEach(function (o) { var d = planDay(o); if (d >= D.addDays(t.date, -3) && d < D.addDays(t.date, 4) && near(a, o.amount)) hit = true; }); });
+      return hit;
+    };
+    // A payment between you a few days from a regular payment or a loan repayment between you, for a different amount
+    // (within a quarter of it): it may be that one paid differently, so it isn't taken for settling up as well (it stays
+    // as before: for you to check, or left out)
+    var nearPlanned = function (from, to, amt, date) {
+      var close = function (x) { return x > 0 && !near(x, amt) && Math.abs(x - amt) <= x * 0.25; }, hit = false;
+      db.transfers.forEach(function (tr) { if (tr.from === from && tr.to === to) D.occurrences(db, tr, D.addDays(date, -10), D.addDays(date, 11)).forEach(function (o) { var d = planDay(o); if (!usedOcc[o.key] && d >= D.addDays(date, -3) && d < D.addDays(date, 4) && close(o.amount)) hit = true; }); });
+      D.loans(db, p, date).forEach(function (l) { if (l.lender === to && l.borrower === from) (l.plan || []).forEach(function (r) { if (Math.abs(D.diff(r.date, date)) <= 3 && close(r.amount)) hit = true; }); });
+      return hit;
+    };
+    // true when it's been dealt with as settling up; false to carry on as a payment (one you'd said what it was for)
+    var settleUp = function (t, mine) {
+      if (!partnerId) return false;
+      if (nearPlanned(t.amount > 0 ? p : partnerId, t.amount > 0 ? partnerId : p, Math.abs(t.amount), t.date)) return false;
+      if (mine) {
+        if (mine.person !== p) return false;
+        // dismissed on your phone: it stays as it is
+        if (bankTrue_(mine.deleted) && String(mine.by) !== "bank") return false;
+        // A payment the bank brought in before this release (one row of yours, with nothing said about it: no budget,
+        // split or link) becomes the settlement. One you gave a budget or split stays your payment.
+        if (!bankTrue_(mine.deleted) && !(/^bk-/.test(String(mine.id)) && !mine.budget && !mine.split && !mine.billId && !mine.refundOf && !mine.loanItem && !mine.planId)) return false;
+      }
+      // a hold: settled up once the bank has it
+      if (t.pending) return true;
+      if (mine && !bankTrue_(mine.deleted)) update("transactions", mine.id, {deleted: true});
+      var out = t.amount > 0, from = out ? p : partnerId, to = out ? partnerId : p, amt = Math.round(Math.abs(t.amount) * 100) / 100;
+      var tag = p + ":" + t.id, sid = "bk-" + provider + "-" + t.id, acc = accOf(t.acc, true), side = out ? "fromAccount" : "toAccount";
+      var ours = function (s) { return (s.from === p && s.to === partnerId) || (s.from === partnerId && s.to === p); };
+      // the one it already is
+      var linked = setAll().filter(function (s) { return ours(s) && (s.id === sid || setTags(s).indexOf(tag) >= 0); })[0];
+      if (linked) {
+        setTaken[linked.id] = true;
+        // (one either of you took off stays off; one the bank feed took off, for a payment the bank had reversed, comes back)
+        if (bankTrue_(linked.deleted) && String(linked.by) === "bank") update("settlements", linked.id, {deleted: false, bankId: setTags(linked).indexOf(tag) >= 0 ? linked.bankId : setTags(linked).concat(tag).join(",")});
+        return true;
+      }
+      // one already there: logged on a phone ("I've paid", "it's arrived"), or made by your partner's bank feed from their side
+      // (the same two of you, the same amount, 2 days either way, and not already one of your own bank payments)
+      var loan = loanDueFor(from, to, amt, t.date);
+      var cands = setAll().filter(function (s) {
+        var d = D.parseDate(s.date);
+        return !bankTrue_(s.deleted) && !setTaken[s.id] && s.from === from && s.to === to && near(+s.amount, amt) && d && Math.abs(D.diff(d, t.date)) <= 2 && !setTags(s).some(function (x) { return x.indexOf(p + ":") === 0; });
+      }).map(function (s) {
+        var theirs = setTags(s).some(function (x) { return x.indexOf(partnerId + ":") === 0; }), loanFit = loan ? s.loan === loan.l.id : !s.loan;
+        return {s: s, score: (theirs ? 0 : 2) + (loanFit ? 0 : 4) + Math.abs(D.diff(D.parseDate(s.date), t.date)) + Math.abs((+s.amount || 0) - amt)};
+      }).sort(function (a, b) { return a.score - b.score; });
+      if (cands.length) {
+        var s0 = cands[0].s, f = {bankId: setTags(s0).concat(tag).join(",")}; setTaken[s0.id] = true;
+        if (acc && acc !== main && !s0[side]) f[side] = acc;
+        update("settlements", s0.id, f);
+        return true;
+      }
+      var row = {id: sid, date: t.date, from: from, to: to, amount: amt, fromAccount: "", toAccount: "", loan: loan ? loan.l.id : "", key: loan ? loan.r.key : "", note: loan ? loan.l.name : String(t.name || ""), bankId: tag};
+      if (acc && acc !== main) row[side] = acc;
+      create("settlements", row); setTaken[sid] = true;
+      return true;
+    };
     txList.forEach(function (t) {
       if (!t.date) return;
       seen[t.id] = true;
@@ -1222,6 +1400,15 @@ function bankApply_(p, data, windowFrom, payCarry) {
         // and a pot, Space or Moneybox move the bank feed made from it (money that went back never reached the LISA)
         var moveBase = "bk-" + provider + "-" + t.id;
         Object.keys(moveRows).forEach(function (id) { var mv0 = moveRows[id]; if ((id === moveBase || id.indexOf(moveBase + "~") === 0) && mv0.person === p && !bankTrue_(mv0.deleted)) update("moves", mv0.id, {deleted: true}); });
+        // and settling up between you that it stood for: the one this feed made is taken off (it comes back if the bank
+        // shows the payment again); on one logged otherwise, it's only no longer listed as this payment
+        var tagX = p + ":" + t.id;
+        setAll().forEach(function (s) {
+          if (!(s.from === p || s.to === p) || bankTrue_(s.deleted)) return;
+          var tags = setTags(s); if (s.id !== moveBase && tags.indexOf(tagX) < 0) return;
+          if (s.id === moveBase && tags.filter(function (x) { return x !== tagX; }).length === 0) update("settlements", s.id, {deleted: true});
+          else update("settlements", s.id, {bankId: tags.filter(function (x) { return x !== tagX; }).join(",")});
+        });
         return;
       }
       if (!t.amount) return;
@@ -1238,6 +1425,35 @@ function bankApply_(p, data, windowFrom, payCarry) {
       };
       var mvEx = moveRows["bk-" + provider + "-" + t.id];
       var isMove = !!mvEx && mvEx.person === p && !bankTrue_(mvEx.deleted);
+      // money between the current account and Flex (a repayment): one move, never spending, from whichever side the bank
+      // has shown first (the current account's when both are in this read). (One from before you started is history, as before.)
+      if (t.flexRepay && t.date >= st) {
+        var creditA = flexCreditOf(t); if (!creditA) return;   // Flex not mapped yet (or set to be ignored): as for a pot
+        var twin = flexTwin[t.id] ? byTx[flexTwin[t.id]] : null, cashSide = t.credit ? twin : t;
+        var cashA = cashSide ? (paidFrom[cashSide.id] || accOf(cashSide.acc, true)) : accOf(primary, false); if (!cashA) return;
+        var intoCredit = t.credit ? t.amount < 0 : t.amount > 0, amtF = Math.abs(t.amount);
+        var liveMv = function (id) { var m = moveRows["bk-" + provider + "-" + id]; return m && m.person === p && !bankTrue_(m.deleted) ? m : null; };
+        // the current-account side's own row: a payment you'd checked stays that payment (one bank payment is one thing);
+        // one not checked yet is taken off, as the move stands for it
+        var mineLive = !t.credit && mine && mine.person === p && !bankTrue_(mine.deleted), mineChecked = mineLive && !(/^bk-/.test(String(mine.id)) && bankTrue_(mine.review));
+        var dropMine = function () { if (mineLive && !mineChecked) update("transactions", mine.id, {deleted: true}); };
+        if (mineChecked) return;
+        if (!liveMv(t.id)) {
+          if (twin && liveMv(twin.id)) { dropMine(); return; }   // its other side's move (read first) stands for it
+          if (t.credit && twin) return;                           // the current-account side, read now too, makes it
+          if (!twin && flexCovered(t, creditA, cashA, amtF, intoCredit)) { dropMine(); return; }
+          var sp = intoCredit ? stmtPick(t, creditA, amtF) : null;
+          if (sp) {
+            dropMine(); usedOcc[sp.occ.key] = true;
+            if (!same(amtF, sp.occ.amount) || byId_("exceptions", "x-" + sp.item.id + "-" + sp.occ.orig + "-bank-" + p)) exception(sp.item.id, sp.occ.orig, amtF, "from " + label, t.id);
+            dayChange(sp.occ, t.date, t.id); paidMark(sp.item.id, sp.occ.orig, t.id);
+            return;
+          }
+        }
+        dropMine();
+        ownMove(t, intoCredit ? cashA : creditA, intoCredit ? creditA : cashA, amtF, null, intoCredit ? "Flex repayment" : "From Flex");
+        return;
+      }
       // a move between the account and a pot or Space
       if (t.pot) {
         var potAcc = accOf(t.pot, false), mainAcc = accOf(ext, false);
@@ -1246,17 +1462,7 @@ function bankApply_(p, data, windowFrom, payCarry) {
         if (potPaid[t.id]) { var pm0 = moveRows["bk-" + provider + "-" + t.id]; if (pm0 && pm0.person === p && !bankTrue_(pm0.deleted)) update("moves", pm0.id, {deleted: true}); return; }
         if (!asMove()) return;
         var into = t.amount > 0, from = into ? mainAcc : potAcc, to = into ? potAcc : mainAcc, amt = Math.abs(t.amount);
-        var pm = into ? paydayMatch(to, amt, t.date) : null;
-        if (!pm) {
-          var exM = moveRows["bk-" + provider + "-" + t.id], loose = !exM || /^bank:/.test(String(exM.key || ""));
-          if (exM && (exM.person !== p || bankTrue_(exM.deleted) || !loose)) { if (exM.person === p && !loose && !(bankTrue_(exM.deleted) && exM.by === "bank")) return; }
-          else {
-            var tm = todoMatch(from, to, amt, t.date);
-            if (tm) { putTodoMove(t, from, to, tm, exM); return; }
-            if (!exM && appTicked(from, to, amt, t.date)) return;
-          }
-        }
-        putMove(t, from, to, amt, pm ? pm.key : "bank:" + t.id, false);
+        ownMove(t, from, to, amt, into ? paydayMatch(to, amt, t.date) : null);
         return;
       }
       var acc = paidFrom[t.id] || accOf(ext, true); if (!acc) return;   // an account set to be ignored
@@ -1281,6 +1487,9 @@ function bankApply_(p, data, windowFrom, payCarry) {
             return;
           }
         }
+        // a payment to your partner that isn't a regular one (your half of something, paying them back): settling up
+        // between you, never spending (unless you logged it yourself as a payment, which it's then linked to)
+        if (!t.card && namesPartner(t) && t.date >= st && !linkPick[t.id] && settleUp(t, mine)) return;
       } else {
         // money coming in: a refund counts against its budget; your pay is checked against what was expected
         if (!t.card) {
@@ -1294,7 +1503,9 @@ function bankApply_(p, data, windowFrom, payCarry) {
             if (boxIn && !movedIn()) putMove(t, boxIn.id, acc, inAmt0, "bank:" + t.id, true, t.name);
             return;
           }
-          // money from your partner is never your pay, however much it is
+          // money from your partner is never your pay, however much it is. A regular payment from them (their rent share)
+          // is in the plan already; anything else is them settling up with you
+          if (!mine && namesPartner(t) && t.date >= st && !partnerPlanned(t) && settleUp(t, null)) return;
           if (mine || namesPartner(t)) return;
           var pi = payIn(t);
           if (pi) { usedOcc[pi.o.key] = true; if (!same(-t.amount, pi.o.amount)) exception(pi.i.id, pi.o.orig, -t.amount, "from " + label, t.id); if (!pi.i.isPay) dayChange(pi.o, t.date, t.id); paidMark(pi.i.id, pi.o.orig, t.id); }
@@ -1355,7 +1566,8 @@ function bankApply_(p, data, windowFrom, payCarry) {
     // one balance per mapped account per day
     data.accounts.forEach(function (a) {
       var acc = accOf(a.extId, false); if (!acc || a.balance === null || a.balance === undefined || isNaN(+a.balance)) return;   // no balance given: nothing saved, never £0
-      var id = "bk-" + a.extId + "-" + today, ex = byId_("valuations", id), amount = a.kind === "credit" ? -Math.abs(a.balance) : a.balance;
+      // (Flex's balance is already what Budgie keeps for a credit account: negative is owed; above nothing is money in hand)
+      var id = "bk-" + a.extId + "-" + today, ex = byId_("valuations", id), amount = +a.balance;
       if (ex && (byId_("accounts", ex.account) || {}).owner !== p) { Logger.log("Bank feed skipped valuations " + id + ": it isn't " + p + "'s."); return; }
       if (ex) { if (!same(+ex.amount, amount) || ex.account !== acc) update("valuations", id, {amount: amount, account: acc}); }
       else create("valuations", {id: id, account: acc, date: today, amount: amount, note: "from " + label});

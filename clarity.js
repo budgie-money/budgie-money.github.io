@@ -498,21 +498,24 @@
                 });
             });
           });
+        // settling up between you, from either side (a loan repayment you made is already a Payments out row)
         d.settlements
           .filter(function (x) {
-            return x.to === p && x.date >= per.start && x.date < per.next;
+            return (x.to === p || (x.from === p && !x.loan)) && x.date >= per.start && x.date < per.next;
           })
           .forEach(function (x) {
+            var inn = x.to === p;
             rows.push({
               id: x.id,
               item: x.loan,
               kind: "receipt",
-              name: A.person(x.from).name + " paid you",
+              name: inn ? A.person(x.from).name + " paid you" : "Paid " + A.person(x.to).name,
               date: x.date,
               amount: x.amount,
-              account: x.toAccount || B.mainOf(d, p),
+              account: inn ? x.toAccount || B.mainOf(d, p) : x.fromAccount || B.mainOf(d, p),
               status: "paid",
-              incoming: true,
+              via: x.bankId ? "bank" : "",
+              incoming: inn,
             });
           });
         d.transfers

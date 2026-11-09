@@ -23,7 +23,7 @@ function webAppUrl_() {
 var NO_URL_ = "Add a Script Property WEB_APP_URL (Project Settings > Script Properties) with your Web app URL, ending /exec (Deploy > Manage deployments), and run again.";
 var APP_URL = "https://budgie-money.github.io/";
 // 4: credit funding, daily saving transfers and move-confirmation batches. Raised whenever a table or column is added: the sheet gets it by itself (ensureSchema_)
-var SCHEMA_VERSION = 4;
+var SCHEMA_VERSION = 5;
 var COMMON = ["deleted", "updated", "by"];
 var SCHEMA = {
   people: ["id", "name", "bank", "potWord", "partner", "colour"],
@@ -35,7 +35,7 @@ var SCHEMA = {
   transfers: ["id", "from", "to", "name", "amount", "fromAccount", "toAccount", "purpose", "unit", "every", "on", "shift", "start", "end", "dates", "notes"],
   transactions: ["id", "date", "person", "amount", "budget", "account", "split", "note", "source", "bankId", "review", "splitHint", "refundOf", "loanItem", "purchaseTotal", "iouShare", "planId", "billId", "billDate", "creditAccount"],
   moves: ["id", "date", "person", "from", "to", "amount", "key", "note", "review", "batch"],
-  settlements: ["id", "date", "from", "to", "amount", "fromAccount", "toAccount", "loan", "key", "note"],
+  settlements: ["id", "date", "from", "to", "amount", "fromAccount", "toAccount", "loan", "key", "note", "bankId"],
   loans: ["id", "lender", "borrower", "name", "amount", "date", "account", "repay", "repayFrom", "repayDay", "notes"],
   loanItems: ["id", "loan", "name", "date", "cost", "share", "note"],
   goals: ["id", "owners", "name", "target", "due", "accounts", "kind", "extra", "price", "notes"],
@@ -54,7 +54,7 @@ var HELP = {
   income: "Money that comes in on a schedule. isPay = TRUE for your salary (it sets your pay periods).", bills: "Money that goes out on a schedule. split: a row id from splits if you share it. pool: for an estimate that the real bills count against (flat bills), when its first bills month starts (its day is the day each one starts), then any change (\"2026-10-16, off 2027-01-16\"); set it in the app.",
   budgets: "mode: daily, weekly, oneoff, saving or remainder (gets whatever is left).", splits: "shares: \"ethan:2, sophie:1\" for parts, or \"sophie=500\" for a fixed amount.",
   transfers: "One of you paying the other on a schedule, like a rent share.", transactions: "Every payment you log.", moves: "Pot moves you ticked off in the app.",
-  settlements: "One-off payments between you two. loan: a row id from loans if it repays one.", loans: "Money one of you owes the other. repay: amount each month from repayFrom. With items, amount is their total.", loanItems: "What a loan is made of: one row per thing. share is what the borrower owes for it (it can be negative); cost is the full price, if you want it kept.",
+  settlements: "One-off payments between you two. loan: a row id from loans if it repays one. bankId: the bank payments it is (person:bank id), set by the bank feed.", loans: "Money one of you owes the other. repay: amount each month from repayFrom. With items, amount is their total.", loanItems: "What a loan is made of: one row per thing. share is what the borrower owes for it (it can be negative); cost is the full price, if you want it kept.",
   goals: "owners: who it belongs to. accounts: which accounts count towards it.", valuations: "A balance you checked. Everything after its date is worked out.",
   amounts: "A price or pay change for a bill, income or budget, from the start date. Or a split's new shares (item: the split's id).", exceptions: "A change to one date: skip, move (newDate), amount (what it really was) or paid (it went out).",
   settings: "Settings for each person.", gifts: "Gift ideas and what you bought. Only you see your own list.", prices: "Fund prices for the LISA tracker, filled in by the script.", meta: "Housekeeping."
@@ -396,7 +396,7 @@ function cell_(v) {
 }
 // what only the server may change on a row the bank wrote or linked (a phone that's behind can't undo it)
 var BANK_OWNED_ = ["amount", "date", "bankId", "deleted", "account", "from", "to", "person", "source", "key"];
-function isBankRow_(t, r) { return !!r && ((t === "transactions" && !!r.bankId) || ((t === "moves" || t === "valuations") && /^bk-/.test(String(r.id)))); }
+function isBankRow_(t, r) { return !!r && ((t === "transactions" && !!r.bankId) || ((t === "moves" || t === "valuations" || t === "settlements") && /^bk-/.test(String(r.id)))); }
 // ids that tell a payday tick or an occurrence change apart: "x-<item>-<yyyy-mm-dd>…" for exceptions
 function exceptionIdOk_(id, item) {
   var pre = "x-" + item + "-";

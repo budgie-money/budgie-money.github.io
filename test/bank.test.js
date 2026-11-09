@@ -74,12 +74,12 @@ function monzoRoute(method, url, params) {
   if (monzo.historyClosed && u.pathname === "/transactions") { const sn = q.get("since"); if (!sn || (/^tx_/.test(sn) ? monzo.strictCursor && oldId(sn) : (NOW - RealDate.parse(sn)) > 90 * 86400000)) return send(403, {code: "forbidden.verification_required"}); }
   if (u.pathname === "/ping/whoami") return send(200, {authenticated: true, client_id: CLIENT_ID, user_id: "user_00009ETHAN"});
   if (u.pathname === "/accounts") return send(200, {accounts: monzo.accounts});
-  if (u.pathname === "/balance") return q.get("account_id") === "acc_00009main" ? send(200, monzo.balance) : send(404, {});
+  if (u.pathname === "/balance") return q.get("account_id") === "acc_00009main" ? send(200, monzo.balance) : monzo.flexBalance && q.get("account_id") === monzo.flexBalance.id ? send(200, monzo.flexBalance.body) : send(404, {});
   if (u.pathname === "/pots") return send(200, {pots: monzo.pots});
   if (u.pathname === "/transactions") {
     // (each payment is in one account's feed: the current account's, unless it names another, like a pot's own ledger)
     const accId = q.get("account_id");
-    if (accId !== "acc_00009main" && !(monzo.ledgers || {})[accId]) return send(403, {code: "forbidden.insufficient_permissions"});
+    if (accId !== "acc_00009main" && !(monzo.ledgers || {})[accId] && !(monzo.accounts.some(a => a.id === accId && a.type === "uk_monzo_flex"))) return send(403, {code: "forbidden.insufficient_permissions"});
     let list = monzo.txns.filter(t => (t.account_id || "acc_00009main") === accId).sort((a, b) => a.created < b.created ? -1 : 1);
     const since = q.get("since"), limit = Math.min(100, +q.get("limit") || 30);
     if (since && /^tx_/.test(since)) { const i = list.findIndex(t => t.id === since); list = list.slice(i + 1); }
@@ -569,9 +569,10 @@ const grow = (G, t) => { G.c.CACHE_ = {}; return G.c.readTable_(t).rows; };
   const keepAcc = monzo.accounts, keepBal = monzo.balance;
   monzo.accounts = keepAcc.concat([{id: "acc_joint", description: "joint", type: "uk_retail_joint", closed: false}]);
   const G = bankEnv(); connectMonzo(G, {acc_00009main: "e-main"});
-  const ask = reqs.filter(r => /\/accounts\?/.test(r.url)).pop();
+  const ask = reqs.filter(r => /\/accounts(\?|$)/.test(r.url)).pop();
   const listed = G.call({key: G.kE, action: "bank.status"}).bank.accounts.map(a => a.extId);
-  ok("R4: Budgie asks Monzo for personal accounts only, and a joint account is left out", ask && /account_type=uk_retail/.test(ask.url) && listed.indexOf("acc_joint") < 0, {ask: ask && ask.url, listed});
+  // (it lists every account, as Monzo does without a filter, and keeps the current account and Flex itself)
+  ok("R4: Budgie lists Monzo's accounts and leaves a joint account out", ask && !/account_type=/.test(ask.url) && listed.indexOf("acc_joint") < 0 && listed.indexOf("acc_00009main") >= 0, {ask: ask && ask.url, listed});
   monzo.balance = {currency: "GBP"}; NOW += 86400000; G.call({key: G.kE, action: "bank.syncNow"});
   const today = new Intl.DateTimeFormat("en-CA", {timeZone: "Europe/London"}).format(new RealDate(NOW));
   ok("R8: no balance from the bank: no £0 valuation", !grow(G, "valuations").some(v => v.id === "bk-acc_00009main-" + today));
@@ -2213,6 +2214,242 @@ ok("sync without an action is unchanged", call({key: kE}).ok === true && Array.i
   const X=make();read(X,[tx('excluded',extra)]);ok('INC: excludes '+label,marks(X).length===0);
  }
  const S=make(t=>t.income.push({id:'other-owner',person:'ethan',name:'Private support',amount:241,account:'e-main',unit:'once',start:'2026-10-30'}));read(S,[tx('other',{amount:-241})]);ok('INC: cannot mark another person income paid',!rows(S,'exceptions').some(x=>x.item==='other-owner'));
+}
+
+// ================= Monzo Flex (1.7.3) =================
+// The shapes are the ones seen in a real Flex feed; every name and amount here is made up.
+const FLEX = "acc_00009flex";
+const flexAcc = {id: FLEX, description: "monzoflex_0000EXAMPLE", type: "uk_monzo_flex", closed: false, created: "2025-01-01T00:00:00Z"};
+// a card payment on Flex (money owed), or its refund (no monzo_flex_id)
+const fcard = (id, date, minor, name, cat, extra) => mtx(id, date, minor, Object.assign({account_id: FLEX, scheme: "mastercard", merchant: merchant(name, cat), category: cat, metadata: Object.assign({is_flex_direct_virtual_card_tx: "true"}, minor < 0 ? {monzo_flex_id: "flex_" + id} : {})}, extra || {}));
+// a repayment: on Flex it's money in, Monzo's own scheme; on the current account, money out of the same amount
+const frepay = (id, date, minor, extra) => mtx(id, date, minor, Object.assign({account_id: FLEX, scheme: "monzo_flex", category: "transfers", description: "Flex", metadata: {flex_transaction_type: "repayment", monzo_flex_id: "flex_plan_" + id}}, extra || {}));
+const mainFlex = (id, date, minor, extra) => mtx(id, date, minor, Object.assign({description: "Flex", category: "transfers"}, extra || {}));
+const flexEnv = (more) => bankEnv(t => {
+  t.accounts.push({id: "e-flex", owner: "ethan", name: "Monzo Flex credit", kind: "credit", purpose: "Monzo Flex purchases and outstanding credit", order: 7});
+  // a repayment the current account's feed brought in before Budgie read Flex: a payment called "Flex", not checked yet
+  t.transactions.push({id: "bk-monzo-m_rep1", date: "2026-10-29", person: "ethan", amount: 300, budget: "", account: "e-main", note: "Flex", source: "monzo", bankId: "m_rep1", review: true, by: "bank"});
+  if (more) more(t);
+});
+const live = (G, t) => grow(G, t).filter(r => !r.deleted && r.deleted !== "TRUE");
+const flexReqs = () => reqs.filter(r => /\/transactions\?/.test(r.url) && new URL(r.url).searchParams.get("account_id") === FLEX);
+{
+  freshMonzo(); NOW = RealDate.parse("2026-11-17T12:00:00Z");
+  const keepAcc = monzo.accounts;
+  monzo.accounts = keepAcc.concat([flexAcc]);
+  monzo.flexBalance = {id: FLEX, body: {balance: -20537, total_balance: -20537, currency: "GBP", spend_today: 0}};
+  const flexFeed = [
+    fcard("f_old", "2026-10-20", -2500, "Corner Shop", "groceries"),
+    fcard("f_lidl", "2026-11-04", -3990, "Lidl", "groceries"),
+    fcard("f_ikea", "2026-11-06", -12000, "IKEA", "shopping"),
+    fcard("f_ebay", "2026-11-07", -1948, "eBay", "shopping"),
+    fcard("f_ebayref", "2026-11-08", 1948, "eBay", "shopping"),
+    fcard("f_chk", "2026-11-10", -100, "Phone Network", "general", {time: "09:00:00"}),
+    fcard("f_chkrel", "2026-11-10", 100, "Phone Network", "general", {time: "09:05:00"}),
+    fcard("f_dec", "2026-11-11", -999, "Cinema", "entertainment", {decline_reason: "INSUFFICIENT_FUNDS"}),
+    fcard("f_rest", "2026-11-15", -4500, "Pizza Place", "eating_out", {pending: true}),
+    frepay("f_rep1", "2026-10-29", 30000, {time: "14:00:00"})
+  ];
+  monzo.txns = monzoData(planned).concat(flexFeed, [mainFlex("m_rep1", "2026-10-29", -30000, {time: "14:00:00"})]);
+  const G = flexEnv();
+  // Peckish posts the Lidl shop it planned, against the Food pot (it doesn't know the card was Flex)
+  const pk = G.call({key: G.kE, ops: [{op: "put", table: "transactions", row: {id: "peckish-lidl", date: "2026-11-04", person: "ethan", amount: 38.5, budget: "e-food-b", account: "e-food", note: "Lidl shop (Peckish)", source: "peckish"}}]});
+  ok("FLEX: Peckish's shop is in", pk.ok && pk.applied.length === 1, {applied: pk.applied, rejected: pk.rejected});
+  reqs.length = 0;
+  connectMonzo(G, {pot_bills: "e-bills", pot_food: "e-food"});
+  // ----- before it's mapped -----
+  const st1 = G.call({key: G.kE, action: "bank.status"}).bank, fx = st1.accounts.find(a => a.extId === FLEX);
+  ok("FLEX map: Flex is listed to map, as credit, by a readable name, with what's owed", !!fx && fx.kind === "credit" && fx.name === "Monzo Flex" && Math.abs(fx.balance + 205.37) < 0.001 && fx.mappedTo === null, st1.accounts);
+  ok("FLEX map: an unmapped Flex is never the main account (nothing of it is a payment yet)", !grow(G, "transactions").some(r => /^f_/.test(String(r.bankId))) && !grow(G, "moves").some(r => r.to === "e-flex" || /f_rep/.test(r.id)), grow(G, "transactions").filter(r => /^f_/.test(String(r.bankId))));
+  ok("FLEX map: and the repayment already brought in stays as it was until then", (grow(G, "transactions").find(r => r.id === "bk-monzo-m_rep1") || {}).deleted !== true);
+  ok("FLEX history: Flex is never read from before you started (a day early, for the time zone)", flexReqs().length > 0 && flexReqs().every(r => { const s = new URL(r.url).searchParams.get("since"); return s && (/^tx_/.test(s) || s >= "2026-10-25T00:00:00"); }), flexReqs().map(r => r.url));
+  ok("FLEX map: Flex can't be mapped to a pot", G.call({key: G.kE, action: "bank.map", extId: FLEX, account: "e-food"}).ok === false);
+  ok("FLEX map: nor a pot to the credit account", G.call({key: G.kE, action: "bank.map", extId: "pot_food", account: "e-flex"}).ok === false);
+  ok("FLEX map: Flex maps to the credit account", G.call({key: G.kE, action: "bank.map", extId: FLEX, account: "e-flex"}).ok === true);
+  reqs.length = 0; NOW += 60000;
+  const sy = G.call({key: G.kE, action: "bank.syncNow"});
+  ok("FLEX: the read after mapping works", sy.ok, sy);
+  ok("FLEX history: the read after mapping goes back to the day you started, not the 89 days", flexReqs().length > 0 && new URL(flexReqs()[0].url).searchParams.get("since") === "2026-10-25T00:00:00.000Z", flexReqs().map(r => r.url));
+  const tx = id => grow(G, "transactions").find(r => String(r.bankId) === id && !r.deleted && r.deleted !== "TRUE");
+  ok("FLEX history: a Flex payment from before you started isn't brought in", !grow(G, "transactions").some(r => r.bankId === "f_old"));
+  const ikea = tx("f_ikea");
+  ok("FLEX purchase: a card payment on Flex is spending on the credit account, to check, with its budget guessed", !!ikea && ikea.account === "e-flex" && Math.abs(ikea.amount - 120) < 0.001 && ikea.budget === "e-fun" && (ikea.review === true || ikea.review === "TRUE"), ikea);
+  const lidl = grow(G, "transactions").find(r => r.id === "peckish-lidl");
+  ok("FLEX Peckish: the Peckish shop is the Flex payment: linked, not added again", lidl.bankId === "f_lidl" && !grow(G, "transactions").some(r => r.id === "bk-monzo-f_lidl"), lidl);
+  ok("FLEX Peckish: it takes the bank's amount, and is marked as paid on credit (the Food pot still has the money)", Math.abs(lidl.amount - 39.9) < 0.001 && lidl.creditAccount === "e-flex" && lidl.account === "e-food", lidl);
+  ok("FLEX refund: a refund on Flex comes in as a refund on the credit account", tx("f_ebay") && tx("f_ebayref") && Math.abs(tx("f_ebayref").amount + 19.48) < 0.001 && tx("f_ebayref").account === "e-flex");
+  ok("FLEX card check: a £1 check and its release are a payment and its refund, as on the current account", tx("f_chk") && tx("f_chkrel") && Math.abs(tx("f_chk").amount + tx("f_chkrel").amount) < 0.001);
+  ok("FLEX declined: a declined Flex payment isn't brought in", !grow(G, "transactions").some(r => r.bankId === "f_dec"));
+  ok("FLEX pending: a pending Flex payment comes in, as on the current account", tx("f_rest") && Math.abs(tx("f_rest").amount - 45) < 0.001);
+  const rep = grow(G, "moves").filter(r => /rep1/.test(r.id) && !r.deleted);
+  ok("FLEX repayment: both sides are one move from the current account to the credit account", rep.length === 1 && rep[0].id === "bk-monzo-m_rep1" && rep[0].from === "e-main" && rep[0].to === "e-flex" && Math.abs(rep[0].amount - 300) < 0.001, rep);
+  ok("FLEX repayment: the payment it was brought in as (not checked yet) is taken off: never spending", grow(G, "transactions").find(r => r.id === "bk-monzo-m_rep1").deleted === true && !tx("f_rep1"));
+  const today = new Intl.DateTimeFormat("en-CA", {timeZone: "Europe/London"}).format(new RealDate(NOW));
+  const val = grow(G, "valuations").find(v => v.id === "bk-" + FLEX + "-" + today);
+  ok("FLEX balance: Flex's balance is the credit account's valuation, negative for what's owed", !!val && val.account === "e-flex" && Math.abs(val.amount + 205.37) < 0.001, val);
+  // the engine: what's owed, and To do paying it off from each budget's pot
+  G.c.CACHE_ = {}; let d = B.load(G.c.allTables_(), today);
+  ok("FLEX engine: Budgie shows what's owed on Flex", Math.abs(B.balances(d, today)["e-flex"] + 205.37) < 0.001);
+  const td = B.todo(d, "ethan", today), food = td.find(x => x.from === "e-food" && x.to === "e-flex");
+  ok("FLEX engine: the Food pot pays off the Lidl shop it didn't pay for", !!food && Math.abs(food.amount - 39.9) < 0.001 && /credit/.test(food.why), td.map(x => [x.from, x.to, x.amount, x.why]));
+  ok("FLEX engine: the repayment isn't spending in any budget", !d.transactions.some(x => Math.abs(x.amount - 300) < 0.001));
+  // ----- a pending payment settles at a different amount; a £0 hold goes -----
+  monzo.txns = monzo.txns.map(t => t.id === "f_rest" ? Object.assign({}, t, {amount: -4800, settled: iso("2026-11-16", "23:00:00")}) : t).concat([fcard("f_zero", "2026-11-16", -100, "Hotel Check", "holidays", {pending: true})]);
+  NOW += 2 * 3600000; G.call({key: G.kE, action: "bank.syncNow"});
+  ok("FLEX pending: a pending Flex payment that settles keeps its row, at the settled amount", tx("f_rest") && Math.abs(tx("f_rest").amount - 48) < 0.001 && grow(G, "transactions").filter(r => r.bankId === "f_rest").length === 1);
+  ok("FLEX pending: a hold comes in while it's held", !!tx("f_zero"));
+  monzo.txns = monzo.txns.map(t => t.id === "f_zero" ? Object.assign({}, t, {amount: 0}) : t);
+  NOW += 2 * 3600000; G.call({key: G.kE, action: "bank.syncNow"});
+  ok("FLEX zero check: a hold that goes to £0 is taken off", !tx("f_zero") && grow(G, "transactions").some(r => r.bankId === "f_zero"));
+  // ----- one side of a repayment read before the other -----
+  // the current account's side first (it says it's Flex), then its Flex side
+  monzo.txns = monzo.txns.concat([mainFlex("m_rep2", "2026-11-12", -5000, {scheme: "monzo_flex", metadata: {flex_transaction_type: "repayment"}, time: "08:00:00"})]);
+  NOW += 2 * 3600000; G.call({key: G.kE, action: "bank.syncNow"});
+  const into = (date, amt) => live(G, "moves").filter(m => m.to === "e-flex" && String(m.date).slice(0, 10) === date && Math.abs(m.amount - amt) < 0.001);
+  ok("FLEX one side: the current-account side alone is the move", into("2026-11-12", 50).length === 1 && into("2026-11-12", 50)[0].id === "bk-monzo-m_rep2" && !live(G, "transactions").some(r => r.bankId === "m_rep2"), live(G, "moves").filter(m => m.to === "e-flex"));
+  monzo.txns = monzo.txns.concat([frepay("f_rep2", "2026-11-12", 5000, {time: "08:00:00"})]);
+  NOW += 2 * 3600000; G.call({key: G.kE, action: "bank.syncNow"});
+  ok("FLEX one side: its Flex side, read later, is the same move", into("2026-11-12", 50).length === 1, into("2026-11-12", 50));
+  // the Flex side first (its current-account side not in the feed yet), then the current account's (which doesn't say it's Flex)
+  monzo.txns = monzo.txns.concat([frepay("f_rep3", "2026-11-13", 2500, {time: "10:00:00"})]);
+  NOW += 2 * 3600000; G.call({key: G.kE, action: "bank.syncNow"});
+  ok("FLEX one side: the Flex side alone is the move, from the current account", into("2026-11-13", 25).length === 1 && into("2026-11-13", 25)[0].from === "e-main", into("2026-11-13", 25));
+  monzo.txns = monzo.txns.concat([mainFlex("m_rep3", "2026-11-13", -2500, {time: "10:00:00"})]);
+  NOW += 2 * 3600000; G.call({key: G.kE, action: "bank.syncNow"});
+  ok("FLEX one side: the current-account side, read later, is the same move and not a payment", into("2026-11-13", 25).length === 1 && !live(G, "transactions").some(r => r.bankId === "m_rep3"), {moves: into("2026-11-13", 25), tx: live(G, "transactions").filter(r => r.bankId === "m_rep3")});
+  // ----- reading again changes nothing -----
+  const snap = () => JSON.stringify(["transactions", "moves", "valuations", "exceptions", "settlements"].map(t => grow(G, t).map(r => [r.id, r.deleted, r.amount, r.account, r.budget, r.review, r.creditAccount, r.from, r.to, r.bankId, r.updated])));
+  const before = snap();
+  NOW += 2 * 3600000; G.call({key: G.kE, action: "bank.syncNow"});
+  NOW += 2 * 3600000; G.call({key: G.kE, action: "bank.syncNow"});
+  ok("FLEX re-read: reading the same again changes nothing", snap() === before);
+  // the other way round: the bank brings the Flex shop in first, then Peckish posts it against the Food pot
+  monzo.txns = monzo.txns.concat([fcard("f_tesco", "2026-11-16", -2215, "Tesco", "groceries")]);
+  NOW += 2 * 3600000; G.call({key: G.kE, action: "bank.syncNow"});
+  ok("FLEX Peckish later: the bank's copy comes in first, on the credit account", !!tx("f_tesco") && tx("f_tesco").id === "bk-monzo-f_tesco" && tx("f_tesco").account === "e-flex");
+  G.call({key: G.kE, ops: [{op: "put", table: "transactions", row: {id: "peckish-tesco", date: "2026-11-16", person: "ethan", amount: 21, budget: "e-food-b", account: "e-food", note: "Tesco shop (Peckish)", source: "peckish"}}]});
+  NOW += 2 * 3600000; G.call({key: G.kE, action: "bank.syncNow"});
+  const tes = grow(G, "transactions").find(r => r.id === "peckish-tesco");
+  ok("FLEX Peckish later: the Peckish shop posted after is linked, marked as paid on credit, and the bank's copy goes", tes.bankId === "f_tesco" && Math.abs(tes.amount - 22.15) < 0.001 && tes.creditAccount === "e-flex" && grow(G, "transactions").find(r => r.id === "bk-monzo-f_tesco").deleted === true, tes);
+  monzo.accounts = keepAcc; delete monzo.flexBalance;
+}
+{
+  // A Flex statement planned as a bill (from a Flex pot, paying off the credit account): the repayment pays it
+  freshMonzo(); NOW = RealDate.parse("2026-11-17T12:00:00Z");
+  const keepAcc = monzo.accounts; monzo.accounts = keepAcc.concat([flexAcc]);
+  monzo.flexBalance = {id: FLEX, body: {balance: -1000, total_balance: -1000, currency: "GBP"}};
+  monzo.txns = monzoData(planned).concat([mainFlex("m_stmt", "2026-11-12", -4500, {scheme: "monzo_flex", time: "07:00:00"}), frepay("f_stmt", "2026-11-12", 4500, {time: "07:00:00"})]);
+  const G = flexEnv(t => {
+    t.accounts.push({id: "e-flexpot", owner: "ethan", name: "Flex pot", kind: "pot", order: 6});
+    t.bills.push({id: "e-flexstmt", person: "ethan", name: "Flex statement", amount: 40, account: "e-flexpot", creditAccount: "e-flex", variable: true, unit: "month", on: "12", start: "2026-11-01"});
+    t.settings.push({person: "ethan", key: "bank.map." + FLEX, value: "e-flex"});
+  });
+  connectMonzo(G, {pot_bills: "e-bills", pot_food: "e-food"});
+  const ex = grow(G, "exceptions").filter(x => x.item === "e-flexstmt" && !x.deleted);
+  ok("FLEX statement: the repayment pays the planned statement (marked paid, at the bank's amount)", ex.some(x => x.action === "paid" && x.bankId === "m_stmt") && ex.some(x => x.action === "amount" && Math.abs(x.amount - 45) < 0.001), ex);
+  ok("FLEX statement: and isn't a move or a payment as well", !live(G, "moves").some(m => /_stmt/.test(m.id)) && !live(G, "transactions").some(r => /_stmt/.test(String(r.bankId))));
+  const snap = () => JSON.stringify(["moves", "exceptions", "transactions"].map(t => grow(G, t).map(r => [r.id, r.deleted, r.amount, r.updated])));
+  const before = snap(); NOW += 2 * 3600000; G.call({key: G.kE, action: "bank.syncNow"});
+  ok("FLEX statement: reading again changes nothing", snap() === before);
+  monzo.accounts = keepAcc; delete monzo.flexBalance;
+}
+
+// ================= money between the two of you that wasn't planned: one settlement (1.7.3) =================
+// (each side read straight from the shapes the two feeds make; every name and amount is made up)
+{
+  NOW = RealDate.parse("2026-11-17T12:00:00Z");
+  const readE = (G, txns) => G.c.bankApply_("ethan", {provider: "monzo", accounts: [], txns: txns.map(t => Object.assign({acc: "acc_00009main", pending: false, declined: false, card: false, pot: "", load: false, category: "transfers"}, t))}, "2026-10-01", []);
+  const readS = (G, txns) => G.c.bankApply_("sophie", {provider: "starling", accounts: [], txns: txns.map(t => Object.assign({acc: "sacc-0001", pending: false, declined: false, reversed: false, card: false, pot: "", load: false, category: "general"}, t))}, "2026-10-01", []);
+  const sets = G => grow(G, "settlements").filter(r => !r.deleted && r.deleted !== "TRUE");
+  const liveTx = G => grow(G, "transactions").filter(r => !r.deleted && r.deleted !== "TRUE");
+  const eIn = {id: "tx_air", date: "2026-11-08", amount: -23.5, name: "SOPHIE EXAMPLE"}, sOut = {id: "sfi-air", date: "2026-11-08", amount: 23.5, name: "Ethan Example"};
+  const tags = r => String(r.bankId || "").split(",").sort().join(",");
+  const snap = G => JSON.stringify(["transactions", "settlements", "exceptions", "moves"].map(t => grow(G, t).map(r => [r.id, r.deleted, r.amount, r.bankId, r.updated])));
+  // her side first, then his
+  let G = bankEnv();
+  readS(G, [sOut]);
+  let s1 = sets(G);
+  ok("SET: a payment to your partner that wasn't planned is one settlement, from you to them", s1.length === 1 && s1[0].from === "sophie" && s1[0].to === "ethan" && Math.abs(s1[0].amount - 23.5) < 0.001 && String(s1[0].date).slice(0, 10) === "2026-11-08" && s1[0].bankId === "sophie:sfi-air", s1);
+  ok("SET: and never a spending row", !liveTx(G).some(r => r.bankId === "sfi-air"));
+  readE(G, [eIn]);
+  s1 = sets(G);
+  ok("SET: the other side's read finds the same one and reuses it (one settlement, both payments on it)", s1.length === 1 && tags(s1[0]) === "ethan:tx_air,sophie:sfi-air", s1);
+  ok("SET: money in from your partner isn't a payment either", !liveTx(G).some(r => r.bankId === "tx_air"));
+  let before = snap(G); readS(G, [sOut]); readE(G, [eIn]); readE(G, [eIn]);
+  ok("SET: reading either side again changes nothing", snap(G) === before);
+  // how it shows: Between you two, the same from both sides
+  G.c.CACHE_ = {}; let d = B.load(G.c.allTables_(), "2026-11-17");
+  const bE = B.between(d, "ethan", "2026-11-17"), bS = B.between(d, "sophie", "2026-11-17");
+  ok("SET engine: Between you two counts it once, and both of you see the same", Math.abs(bE.net + 23.5) < 0.001 && Math.abs(bS.net - 23.5) < 0.001, {ethan: bE.net, sophie: bS.net});
+  ok("SET engine: the money leaves her account once and arrives in his once", B.flows(d, "2026-11-07", "2026-11-08").filter(f => f.src === s1[0].id).map(f => f.account + " " + f.amount).sort().join("|") === "e-main 23.5|s-main -23.5");
+  // with the half of the cash purchase he logged as split, they're square
+  G.call({key: G.kE, ops: [{op: "put", table: "transactions", row: {id: "app-airfryer", date: "2026-11-07", person: "ethan", amount: 47, budget: "e-fun", account: "e-main", split: "half", note: "Second-hand air fryer (cash)", source: "app"}}]});
+  G.c.CACHE_ = {}; d = B.load(G.c.allTables_(), "2026-11-17");
+  ok("SET engine: with the shared purchase logged, her paying her half leaves you square", Math.abs(B.between(d, "ethan", "2026-11-17").net) < 0.001 && Math.abs(B.between(d, "sophie", "2026-11-17").net) < 0.001);
+  // his side first (only he is connected so far), then hers
+  G = bankEnv(); readE(G, [eIn]);
+  s1 = sets(G);
+  ok("SET one side: his read alone makes the settlement, from her to him", s1.length === 1 && s1[0].id === "bk-monzo-tx_air" && s1[0].from === "sophie" && s1[0].to === "ethan" && s1[0].bankId === "ethan:tx_air", s1);
+  readS(G, [sOut]); s1 = sets(G);
+  ok("SET one side: her read later reuses it", s1.length === 1 && tags(s1[0]) === "ethan:tx_air,sophie:sfi-air" && !liveTx(G).some(r => r.bankId === "sfi-air"), s1);
+  // a day apart in the two banks, and two the same on one day
+  G = bankEnv(); readS(G, [sOut, Object.assign({}, sOut, {id: "sfi-air2"})]); readE(G, [Object.assign({}, eIn, {date: "2026-11-09"}), Object.assign({}, eIn, {id: "tx_air2", date: "2026-11-09"})]);
+  s1 = sets(G);
+  ok("SET: two the same, a day apart in the two banks, are two settlements, each with one payment from each side", s1.length === 2 && s1.every(r => /^ethan:tx_air2?,sophie:sfi-air2?$/.test(tags(r))), s1.map(tags));
+  // logged on a phone first ("I've paid")
+  G = bankEnv();
+  G.call({key: G.kS, ops: [{op: "put", table: "settlements", row: {id: "set-phone", date: "2026-11-08", from: "sophie", to: "ethan", amount: 23.5, key: "split:2026-11-08", note: "Settled up"}}]});
+  readS(G, [sOut]); readE(G, [eIn]); s1 = sets(G);
+  ok("SET: one logged on a phone is reused from both sides, not added again", s1.length === 1 && s1[0].id === "set-phone" && tags(s1[0]) === "ethan:tx_air,sophie:sfi-air" && s1[0].key === "split:2026-11-08", s1);
+  // a regular payment between you keeps its own matching
+  G = bankEnv();
+  readE(G, [{id: "tx_billshare", date: "2026-11-01", amount: -140, name: "SOPHIE EXAMPLE"}]);
+  readS(G, [{id: "sfi-billshare", date: "2026-11-01", amount: 140, name: "Ethan Example"}]);
+  ok("SET planned: the planned bills share is still the planned transfer, from both sides (no settlement, no payment)", sets(G).length === 0 && !liveTx(G).length && grow(G, "exceptions").some(x => x.item === "s-to-e-bills" && x.action === "paid" && x.bankId === "sfi-billshare"), {sets: sets(G), tx: liveTx(G)});
+  // one a few days from a regular payment between you, for a different amount, isn't taken for settling up as well
+  G = bankEnv();
+  readS(G, [{id: "sfi-billshare2", date: "2026-11-02", amount: 145, name: "Ethan Example"}]); readE(G, [{id: "tx_billshare2", date: "2026-11-02", amount: -145, name: "SOPHIE EXAMPLE"}]);
+  ok("SET planned: £145 the day after a planned £140 bills share isn't a settlement too (it's left to check, as before)", sets(G).length === 0 && liveTx(G).some(r => r.bankId === "sfi-billshare2"), {sets: sets(G), tx: liveTx(G)});
+  // a payment that doesn't name your partner isn't taken for one between you
+  G = bankEnv(); readS(G, [{id: "sfi-other", date: "2026-11-08", amount: 23.5, name: "E Smith"}]);
+  ok("SET names: a payment that doesn't name your partner stays a payment", sets(G).length === 0 && liveTx(G).some(r => r.bankId === "sfi-other"));
+  // a hold waits; a reversed one is taken off, and comes back if the bank shows it again
+  G = bankEnv(); readS(G, [Object.assign({}, sOut, {pending: true})]);
+  ok("SET pending: a pending payment between you waits until it's settled", sets(G).length === 0 && !liveTx(G).length);
+  readS(G, [sOut]); ok("SET pending: then it's the settlement", sets(G).length === 1);
+  readS(G, [Object.assign({}, sOut, {reversed: true})]);
+  ok("SET reversed: a reversed one is taken off", sets(G).length === 0);
+  readS(G, [sOut]); ok("SET reversed: and comes back if the bank shows it again", sets(G).length === 1 && sets(G)[0].bankId === "sophie:sfi-air");
+  // one reversed on one side only: still the other side's
+  readE(G, [eIn]); readS(G, [Object.assign({}, sOut, {reversed: true})]);
+  ok("SET reversed: reversed on her side only, it stays as his", sets(G).length === 1 && sets(G)[0].bankId === "ethan:tx_air", sets(G));
+  // a loan repayment between you is that repayment
+  NOW = RealDate.parse("2026-12-30T12:00:00Z");
+  G = bankEnv(); readS(G, [{id: "sfi-sofa", date: "2026-12-28", amount: 200, name: "Ethan Example"}]); readE(G, [{id: "tx_sofa", date: "2026-12-28", amount: -200, name: "SOPHIE EXAMPLE"}]);
+  s1 = sets(G);
+  ok("SET loan: a repayment due on a loan between you is that repayment, once", s1.length === 1 && s1[0].loan === "sofa" && s1[0].key === "loan:sofa:2026-12-28" && tags(s1[0]) === "ethan:tx_sofa,sophie:sfi-sofa", s1);
+  G.c.CACHE_ = {}; d = B.load(G.c.allTables_(), "2026-12-30");
+  ok("SET loan: it pays December's repayment and isn't settling up as well", B.loans(d, "ethan", "2026-12-30")[0].paid === 200 && Math.abs(B.between(d, "ethan", "2026-12-30").net - B.between(B.load(fixture(), "2026-12-30"), "ethan", "2026-12-30").net) < 0.001);
+  NOW = RealDate.parse("2026-11-17T12:00:00Z");
+  // a payment the bank brought in before this release
+  G = bankEnv(t => {
+    t.transactions.push({id: "bk-starling-sfi-old", date: "2026-11-08", person: "sophie", amount: 23.5, budget: "", account: "s-main", note: "Ethan Example", source: "starling", bankId: "sfi-old", review: true, by: "bank"});
+    t.transactions.push({id: "bk-starling-sfi-gift", date: "2026-11-09", person: "sophie", amount: 15, budget: "s-fun", account: "s-main", note: "Ethan Example", source: "starling", bankId: "sfi-gift", review: false, by: "bank"});
+  });
+  const sophieBefore = JSON.stringify(grow(G, "transactions").filter(r => r.person === "sophie"));
+  readE(G, [Object.assign({}, eIn, {id: "tx_old"})]);
+  ok("SET privacy: his read never changes her rows", JSON.stringify(grow(G, "transactions").filter(r => r.person === "sophie")) === sophieBefore);
+  readS(G, [Object.assign({}, sOut, {id: "sfi-old"}), {id: "sfi-gift", date: "2026-11-09", amount: 15, name: "Ethan Example"}]);
+  const old = grow(G, "transactions").find(r => r.id === "bk-starling-sfi-old"), gift = grow(G, "transactions").find(r => r.id === "bk-starling-sfi-gift");
+  ok("SET migration: her earlier payment to him with nothing said about it becomes the (same) settlement", old.deleted === true && sets(G).length === 1 && tags(sets(G)[0]) === "ethan:tx_old,sophie:sfi-old", {old, sets: sets(G)});
+  ok("SET migration: one she'd given a budget stays her payment", gift.deleted !== true && gift.budget === "s-fun" && !sets(G).some(r => /gift/.test(r.bankId)));
+  before = snap(G); readS(G, [Object.assign({}, sOut, {id: "sfi-old"}), {id: "sfi-gift", date: "2026-11-09", amount: 15, name: "Ethan Example"}]);
+  ok("SET migration: reading again changes nothing", snap(G) === before);
+  // a phone can't rewrite what the bank recorded
+  G = bankEnv(); readE(G, [eIn]);
+  const r = G.call({key: G.kS, ops: [{op: "put", table: "settlements", row: {id: "bk-monzo-tx_air", amount: 2.35, bankId: "sophie:made-up"}}]});
+  const after = grow(G, "settlements").find(x => x.id === "bk-monzo-tx_air");
+  ok("SET: a phone can't change the amount or the bank payments of one the bank recorded", Math.abs(after.amount - 23.5) < 0.001 && after.bankId === "ethan:tx_air", {r: r.rejected, after});
 }
 console.log(fails ? fails + " failed, " + passes + " passed" : "All " + passes + " passed");
 process.exit(fails ? 1 : 0);
