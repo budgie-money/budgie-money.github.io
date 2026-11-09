@@ -1,7 +1,7 @@
 /* Budgie app: screens, syncing and offline queue. The maths lives in engine.js. */
 (function () {
   "use strict";
-  var B = window.Budgie, TH = window.BudgieThemes, APP_VERSION = "1.7.2";
+  var B = window.Budgie, TH = window.BudgieThemes, APP_VERSION = "1.7.3";
   var $ = function (s) { return document.querySelector(s); };
   var esc = function (s) { return String(s === undefined || s === null ? "" : s).replace(/[&<>"']/g, function (c) { return {"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]; }); };
   // wiped: Budgie's copy at the old address has been wiped (it's moving across), so nothing is saved here again
@@ -1356,13 +1356,16 @@
     var d = db(), accs = B.accountsOf(d, me());
     // not matched yet: suggest the Budgie account with the same name ("Food" and "Food pot")
     var words = function (n) { return String(n || "").toLowerCase().replace(/\b(pot|space|account|the|my)\b/g, " ").replace(/[^a-z0-9]+/g, " ").trim(); };
-    var guess = function (x) { if (x.kind === "main") return B.mainOf(d, me()); var w = words(x.name), hit = accs.filter(function (a) { return w && words(a.name) === w; })[0] || accs.filter(function (a) { var aw = words(a.name); return w && aw && (aw.indexOf(w) >= 0 || w.indexOf(aw) >= 0); })[0]; return hit ? hit.id : ""; };
+    // (a credit account at the bank, like Monzo Flex, only goes with a credit account in Budgie, and the other way round:
+    // with just one credit account, that's the one)
+    var fits = function (x) { return accs.filter(function (a) { return (a.kind === "credit") === (x.kind === "credit"); }); };
+    var guess = function (x) { if (x.kind === "main") return B.mainOf(d, me()); var pool = fits(x); if (x.kind === "credit" && pool.length === 1) return pool[0].id; var w = words(x.name), hit = pool.filter(function (a) { return w && words(a.name) === w; })[0] || pool.filter(function (a) { var aw = words(a.name); return w && aw && (aw.indexOf(w) >= 0 || w.indexOf(aw) >= 0); })[0]; return hit ? hit.id : ""; };
     S.ui.bankGuess = {};
     var rows = (b.accounts || []).map(function (x) {
       var unset = x.mappedTo === null || x.mappedTo === undefined, sug = unset ? guess(x) : "", cur = unset ? null : x.mappedTo, suggested = !!sug;
       if (suggested) S.ui.bankGuess[x.extId] = sug;
       return '<div class="li" style="flex-wrap:wrap;gap:6px"><span class="grow"><span class="what">' + esc(x.name) + '</span><span class="why">' + esc(({main: "Main account", pot: "Pot", space: "Space", credit: "Credit"})[x.kind] || "") + (x.balance !== undefined && x.balance !== null ? " · " + M(x.balance) : "") + (suggested ? ' · <span class="warn">looks like ' + esc(B.accName(d, sug)) + "</span>" : unset ? ' · <span class="warn">not matched yet</span>' : "") + "</span></span>" +
-        '<select data-c="bankmap" data-v="' + esc(x.extId) + '" aria-label="Which Budgie account is ' + esc(x.name) + '" style="flex:1 1 100%;min-width:0;min-height:44px;border-radius:10px;border:1px solid var(--line);background:var(--card);padding:0 8px;max-width:100%">' + (unset ? '<option value="" selected disabled>Choose…</option>' : "") + '<option value=""' + (cur === "" ? " selected" : "") + ">Ignore it</option>" + accs.map(function (a) { return '<option value="' + esc(a.id) + '"' + (cur === a.id ? " selected" : "") + ">" + esc(a.name) + "</option>"; }).join("") + "</select></div>";
+        '<select data-c="bankmap" data-v="' + esc(x.extId) + '" aria-label="Which Budgie account is ' + esc(x.name) + '" style="flex:1 1 100%;min-width:0;min-height:44px;border-radius:10px;border:1px solid var(--line);background:var(--card);padding:0 8px;max-width:100%">' + (unset ? '<option value="" selected disabled>Choose…</option>' : "") + '<option value=""' + (cur === "" ? " selected" : "") + ">Ignore it</option>" + fits(x).map(function (a) { return '<option value="' + esc(a.id) + '"' + (cur === a.id ? " selected" : "") + ">" + esc(a.name) + "</option>"; }).join("") + "</select></div>";
     }).join("");
     var nGuess = Object.keys(S.ui.bankGuess).length;
     var reN = reviewRows().length;

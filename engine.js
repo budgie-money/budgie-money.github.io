@@ -6,7 +6,7 @@
   else root.Budgie = factory();
 })(this, function () {
   "use strict";
-  var VERSION = "1.7.2";
+  var VERSION = "1.7.3";
 
   // ---------- dates ----------
   function D(s) { var p = String(s).split("-"); return new Date(Date.UTC(+p[0], +p[1] - 1, +p[2])); }
@@ -1189,8 +1189,9 @@
           if (lent[acc] === undefined) { lent[acc] = 0; lentTo.push(acc); }
           lent[acc] += s; if (!lentDate[acc] || x.date > lentDate[acc]) lentDate[acc] = x.date;
         });
-        // a refund that landed somewhere else goes back to the budget's pot
-        payers.forEach(function (payer) { var a = round(byPayer[payer]); if (a < -0.004) { bump("refund:" + b.id + ":" + pk.start + ":" + payer, payer, home, -a, "refund", payerDate[payer]); left += -a; } });
+        // a refund that landed somewhere else goes back to the budget's pot (on a credit account like Flex it only lowers
+        // what's owed: there's no money there to move, and the pot keeps what it didn't have to pay off)
+        payers.forEach(function (payer) { var a = round(byPayer[payer]); if (a < -0.004) { if ((db.byId[payer] || {}).kind !== "credit") bump("refund:" + b.id + ":" + pk.start + ":" + payer, payer, home, -a, "refund", payerDate[payer]); left += -a; } });
         if (left < 0 && home === main && fb) bump("cover:" + b.id + ":" + pk.start + ":" + main, fb, main, -left, "over", lastDate);
         left = Math.max(0, left);
         var giveMain = 0;
@@ -1199,7 +1200,16 @@
           // A funded statement already covers this card. Otherwise reserve the budget's share in its repayment pot.
           if ((db.byId[payer] || {}).kind === "credit") {
             var statement = db.bills.filter(function (bill) { return bill.person === p && bill.creditAccount === payer; }).map(function (bill) { var o = nextOcc(db, bill, today); return o ? {bill: bill, occ: o} : null; }).filter(Boolean).sort(function (x, y) { return x.occ.date < y.occ.date ? -1 : 1; })[0];
-            if (statement) { var target = statement.bill.account || main, funded = balances(db, today)[target] || 0; if (funded >= statement.occ.amount - 0.004) return; if (target !== home) bump("back:" + b.id + ":" + pk.start + ":" + target, home, target, Math.min(a, left, Math.max(0, statement.occ.amount - funded)), "back", payerDate[payer]); left = Math.max(0, left - a); return; }
+            // The budget's share goes to the statement's pot (the Flex pot), as far as the statement still needs it. What's
+            // still needed is shared out across every budget and pay period in To do (stmt), so they can't fill it twice.
+            if (statement) {
+              var target = statement.bill.account || main, give0 = Math.min(a, left); left = Math.max(0, left - a);
+              if (target === home || !(give0 > 0.004)) return;
+              var bk = "back:" + b.id + ":" + pk.start + ":" + target;
+              bump(bk, home, target, give0, "back", payerDate[payer]);
+              agg[bk].stmt = {bill: statement.bill.id, credit: payer, target: target, need: round(Math.max(0, statement.occ.amount - (balances(db, today)[target] || 0)))};
+              return;
+            }
           }
           var give = Math.min(a, left); left -= give;
           if (payer === main && home !== main) giveMain = give;
@@ -1341,10 +1351,12 @@
     // 2. paid from the wrong place, or over budget (all periods since tracking started)
     var qName = person(db, partnerOf(db, p)).name || "your partner";
     // (paid from somewhere else than the budget's own pot: the pot puts it back. Paid on a credit account like Flex: the pot pays that off)
-    var backWhy = function (names, toId, theirs, mine, fromId) {
+    // (viaCredit: paid on that credit account, and this saves it towards its next statement in the pot that pays it)
+    var backWhy = function (names, toId, theirs, mine, fromId, viaCredit) {
       var to = accName(db, toId), toAcc = db.byId[toId] || {};
       if (theirs) return "Your share of " + names + " " + qName + " paid for is settled up from " + to + (mine ? ", and you paid for some from there too." : ".");
       if (toAcc.kind === "credit") return "You paid for " + names + " on " + to + ", which is credit. This pays it off.";
+      if (viaCredit) return "You paid for " + names + " on " + accName(db, viaCredit) + ", which is credit. This puts it in " + to + " for the next statement.";
       return "You paid for " + names + " from " + to + (fromId ? ", not " + accName(db, fromId) : "") + ". This puts the money back.";
     };
     // (when the main account can't spare it, the fallback pot puts the share back until you settle up)
@@ -1355,12 +1367,22 @@
     Object.keys(stNow).forEach(function (id) { var s = stNow[id]; if ((s.budget.account || main) === main) mainKeep += Math.max(0, s.left || 0); });
     flowsAhead.forEach(function (f) { if (f.account === main) mainOut += f.amount; });
     mainKeep = round(mainKeep); mainOut = round(Math.max(0, -mainOut));
+    // what each credit statement still needs (shared across budgets and pay periods, so it's filled once)
+    var stmtLeft = dict();
     rbAll.forEach(function (x) {
       x.gs.forEach(function (g0) {
         // (what the bank has moved already is out of it: as if ticked)
         var netted=journey&&journey.netted[g0.key]||0;
         var g = g0.bank||netted ? Object.assign({}, g0, {amount: round(g0.amount - (g0.bank||0)-netted)}) : g0;
-        if (g.kind === "back") plan(g.key, g.from, g.to, g.amount, "", backWhy(g.name, g.to, g.theirs, g.mine, g.from), {partial: true, names: [g.name], theirs: !!g.theirs, mine: !!g.mine});
+        if (g.kind === "back") {
+          var amtB = g.amount;
+          if (g.stmt) {
+            if (stmtLeft[g.stmt.bill] === undefined) stmtLeft[g.stmt.bill] = g.stmt.need;
+            var tkB = ticked(db, p, g.key), askB = round(Math.min(Math.max(0, g.amount - tkB), stmtLeft[g.stmt.bill]));
+            stmtLeft[g.stmt.bill] = round(stmtLeft[g.stmt.bill] - askB); amtB = round(tkB + askB);
+          }
+          plan(g.key, g.from, g.to, amtB, "", backWhy(g.name, g.to, g.theirs, g.mine, g.from, g.stmt && g.stmt.credit), {partial: true, names: [g.name], theirs: !!g.theirs, mine: !!g.mine, viaCredit: g.stmt ? g.stmt.credit : ""});
+        }
         else if (g.kind === "lent") {
           // your partner's share of what a pot paid goes back into the pot from the main account, as long as the main account
           // can spare it (beyond what its own budgets and bills still need); else from the fallback pot, if it has it
@@ -1379,7 +1401,7 @@
     items.forEach(function (it) {
       it.keys = [{key: it.key, amount: it.amount}];
       if (it.type !== "move" || it.payday || !it.names) { grouped.push(it); return; }
-      var g = it.from + ">" + it.to + (it.over ? "!" : it.refund ? "r" : it.lent ? "s" : "");
+      var g = it.from + ">" + it.to + (it.over ? "!" : it.refund ? "r" : it.lent ? "s" : it.viaCredit ? "c" : "");
       if (at[g] === undefined) { at[g] = grouped.length; grouped.push(it); return; }
       var x = grouped[at[g]]; x.amount = round(x.amount + it.amount); x.keys.push({key: it.key, amount: it.amount}); x.names = x.names.concat(it.names);
       x.theirs = x.theirs || it.theirs; x.mine = x.mine || it.mine;
@@ -1387,7 +1409,7 @@
       x.why = x.over ? "You went over your " + joinNames(x.names) + " budget" + (x.names.length > 1 ? "s" : "") + (x.to === main ? "" : " paying from " + x.toName) + ". Your next pay tops the " + x.fromName + " back up."
         : x.refund ? "Refunds for " + joinNames(x.names) + " came into " + x.fromName + "."
         : x.lent ? lentWhy(joinNames(x.names), x.toName, x.fromName)
-        : backWhy(joinNames(x.names), x.to, x.theirs, x.mine, x.from);
+        : backWhy(joinNames(x.names), x.to, x.theirs, x.mine, x.from, x.viaCredit || "");
     });
     items = grouped;
     // 3. a pot that will run short before payday
@@ -1395,7 +1417,8 @@
     // (on the same day, money going out is counted before money coming in: which the bank takes first isn't known)
     var warned = dict(), ahead = flowsAhead.slice().sort(function (a, c) { return a.date < c.date ? -1 : a.date > c.date ? 1 : a.amount - c.amount; });
     ahead.forEach(function (f, i) {
-      if (run[f.account] === undefined || (db.byId[f.account] || {}).owner !== p) return;
+      // (a credit account below nothing is what's owed on it, not a pot running short)
+      if (run[f.account] === undefined || (db.byId[f.account] || {}).owner !== p || (db.byId[f.account] || {}).kind === "credit") return;
       run[f.account] = round(run[f.account] + f.amount);
       if (run[f.account] < -0.004 && f.account !== main && !warned[f.account]) {
         warned[f.account] = true;

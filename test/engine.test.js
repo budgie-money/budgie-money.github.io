@@ -83,6 +83,47 @@ const mf = db(t => {
 const flexItem = B.todo(mf, "ethan", "2026-11-02").find(x => /^back:e-fun:/.test(x.key));
 eq("paid on a credit account: the money goes there", flexItem && [flexItem.from, flexItem.to, flexItem.amount], ["e-main", "e-flex", 31.98]);
 eq("and the reason says it's credit", flexItem && flexItem.why, "You paid for fun on Flex pot, which is credit. This pays it off.");
+
+// --- credit (Monzo Flex, 1.7.3): what's bought on it is paid off from each budget's own pot. Made-up amounts.
+const flexDb = (mut) => db(t => {
+  t.accounts.push({id: "e-flexcard", owner: "ethan", name: "Example Flex", kind: "credit", order: 6});
+  t.valuations.push({id: "vf", account: "e-flexcard", date: "2026-10-30", amount: 0});
+  if (mut) mut(t);
+});
+const toFlex = (d, day) => B.todo(d, "ethan", day || "2026-11-02").filter(x => x.type === "move" && !x.payday && (x.to === "e-flexcard" || x.to === "e-flexpot"));
+// no statement planned: each budget's pot pays off its own share
+let cf = flexDb(t => t.transactions.push({id: "cf1", date: "2026-10-31", person: "ethan", amount: 42.6, budget: "e-food-b", account: "e-flexcard"}, {id: "cf2", date: "2026-11-01", person: "ethan", amount: 18, budget: "e-fun", account: "e-flexcard"}));
+eq("credit payoff: each budget's pot pays off its share of what's owed", toFlex(cf).map(x => [x.from, x.to, x.amount]).sort(), [["e-food", "e-flexcard", 42.6], ["e-main", "e-flexcard", 18]]);
+near("credit payoff: what's owed shows on the credit account", B.balances(cf, "2026-11-02")["e-flexcard"], -60.6);
+near("credit payoff: the Food pot's cash isn't spent by a credit purchase", B.balances(cf, "2026-11-02")["e-food"], B.balances(db(), "2026-11-02")["e-food"]);
+// ticking part of it asks only for the rest
+cf = flexDb(t => { t.transactions.push({id: "cf1", date: "2026-10-31", person: "ethan", amount: 42.6, budget: "e-food-b", account: "e-flexcard"}); t.moves.push({id: "cfm", date: "2026-11-01", person: "ethan", from: "e-food", to: "e-flexcard", amount: 20, key: "back:e-food-b:2026-10-29:e-flexcard"}); });
+eq("credit payoff: after ticking £20 it asks for the other £22.60", toFlex(cf).map(x => [x.from, x.amount]), [["e-food", 22.6]]);
+// a purchase and its refund on credit net out; a refund on its own moves nothing out of credit
+cf = flexDb(t => t.transactions.push({id: "cf3", date: "2026-10-31", person: "ethan", amount: 19.5, budget: "e-food-b", account: "e-flexcard"}, {id: "cf4", date: "2026-11-01", person: "ethan", amount: -19.5, budget: "e-food-b", account: "e-flexcard"}));
+eq("credit payoff: a purchase and its refund on credit ask for nothing", toFlex(cf), []);
+cf = flexDb(t => t.transactions.push({id: "cf5", date: "2026-11-01", person: "ethan", amount: -12, budget: "e-food-b", account: "e-flexcard"}));
+eq("credit payoff: a refund on credit never asks to move money out of the credit account", B.todo(cf, "ethan", "2026-11-02").filter(x => x.from === "e-flexcard"), []);
+// the bank's repayment (a move from the main account to the credit account) lowers what's owed and spends nothing
+cf = flexDb(t => { t.transactions.push({id: "cf1", date: "2026-10-31", person: "ethan", amount: 42.6, budget: "e-food-b", account: "e-flexcard"}); t.moves.push({id: "bk-monzo-tx_examplerepay", date: "2026-11-01", person: "ethan", from: "e-main", to: "e-flexcard", amount: 42.6, key: "bank:tx_examplerepay"}); });
+near("credit payoff: a repayment move clears what's owed", B.balances(cf, "2026-11-02")["e-flexcard"], 0);
+near("credit payoff: and isn't spending: Food has spent the shop only", (B.today(cf, "ethan", "2026-11-02").tiles.find(x => x.id === "e-food-b") || {}).spent, (B.today(flexDb(t => t.transactions.push({id: "cf1", date: "2026-10-31", person: "ethan", amount: 42.6, budget: "e-food-b", account: "e-flexcard"})), "ethan", "2026-11-02").tiles.find(x => x.id === "e-food-b") || {}).spent);
+// a Flex statement planned as a bill from a Flex pot: the budgets fill that pot, only as far as the statement still needs
+const stmt = (mut) => flexDb(t => {
+  t.accounts.push({id: "e-flexpot", owner: "ethan", name: "Flex pot", kind: "pot", order: 7});
+  t.valuations.push({id: "vfp", account: "e-flexpot", date: "2026-10-30", amount: 0});
+  t.bills.push({id: "e-flexstmt", person: "ethan", name: "Flex statement", amount: 50, account: "e-flexpot", creditAccount: "e-flexcard", variable: true, unit: "month", on: "20", start: "2026-11-01"});
+  t.transactions.push({id: "cs1", date: "2026-10-31", person: "ethan", amount: 30, budget: "e-food-b", account: "e-flexcard"}, {id: "cs2", date: "2026-11-01", person: "ethan", amount: 35, budget: "e-fun", account: "e-flexcard"});
+  if (mut) mut(t);
+});
+let sd = stmt(), si = toFlex(sd);
+eq("credit statement: budgets put their share in the Flex pot", si.every(x => x.to === "e-flexpot") && si.length === 2, true);
+near("credit statement: but only what the statement still needs (£50, not £65)", si.reduce((a, x) => a + x.amount, 0), 50);
+eq("credit statement: and the reason says so", (si.find(x => x.from === "e-food") || {}).why, "You paid for food on Example Flex, which is credit. This puts it in Flex pot for the next statement.");
+sd = stmt(t => t.moves.push({id: "csm", date: "2026-11-01", person: "ethan", from: "e-food", to: "e-flexpot", amount: 30, key: "back:e-food-b:2026-10-29:e-flexpot"}));
+near("credit statement: after Food's £30 is ticked, only £20 more is asked", toFlex(sd).reduce((a, x) => a + x.amount, 0), 20);
+sd = stmt(t => t.valuations.push({id: "vfp2", account: "e-flexpot", date: "2026-11-01", amount: 50}));
+eq("credit statement: a Flex pot that already holds the statement asks for nothing", toFlex(sd), []);
 const cover = td.find(x => x.over);
 eq("A budget overspend does not move emergency cash into funded Main", !!cover, false);
 const dec = B.planFor(m, "ethan", B.periodAt(m, "ethan", "2026-12-01"));
@@ -490,7 +531,7 @@ const savedUp = (pl, id) => lineAmt(pl, l => l.setAside && l.bill === id && l.ki
   const bs = B.budgetState(c, me, per);
   eq("compat: budgetState(db, me, per)", ["amount", "spent", "left", "avail", "carryIn", "carryOut", "over"].every(k => k in bs["e-fun"]) && bs["e-fun"].period.start === per.start, true);
   eq("compat: still exported", ["load", "coming", "periodAt", "planFor", "budgetState", "today", "checks", "lisa", "yearly", "yearReview"].every(k => typeof B[k] === "function"), true);
-  eq("compat: version", B.VERSION, "1.7.2");
+  eq("compat: version", B.VERSION, "1.7.3");
 })();
 
 // C3: a payday move ticked in the app and by the bank feed counts once (the latest)
