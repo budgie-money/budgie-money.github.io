@@ -327,7 +327,7 @@
     edit: function () { return [S.view.p.title || "Edit", fromTitle()]; }, list: function () { return [S.view.p.title || ({budgets:"Budgets",accounts:"Accounts",income:"Money coming in",splits:"Splits",transfers:"Regular payments"})[S.view.p.table] || "Rules", fromTitle()]; }, themes: function () { return ["Themes", "How Budgie looks"]; },
     pool: function () { return ["Bills month", fromTitle()]; },
     payments: function () { var d = db(), pp = S.view.p, b = pp.budget ? d.byId[pp.budget] : null, per = B.periodAt(d, me(), pp.start || todayIso()); return ["Payments", (b ? b.name.replace(/ \(what's left\)/, "") + " · " : "") + per.name]; },
-    emailset: function () { return ["Sunday email", "Settings"]; }, linked: function () { return ["Linked apps", "Settings"]; },
+    emailset: function () { return ["Emails", "Settings"]; }, linked: function () { return ["Linked apps", "Settings"]; },
     bank: function () { return ["Bank connection", "Settings"]; }, review: function () { return ["New payments", "From " + bankName()]; },
     sharing: function () { return ["Partner and sharing", "What " + (person(partner()).name || "your partner") + " sees"]; }, sync: function () { return ["Google Sheet", "Sync and backup"]; }, importcsv: function () { return ["Import", "Bank statement"]; },
     connect: function () { return ["Budgie", "Connect your sheet"]; }
@@ -1291,7 +1291,7 @@
   // ----- Settings
   SCREENS.settings = function () {
     var w = cap(potWord(true)), todo = checkList(), groups = [
-      ["You", [["list:income", "Pay and money coming in", "Paydays, pay rises, one-offs"], ["account", "Your account", (person().name || "") + " · " + (person().bank || "")], ["bank", "Bank connection", bankLabel()], ["emailset", "Sunday money email", /^true$/i.test(String(getSetting("email.sunday", ""))) ? "On: to " + getSetting("email.to", "") : "A weekly round-up in your inbox"]]],
+      ["You", [["list:income", "Pay and money coming in", "Paydays, pay rises, one-offs"], ["account", "Your account", (person().name || "") + " · " + (person().bank || "")], ["bank", "Bank connection", bankLabel()], ["emailset", "Emails", /^true$/i.test(String(getSetting("email.sunday", ""))) ? "Sunday email on: to " + getSetting("email.to", "") : "Sunday round-up and pot reminders"]]],
       ["Your money", [["bills", "Bills and subscriptions", "Add, change or stop a bill"], ["list:budgets", "Budgets", "Food, fun and the rest"], ["list:accounts", w, "What each one is for"], ["goals", "Goals", "House, car, holidays"], ["gifts", "Gifts", "Ideas and spending"]]],
       ["Together", [["sharing", "Partner and sharing", "What " + (person(partner()).name || "your partner") + " can see"], ["list:splits", "How you split things", "For example 2 parts to 1"], ["list:transfers", "Regular payments to " + (person(partner()).name || "partner"), "Like your rent share"], ["debts", "Money owed between you", "Furniture and the like"]]],
       ["Linked apps", [["linked", "Peckish and Caledonite", "Food shops both ways; paydays and bills in your calendar"]]],
@@ -1427,7 +1427,7 @@
   SCREENS.emailset = function () {
     var on = /^true$/i.test(String(getSetting("email.sunday", ""))), to = getSetting("email.to", "");
     return '<p class="small muted" style="margin:0 4px 10px">Every Sunday evening: your week, what\'s left until payday, bills coming up and anything to sort. Only what you\'d see in the app.</p>' +
-      card('<label class="li check"><span class="grow"><span class="what">Send me the Sunday email</span></span><input type="checkbox" data-c="emailon"' + (on ? " checked" : "") + '></label><label class="f">Your email address<input type="email" id="emailTo" inputmode="email" autocomplete="email" value="' + esc(to) + '" placeholder="you@example.com"></label><button type="button" class="btn wide" style="margin-top:12px" data-a="emailsave">Save</button>');
+      card('<label class="li check"><span class="grow"><span class="what">Send me the Sunday email</span></span><input type="checkbox" data-c="emailon"' + (on ? " checked" : "") + '></label><label class="li check"><span class="grow"><span class="what">Pot top-up reminders</span><span class="why">When a pot needs money moved across</span></span><input type="checkbox" data-c="emailpots"' + (!/^(off|false|no|0)$/i.test(String(getSetting("email.pots", ""))) ? " checked" : "") + '></label><label class="f">Your email address<input type="email" id="emailTo" inputmode="email" autocomplete="email" value="' + esc(to) + '" placeholder="you@example.com"></label><button type="button" class="btn wide" style="margin-top:12px" data-a="emailsave">Save</button>');
   };
   SCREENS.sharing = function () {
     var keys = [["balance", "Current-account balance", "Share your last checked balance without sharing individual payments"], ["bills", "Bill breakdown", "Names, dates and planned amounts for this pay period"], ["totals", "How much is left", "Your can-spend-today and what you're saving"], ["cats", "Your budgets", "Food, fun and the rest, against plan"], ["goals", "Your own goals", "Progress on goals that are just yours"], ["payments", "Each payment", "Every payment you log with its note, plus your pay, bills, budgets and balances"]];
@@ -1543,7 +1543,7 @@
     bills: {title: "Bill", fields: function () { return [{k: "name", t: "text", l: "Name"}, {k: "amount", t: "money", l: "Amount"}].concat(SCHED()).concat([{k: "account", t: "account", l: "Comes out of"}, {k: "category", t: "select", l: "Type", o: [["home", "Home and flat bills"], ["subscription", "Subscription"], ["phone", "Phone"], ["car", "Car"], ["health", "Health"], ["work", "Work and fees"], ["insurance", "Insurance"], ["other", "Other"]]}, {k: "split", t: "split", l: "Shared with your partner?"}, {k: "variable", t: "check", l: "The amount changes each time (like energy)"}, {k: "pool", t: "pool"}, {k: "setAside", t: "setaside"}, {k: "notes", t: "text", l: "Notes"}]); }, owner: "person"},
     income: {title: "Money coming in", fields: function () { return [{k: "name", t: "text", l: "Name"}, {k: "amount", t: "money", l: "Amount (after tax)"}].concat(SCHED()).concat([{k: "account", t: "account", l: "Goes into"}, {k: "isPay", t: "check", l: "This is my pay (it sets my pay periods)"}, {k: "notes", t: "text", l: "Notes"}]); }, owner: "person"},
     budgets: {title: "Budget", fields: function () { return [{k: "name", t: "text", l: "Name"}, {k: "amount", t: "money", l: "Amount each pay period (leave empty for whatever is left)"}, {k: "mode", t: "select", l: "How it works", info: "modes", o: [["daily", "Day to day"], ["weekly", "Weekly (food shops)"], ["oneoff", "One-offs"], ["saving", "Saving on payday"], ["remainder", "Whatever is left"]]}, {k: "account", t: "account", l: "Kept in", all: true}, {k: "carry", t: "unspent"}, {k: "start", t: "date", l: "Starts (optional)"}, {k: "end", t: "date", l: "Ends (optional)"}]; }, owner: "person"},
-    accounts: {title: "Account", fields: function () { return [{k: "name", t: "text", l: "Name"}, {k: "kind", t: "select", l: "Kind", o: [["main", "Main account"], ["pot", "Pot or Space"], ["saving", "Savings pot"], ["isa", "ISA"], ["lisa", "Lifetime ISA"], ["pension", "Pension"], ["credit", "Credit or overdraft"]]}, {k: "purpose", t: "text", l: "What it's for"}, {k: "fallback", t: "check", l: "Covers going over budget (only one should)"}, {k: "order", t: "number", l: "Order on screen"}]; }, owner: "owner"},
+    accounts: {title: "Account", fields: function () { return [{k: "name", t: "text", l: "Name"}, {k: "kind", t: "select", l: "Kind", o: [["main", "Main account"], ["pot", "Pot or Space"], ["saving", "Savings pot"], ["isa", "ISA"], ["lisa", "Lifetime ISA"], ["pension", "Pension"], ["credit", "Credit or overdraft"]]}, {k: "purpose", t: "text", l: "What it's for"}, {k: "holdIn", t: "holdin", l: "Keep its money in"}, {k: "holdDays", t: "holddays", l: "Move it across"}, {k: "fallback", t: "check", l: "Covers going over budget (only one should)"}, {k: "order", t: "number", l: "Order on screen"}]; }, owner: "owner"},
     goals: {title: "Goal", fields: function () { return [{k: "name", t: "text", l: "Name"}, {k: "target", t: "money", l: "Target"}, {k: "due", t: "date", l: "Target date (optional)"}, {k: "kind", t: "select", l: "Kind", o: [["savings", "Saving for something"], ["house", "House deposit"], ["emergency", "Emergency fund"], ["car", "Car"], ["holiday", "Holiday"], ["other", "Other"]]}, {k: "accounts", t: "accounts", l: "Which accounts count towards it"}, {k: "extra", t: "money", l: "Plus money kept elsewhere (optional)"}, {k: "owners", t: "owners", l: "Whose goal"}, {k: "price", t: "money", l: "House price you're aiming for (house goals)"}, {k: "directOn", t: "directgoal"}, {k: "notes", t: "text", l: "Notes"}]; }, owner: "owners"},
     splits: {title: "Split", fields: function () { return [{k: "name", t: "text", l: "Name (for example Flat bills)"}, {k: "shares", t: "shares", l: "How it's shared"}]; }, owner: null},
     transfers: {title: "Regular payment", fields: function () { return [{k: "name", t: "text", l: "Name (for example Rent share)"}, {k: "amount", t: "money", l: "Amount"}].concat(SCHED()).concat([{k: "fromAccount", t: "account", l: "From your"}, {k: "toAccount", t: "account", l: "Into their", owner: partner()}, {k: "notes", t: "text", l: "Notes"}]); }, owner: "from"},
@@ -1564,6 +1564,7 @@
     var iou = table === "loans" && id ? B.loans(db(), me(), todayIso()).filter(function (l) { return l.id === id; })[0] : null;
     if (iou) row.amount = iou.amount;
     if (table === "goals" && id) row.directOn = !!B.parseDate(getSetting("goal.direct." + id, ""));
+    if (table === "accounts" && id) { row.holdIn = getSetting("hold." + id, ""); row.holdDays = String(B.holdDays(db(), id)); }
     // show what it costs today, which may come from a dated price change rather than the first amount
     var nowAmt = null;
     if (id && !(+row.dailyIncrease > 0) && DATED.test(table) && row.amount !== "" && row.amount !== undefined) { var live = db().byId[id]; nowAmt = live ? B.amountAt(db(), live, todayIso()) : +row.amount; row.amount = nowAmt; }
@@ -1591,6 +1592,15 @@
       case "number": return input("number", ' inputmode="numeric"');
       case "money": return input("text", ' inputmode="decimal" placeholder="£"');
       case "date": return input("date");
+      case "holdin":
+        // a pot can keep its money in a savings pot of yours (earning interest) until a few days before it pays out
+        if (!EDIT.id || !/^(pot|saving)$/.test(String(r.kind || "pot"))) return "";
+        var holders = B.accountsOf(db(), me()).filter(function (a) { return a.id !== EDIT.id && /^(pot|saving)$/.test(String(a.kind || "pot")) && !getSetting("hold." + a.id, ""); });
+        if (!holders.length || B.accountsOf(db(), me()).some(function (a) { return getSetting("hold." + a.id, "") === EDIT.id; })) return "";
+        return '<label class="f">' + esc(f.l) + '<select id="' + id + '" data-f="holdIn"><option value="">This pot</option>' + holders.map(function (a) { return '<option value="' + esc(a.id) + '"' + (v === a.id ? " selected" : "") + ">" + esc(a.name) + "</option>"; }).join("") + "</select></label>";
+      case "holddays":
+        if (!EDIT.id || !r.holdIn) return "";
+        return '<label class="f">' + esc(f.l) + '<select id="' + id + '" data-f="holdDays">' + [1, 2, 3, 5, 7].map(function (n) { return '<option value="' + n + '"' + (String(v) === String(n) ? " selected" : "") + ">" + n + (n === 1 ? " day" : " days") + " before</option>"; }).join("") + "</select></label>";
       case "directgoal":
         // only when one of the goal's accounts is yours and isn't your main account (that's where it would be sent)
         var mineAcc = String(r.accounts || "").split(/[,\s]+/).some(function (id) { var a = db().byId[id]; return a && a.owner === me() && a.kind !== "main" && a.kind !== "credit"; });
@@ -1699,6 +1709,14 @@
       var dKey = "goal.direct." + r.id, dNow = !!B.parseDate(getSetting(dKey, ""));
       if (!B.spareRules(db(), me(), now)) { if (r.directOn && !dNow) setting(dKey, now); else if (!r.directOn && dNow) setting(dKey, "off"); }
       delete r.directOn;
+    }
+    if (t === "accounts") {
+      if (EDIT.id && "holdIn" in r) {
+        var hNow = getSetting("hold." + r.id, ""), hNew = /^(pot|saving)$/.test(String(r.kind || "pot")) ? String(r.holdIn || "") : "";
+        if (hNew !== hNow) setting("hold." + r.id, hNew);
+        if (hNew && String(r.holdDays || "3") !== String(B.holdDays(db(), r.id))) setting("hold." + r.id + ".days", String(r.holdDays || "3"));
+      }
+      delete r.holdIn; delete r.holdDays;
     }
     if (F.owner === "person") r.person = r.person || me();
     if (F.owner === "owner") r.owner = r.owner || me();
@@ -2068,11 +2086,11 @@
       if (S.bankSyncing) return;
       var cfgAt = S.cfg, dataAt = S.data, ctl = typeof AbortController === "function" ? new AbortController() : null;
       var timer = ctl ? setTimeout(function () { ctl.abort(); }, 90000) : null;
-      S.bankSyncing = "Checking " + bankName() + " for payments and balances…"; render();
+      S.bankSyncing = "1 of 3 · Reading " + bankName() + (bankName() === "Starling" ? " (account and Spaces)…" : " (account, pots and Flex)…"); render();
       try {
         var j = await bankCall("bank.syncNow", {}, ctl ? ctl.signal : undefined);
         if (S.cfg !== cfgAt || S.data !== dataAt) return;
-        S.bankSyncing = "Bank check finished. Updating your budget…"; render(true);
+        S.bankSyncing = "2 of 3 · " + (j.added || j.updated ? (j.added || 0) + " new, " + (j.updated || 0) + " changed. Updating your budget…" : "Nothing new. Updating your budget…"); render(true);
         // An earlier sheet sync may have started before the bank import finished.
         // Let it finish, then fetch the ledger produced by this bank check.
         var until = Date.now() + 95000;
@@ -2084,6 +2102,7 @@
         if (S.lastError) throw new Error("Bank checked, but your budget could not update: " + S.lastError);
         // Do not reuse a status request that began before this import.
         if (S.bankRefreshing) await S.bankRefreshing;
+        S.bankSyncing = "3 of 3 · Checking the " + bankName() + " connection…"; render(true);
         await bankRefresh();
         if (S.bank && S.bank.err) throw new Error("Budget updated, but bank status could not refresh: " + S.bank.err);
         toast(j.added || j.updated ? "Bank checked and budget updated: " + (j.added || 0) + " new, " + (j.updated || 0) + " updated" : "Bank checked and budget updated. Nothing new.");
@@ -2101,7 +2120,9 @@
     emailsave: function () {
       var to = String(($("#emailTo") || {}).value || "").trim(), on = !!($('[data-c="emailon"]') || {}).checked;
       if (on && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(to)) { toast("That email address doesn't look right"); return; }
-      setting("email.to", to); setting("email.sunday", on); toast(on ? "Done. Your first one comes on Sunday." : "Saved. No Sunday email."); leave();
+      var pots = !!($('[data-c="emailpots"]') || {}).checked;
+      if (pots && !on && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(to)) { toast("Add your email address for the reminders"); return; }
+      setting("email.to", to); setting("email.sunday", on); setting("email.pots", pots ? "on" : "off"); toast(on ? "Done. Your first one comes on Sunday." : "Saved"); leave();
     },
     reload: function () { var done = function () { location.reload(); }; try { navigator.serviceWorker.getRegistration().then(function (r) { return r && r.update(); }).then(done, done); } catch (e) { done(); } },
     disconnect: function () {

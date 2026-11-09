@@ -372,6 +372,18 @@
   function mainOf(db, p) { var a = accountsOf(db, p); return (a.filter(function (x) { return x.kind === "main"; })[0] || a[0] || {id: p + "-main"}).id; }
   function fallbackOf(db, p) { var a = accountsOf(db, p).filter(function (x) { return x.fallback; })[0]; return a ? a.id : ""; }
   function accName(db, id) { var a = db.byId[id]; return a ? a.name : (id || ""); }
+  // a pot that keeps its money in another of yours (a savings pot that earns interest) until a few days before it pays
+  // out: setting hold.<pot> = the pot that holds it, hold.<pot>.days = how many days ahead (3 if not set). Only one step:
+  // a pot that holds money for another can't itself keep its money elsewhere.
+  function holdOf(db, acc) {
+    var a = db.byId[acc]; if (!a || db.accounts.indexOf(a) < 0 || !/^(pot|saving)$/.test(String(a.kind || "pot"))) return "";
+    var h = String(setting(db, a.owner, "hold." + acc, "") || ""), ha = h && db.byId[h];
+    if (!ha || h === acc || db.accounts.indexOf(ha) < 0 || ha.owner !== a.owner || !/^(pot|saving)$/.test(String(ha.kind || "pot")) || setting(db, a.owner, "hold." + h, "")) return "";
+    return h;
+  }
+  function holdDays(db, acc) { var a = db.byId[acc] || {}, n = Math.round(+setting(db, a.owner, "hold." + acc + ".days", 3)); return isFinite(n) && n >= 0 && n <= 14 ? n : 3; }
+  // the pots that hold money for this one, and the one this holds for (a pot and its holding pot are one pot of money)
+  function holdGroup(db, acc) { var g = [acc], h = holdOf(db, acc); if (h) g.push(h); db.accounts.forEach(function (a) { if (a.id !== acc && holdOf(db, a.id) === acc) g.push(a.id); }); return g; }
   function startOf(db, p) { return setting(db, p, "start", "2026-10-26"); }
   // what one person has ticked off under a key (a move is always its own person's, so the other one's moves never
   // tick off something of yours, whatever key they carry)
@@ -924,6 +936,7 @@
       var first = from === st, dayBefore = addDays(from, -1), pv = prevPeriod(db, p, per), bst = !first && pv && pv.start < from ? budgetState(db, p, pv) : dict();
       bal = Object.assign(dict(), first ? startBalances(db, p) : balances(db, dayBefore));
       poolBook(db, p, from).forEach(function (x) { if (bal[x.account] !== undefined) bal[x.account] = round(bal[x.account] + x.amount); });
+      var foldHeld = function () { accountsOf(db, p).forEach(function (a) { var h = holdOf(db, a.id); if (h && bal[h] !== undefined) { bal[a.id] = round((bal[a.id] || 0) + bal[h]); bal[h] = 0; } }); };
       // what each budget keeps in its pot: what carries over, and before payday whatever is still left to spend
       // (including "whatever is left" budgets, which can still be spent until payday)
       keepOf = function (accId) { var k = 0; Object.keys(bst).forEach(function (id) { var s = bst[id]; if ((s.budget.account || main) !== accId || s.budget.mode === "saving") return; k += upcoming ? Math.max(s.carryOut || 0, (s.avail || 0) - (s.spent || 0), 0) : (s.carryOut || 0); }); return k; };
@@ -964,6 +977,7 @@
           var left = round(it.amount - tickedBefore(db, p, it.key, from)); if (left > 0.004 && !takeLoose(db, p, tkn, it.from, it.to, left, pk.start, dayBefore)) pendMove(it.from, it.to, left, it.date, true);
         });
       });
+      foldHeld();
     }
     // yearly costs (sinking funds). Each pay period puts by (next amount - set aside so far) / pay periods left until
     // it's due (this one included). In the period it lands, what was set aside pays it ("Saved up for …") and only
@@ -1324,7 +1338,18 @@
       // (the pay isn't in yet: it's on its way, so the account it comes into isn't short of it, and nothing is topped up for that)
       if (waiting && pdNow.pay) pend[pdNow.payAccount] = (pend[pdNow.payAccount] || 0) + pdNow.pay.amount;
       if(journey.enabled)journey.steps.forEach(function (m) { if(!(m.remaining>.004)){if(m.net)items.push({type:'allocate',key:m.key,payday:true,what:'Apply the reconciled allocation',amount:0});return;}plan(m.key,m.from,m.to,m.remaining,"Payday: move "+money(m.remaining)+" to "+accName(db,m.to),m.why,{payday:true,waiting:waiting,net:!!m.net}); });
-      else pdNow.moves.forEach(function(m){plan('pay:'+per.start+':'+m.to,m.from,m.to,m.amount,'Payday: move '+money(m.amount)+' to '+accName(db,m.to),m.why,{payday:true,waiting:waiting});});
+      // (money already moved that first week counts, even split into several moves or sent to the pot a pot keeps its
+      // money in: what's still to move is what's left. A move To do asked for something else isn't counted.)
+      var payMade = function (from, to) {
+        var g = holdGroup(db, to), end = addDays(per.start, 7), t = 0;
+        db.moves.forEach(function (m) {
+          if (m.dup || m.person !== p || bankTaken[m.id] || m.date < per.start || m.date > end) return;
+          var k = String(m.key || ""); if (k && !/^bank:/.test(k) && k.indexOf("pay:" + per.start + ":") !== 0) return;
+          if (m.from === from && g.indexOf(m.to) >= 0) t += +m.amount || 0; else if (g.indexOf(m.from) >= 0 && m.to === from) t -= +m.amount || 0;
+        });
+        return round(Math.max(0, t));
+      };
+      if(!journey.enabled)pdNow.moves.forEach(function(m){var key='pay:'+per.start+':'+m.to;if(ticked(db,p,key))return;var left=round(m.amount-payMade(m.from,m.to));plan(key,m.from,m.to,left,'Payday: move '+money(left)+' to '+accName(db,m.to),m.why,{payday:true,waiting:waiting});});
       // the payday screen's cover, from the pot that covers going over, counts as on its way while that screen still has
       // moves to tick; once they're all done (it can come later, when a bill's real amount is logged), To do asks for it
       var pc = pdNow.cover;
@@ -1412,18 +1437,35 @@
         : backWhy(joinNames(x.names), x.to, x.theirs, x.mine, x.from, x.viaCredit || "");
     });
     items = grouped;
-    // 3. a pot that will run short before payday
+    // 2c. a pot that keeps its money in another until it's needed: a few days before it pays out, move across what it
+    // needs (only from the pot holding it; if that's short too, 3 below finds the rest)
+    var soonAll = flowsAhead.slice().sort(function (a, c) { return a.date < c.date ? -1 : a.date > c.date ? 1 : a.amount - c.amount; });
+    accountsOf(db, p).forEach(function (a) {
+      var h = holdOf(db, a.id); if (!h) return;
+      var until = addDays(today, holdDays(db, a.id)), r = avail(a.id), low = 0, lowF = null, names = [];
+      soonAll.forEach(function (f) {
+        if (f.account !== a.id || f.date > until) return;
+        r = round(r + f.amount); if (f.amount < 0 && names.indexOf(f.what) < 0) names.push(f.what);
+        if (r < low - 0.004) { low = r; lowF = f; }
+      });
+      if (!lowF) return;
+      var amt = round(Math.min(-low, Math.max(0, avail(h))));
+      plan("hold:" + a.id + ":" + lowF.date, h, a.id, amt, "Move " + money(amt) + " from " + accName(db, h) + " to " + accName(db, a.id), (names.length > 2 ? names.slice(0, 2).join(", ") + " and more" : names.join(" and ")) + (names.length > 1 ? " need it" : " needs it") + " by " + nice(lowF.date) + ".", {fill: true, hold: true, due: lowF.date});
+    });
+    // 3. a pot that will run short before payday (a pot and the pot keeping its money count as one)
     var run = dict(); Object.keys(bal).forEach(function (a) { run[a] = avail(a); });
+    var heldIn = function (a) { var h = holdOf(db, a); return h && run[h] !== undefined ? run[h] : 0; };
     // (on the same day, money going out is counted before money coming in: which the bank takes first isn't known)
     var warned = dict(), ahead = flowsAhead.slice().sort(function (a, c) { return a.date < c.date ? -1 : a.date > c.date ? 1 : a.amount - c.amount; });
     ahead.forEach(function (f, i) {
       // (a credit account below nothing is what's owed on it, not a pot running short)
       if (run[f.account] === undefined || (db.byId[f.account] || {}).owner !== p || (db.byId[f.account] || {}).kind === "credit") return;
       run[f.account] = round(run[f.account] + f.amount);
-      if (run[f.account] < -0.004 && f.account !== main && !warned[f.account]) {
+      var hIn = heldIn(f.account);
+      if (run[f.account] + hIn < -0.004 && f.account !== main && !warned[f.account]) {
         warned[f.account] = true;
         // enough for the lowest it goes before payday (more payments after this one), so it's one move, not one a payment
-        var low = run[f.account], r = low, lowF = f;
+        var low = round(run[f.account] + hIn), r = low, lowF = f;
         for (var j = i + 1; j < ahead.length; j++) if (ahead[j].account === f.account) { r = round(r + ahead[j].amount); if (r < low - 0.004) { low = r; lowF = ahead[j]; } }
         // the main account if it will have the money by then without touching what its budgets have left, else the
         // fallback pot, else what the main account can spare and the rest from the fallback pot, else all the fallback pot
@@ -1441,7 +1483,7 @@
           return (run[main] || 0) - need >= -0.004 ? [[main, need]] : null;
         };
         need = round(-low); parts = pick();
-        if (!parts && low < run[f.account] - 0.004) { need = round(-run[f.account]); parts = pick(); lowF = f; }
+        if (!parts && low < run[f.account] + hIn - 0.004) { need = round(-(run[f.account] + hIn)); parts = pick(); lowF = f; }
         var forWhat = f.what + " on " + nice(f.date) + (lowF !== f ? " and " + lowF.what + " on " + nice(lowF.date) + " need it." : " needs it.");
         if (parts && parts.every(function (x) { return avail(x[0]) - x[1] >= -0.004; })) {
           parts.forEach(function (x, k) {
@@ -1508,7 +1550,11 @@
     var already = pl.lines.filter(function (l) { return l.already; }).map(function (l) { return {account: l.account, name: accName(db, l.account), amount: l.amount, poolLeft: l.poolLeft || null}; });
     var moves = [];
     accountsOf(db, p).concat(db.accounts.filter(function (a) { return a.owner !== p; })).forEach(function (a) {
-      var n = round(need[a.id] || 0); if (n > 0.004) moves.push({from: payAcc, to: a.id, amount: n, why: (why[a.id] || []).join(", ")});
+      var n = round(need[a.id] || 0); if (!(n > 0.004)) return;
+      // (a pot that keeps its money in another until it's needed: payday moves it there, and To do moves it across
+      // a few days before each payment)
+      var to = holdOf(db, a.id) || a.id, ex = moves.filter(function (m) { return m.to === to; })[0], w = (why[a.id] || []).join(", ");
+      if (ex) { ex.amount = round(ex.amount + n); ex.why = [ex.why, w].filter(Boolean).join(", "); } else moves.push({from: payAcc, to: to, amount: n, why: w});
     });
     var pay = pl.lines.filter(function (l) { return l.isPay; })[0] || null;
     // money that only comes into the pay's account later in the period (a loan repayment on the 28th, a second income)
@@ -2656,7 +2702,7 @@
     spendWeek: spendWeek, noSpend: noSpend, savingRates: savingRates, forecast: forecast, goals: goals, lisa: lisa, checks: checks, netWorth: netWorth, loans: loans,
     itemStates: loanItemStates, loanPaid: loanPaid, yearly: yearly, yearReview: yearReview, taxYearStart: taxYearStart,
     summary: summary, shareOf: shareOf, myShare: myShare, owedAt: owedAt, amountAt: amountAt, setting: setting, partnerOf: partnerOf, mainOf: mainOf, fallbackOf: fallbackOf,
-    accountsOf: accountsOf, accName: accName, ticked: ticked, person: person, startOf: startOf, moveDate: moveDate, budgetsOf: budgetsOf, budgetsIn: budgetsOf, reimbursements: reimbursements, startBalances: startBalances,
+    accountsOf: accountsOf, accName: accName, holdOf: holdOf, holdDays: holdDays, ticked: ticked, person: person, startOf: startOf, moveDate: moveDate, budgetsOf: budgetsOf, budgetsIn: budgetsOf, reimbursements: reimbursements, startBalances: startBalances,
     poolDate: poolDate, poolSegs: poolSegs, poolChange: poolChange, poolStart: poolStart, poolNext: poolNext, poolLate: poolLate, poolMonth: poolMonth, poolMonths: poolMonths, poolMonthAt: poolMonthAt, pooledOn: pooledOn, poolOn: poolOn, poolCounts: poolCounts, poolOffer: poolOffer, poolRecord: poolRecord, poolToFreeze: poolToFreeze, pools: pools, isPoolTx: isPoolTx, sharesAt: sharesAt, dayRange: dayRange,
     money: money, nice: nice, describe: describe, addDays: addDays, diff: diff, parseDate: parseDate, isIso: isIso, round: round
   };

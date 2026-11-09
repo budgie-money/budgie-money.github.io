@@ -1733,5 +1733,32 @@ const tickPay11 = (t, p, d) => { const L0 = B.load(t, d), per = B.periodAt(L0, p
   eq("hero: with little cash, still needed isn't just the cash again", r2.cashFree === 0 && Math.abs(r2.needed - Math.abs(r2.cash)) > 0.01 ? true : r2.cashFree > 0, true);
 }
 
+// --- a pot that keeps its money in a savings pot until a few days before it pays out (hold.<pot>)
+{
+  const withHold = (more) => db(t => {
+    t.accounts.push({id: "e-hold", owner: "ethan", name: "Rent savings pot", kind: "pot", order: 2.5});
+    t.settings.push({person: "ethan", key: "hold.e-bills", value: "e-hold"});
+    if (more) more(t);
+  });
+  const h0 = withHold(), per0 = B.periodAt(h0, "ethan", "2026-10-29"), pd0 = B.payday(h0, "ethan", per0);
+  eq("hold: payday moves the bills money into the pot that holds it", [pd0.moves.some(m => m.to === "e-bills"), pd0.moves.some(m => m.to === "e-hold")], [false, true]);
+  const plain = B.payday(db(), "ethan", B.periodAt(db(), "ethan", "2026-10-29")).moves.filter(m => m.to === "e-bills")[0];
+  near("hold: the same amount as without it", pd0.moves.filter(m => m.to === "e-hold")[0].amount, plain.amount);
+  eq("hold: only a pot of yours can hold the money", B.holdOf(db(t => t.settings.push({person: "ethan", key: "hold.e-bills", value: "s-rent"})), "e-bills"), "");
+  const amt = pd0.moves.filter(m => m.to === "e-hold")[0].amount;
+  const h1 = withHold(t => t.moves.push({id: "bk-h1", person: "ethan", from: "e-main", to: "e-hold", amount: amt, date: "2026-10-29", key: "pay:2026-10-29:e-hold"}));
+  const far = B.todo(h1, "ethan", "2026-11-06"), near3 = B.todo(h1, "ethan", "2026-11-13");
+  eq("hold: nothing to move across while the rent is more than 3 days off", far.some(x => /^hold:e-bills:/.test(x.key)), false);
+  const hi = near3.filter(x => /^hold:e-bills:/.test(x.key))[0] || {};
+  eq("hold: 3 days before the rent, move it across from the savings pot", [hi.from, hi.to, hi.amount > 0], ["e-hold", "e-bills", true]);
+  eq("hold: the bills pot isn't called short while the savings pot has its money", near3.some(x => /^short:e-bills/.test(x.key) || (/^fill:e-bills/.test(x.key) && x.from !== "e-hold")), false);
+  // payday's move made in two parts, a few days late, still counts
+  const plainAmt = plain.amount;
+  const sp = db(t => { t.moves.push({id: "bk-s1", person: "ethan", from: "e-main", to: "e-bills", amount: 200, date: "2026-10-31", key: "bank:s1"}, {id: "bk-s2", person: "ethan", from: "e-main", to: "e-bills", amount: B.round(plainAmt - 200), date: "2026-11-02", key: "bank:s2"}); });
+  eq("payday move made in two parts is done", B.todo(sp, "ethan", "2026-11-04").some(x => x.key === "pay:2026-10-29:e-bills"), false);
+  const sp2 = db(t => { t.moves.push({id: "bk-s1", person: "ethan", from: "e-main", to: "e-bills", amount: 200, date: "2026-10-31", key: "bank:s1"}); });
+  near("payday move part made: only the rest is asked for", (B.todo(sp2, "ethan", "2026-11-04").filter(x => x.key === "pay:2026-10-29:e-bills")[0] || {}).amount, plainAmt - 200);
+}
+
 console.log(fails ? fails + " failed, " + passes + " passed" : "All " + passes + " passed");
 process.exit(fails ? 1 : 0);

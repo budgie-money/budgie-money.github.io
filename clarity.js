@@ -210,7 +210,7 @@
               button(
                 it.type === "warn" ? "Review budget" : move
                   ? "View move"
-                  : it.type === "loan" && it.borrower !== me()
+                  : (it.type === "loan" && it.borrower !== me()) || (it.type === "settle" && it.to === me())
                     ? "It arrived"
                     : "I’ve paid",
                 "cAction",

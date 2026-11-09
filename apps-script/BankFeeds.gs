@@ -1370,6 +1370,16 @@ function bankApply_(p, data, windowFrom, payCarry) {
       create("settlements", row); setTaken[sid] = true;
       return true;
     };
+    // ----- money moved from one pot to another: the bank shows it as two moves through the account at the same moment,
+    // out of one pot and into the other for the same amount. That's one move, pot to pot (so To do's "Move £x from Food
+    // pot to Flex pot" is ticked by it). One to one, within 10 minutes, the closest first; a bill's pot withdrawal never.
+    var potTwin = Object.create(null);
+    (function () {
+      var mv = txList.filter(function (t) { return t.pot && t.amount && t.at && !t.declined && !t.reversed && !potPaid[t.id] && t.trigger !== "committed_spending" && !!accOf(t.pot, false); }), pairs = [];
+      mv.forEach(function (o) { if (o.amount > 0) return; mv.forEach(function (i) { if (!(i.amount > 0) || i.pot === o.pot || i.acc !== o.acc || !same(i.amount, -o.amount)) return; var d = Math.abs(i.at - o.at); if (d <= 600000) pairs.push({o: o, i: i, d: d}); }); });
+      pairs.sort(function (a, b) { return a.d - b.d; });
+      pairs.forEach(function (x) { if (potTwin[x.o.id] || potTwin[x.i.id]) return; potTwin[x.o.id] = {t: x.i, out: true}; potTwin[x.i.id] = {t: x.o, out: false}; });
+    })();
     txList.forEach(function (t) {
       if (!t.date) return;
       seen[t.id] = true;
@@ -1461,6 +1471,14 @@ function bankApply_(p, data, windowFrom, payCarry) {
         // (the pot's side of a bill paid from it: the bill is the payment, so this isn't a move too)
         if (potPaid[t.id]) { var pm0 = moveRows["bk-" + provider + "-" + t.id]; if (pm0 && pm0.person === p && !bankTrue_(pm0.deleted)) update("moves", pm0.id, {deleted: true}); return; }
         if (!asMove()) return;
+        // (money moved from one pot straight to another: one move, pot to pot, made by its withdrawal's side)
+        var tw = potTwin[t.id];
+        if (tw) {
+          var otherAcc = accOf(tw.t.pot, false), r0 = moveRows["bk-" + provider + "-" + t.id];
+          if (!tw.out || otherAcc === potAcc) { if (r0 && r0.person === p && !bankTrue_(r0.deleted)) update("moves", r0.id, {deleted: true}); return; }
+          ownMove(t, potAcc, otherAcc, Math.abs(t.amount), null, "");
+          return;
+        }
         var into = t.amount > 0, from = into ? mainAcc : potAcc, to = into ? potAcc : mainAcc, amt = Math.abs(t.amount);
         ownMove(t, from, to, amt, into ? paydayMatch(to, amt, t.date) : null);
         return;

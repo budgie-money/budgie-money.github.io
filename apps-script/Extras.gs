@@ -21,7 +21,8 @@ var EXTRAS_REVIEW_DAYS = 30;   // how long after 6 April the round-up can still 
 var EXTRAS_TRIGGERS_ = [
   {fn: "sendSundayEmails", what: "the Sunday money email, Sundays between 6 and 7pm", make: function (b) { return b.onWeekDay(ScriptApp.WeekDay.SUNDAY).atHour(18); }},
   {fn: "backupNow", what: "a backup of the sheet, Sundays between 3 and 4am", make: function (b) { return b.onWeekDay(ScriptApp.WeekDay.SUNDAY).atHour(3); }},
-  {fn: "yearReviewCheck", what: "the tax-year round-up check, every day between 9 and 10am", make: function (b) { return b.everyDays(1).atHour(9); }}
+  {fn: "yearReviewCheck", what: "the tax-year round-up check, every day between 9 and 10am", make: function (b) { return b.everyDays(1).atHour(9); }},
+  {fn: "sendPotReminders", what: "a heads-up when a pot needs money moved across, every day between 8 and 9am", make: function (b) { return b.everyDays(1).atHour(8); }}
 ];
 
 // ---------- setup ----------
@@ -231,6 +232,56 @@ function previewSundayEmail(personId, date) {
   Logger.log("Subject: " + m.subject); Logger.log(exText_(m)); Logger.log(html);
   return {subject: m.subject, html: html, text: exText_(m)};
 }
+
+// ---------- 1b. a heads-up when a pot needs money moved across ----------
+// A pot that keeps its money in another (a savings pot earning interest) until a few days before it pays out: on the
+// day To do asks for the move, an email says how much and by when. Sent once for each move (again if the amount
+// changes). For anyone with an email address in Budgie, unless they turned these off (email.pots = off).
+function exPotRecipients_() {
+  var set = Object.create(null);
+  readTable_("settings").rows.forEach(function (r) {
+    if (exOn_(r.deleted) || !r.person || !/^email\./.test(String(r.key))) return;
+    (set[r.person] = set[r.person] || Object.create(null))[String(r.key)] = r.value;
+  });
+  var out = [];
+  readTable_("people").rows.forEach(function (p) {
+    if (exOn_(p.deleted) || !p.id) return;
+    var s = set[p.id] || Object.create(null), to = String(s["email.to"] || "").trim(), off = String(s["email.pots"] || "").trim().toLowerCase();
+    if (/^(off|false|no|0)$/.test(off) || !/^[^@\s,;<>]+@[^@\s,;<>]+\.[^@\s,;<>]+$/.test(to)) return;
+    out.push({id: p.id, name: p.name || p.id, to: to, colour: p.colour});
+  });
+  return out;
+}
+function exPotModel_(r, items) {
+  var total = items.reduce(function (t, x) { return t + x.amount; }, 0), first = items.slice().sort(function (a, b) { return a.due < b.due ? -1 : 1; })[0];
+  return {
+    subject: "Budgie: move " + exMoney_(total) + " to " + first.toName + " by " + Budgie.nice(first.due),
+    preheader: first.why,
+    hello: "Hi " + r.name + ",",
+    intro: "A payment is coming out soon, so it's time to move its money across.",
+    sections: [{title: "To move", rows: items.map(function (x) { return {label: x.what, value: "by " + Budgie.nice(x.due), sub: x.why}; }), note: "Tick it off in To do once it's moved, or let the bank check see it."}],
+    why: "You get this when a pot that keeps its money in another needs it moved across. Turn these off in Budgie's settings."
+  };
+}
+function exSendPots_(today) {
+  CACHE_ = {};
+  var list = exPotRecipients_(), props = PropertiesService.getScriptProperties(), sent = [];
+  if (!list.length) return sent;
+  var snap = snapshot_();
+  list.forEach(function (r) {
+    try {
+      var items = Budgie.todo(exViewOf_(r.id, today, snap), r.id, today).filter(function (x) { return x.hold && x.type === "move" && x.amount > 0.004; });
+      var fresh = items.filter(function (x) { return props.getProperty("POT_SENT_" + r.id + "_" + x.key) !== String(x.amount); });
+      if (!fresh.length) return;
+      exSend_(r, exPotModel_(r, fresh));
+      fresh.forEach(function (x) { props.setProperty("POT_SENT_" + r.id + "_" + x.key, String(x.amount)); });
+      sent.push(r.id); Logger.log("Pot heads-up sent to " + r.name + ".");
+    } catch (e) { Logger.log("Couldn't send " + r.name + "'s pot heads-up: " + (e && e.message || e)); }
+  });
+  return sent;
+}
+/** A heads-up email when a pot needs money moved across from the pot keeping it. Runs daily once installExtras has been run. */
+function sendPotReminders() { return exSendPots_(exTodayIso_()); }
 
 // ---------- 2. weekly backup ----------
 // who else can open a folder: "" if nobody, else a short description (anyone with the link, or their addresses)
