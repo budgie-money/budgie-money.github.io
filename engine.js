@@ -1337,7 +1337,6 @@
       var pdNow = payday(db, p, per), journey=paydaySteps(db,p,today,per), waiting = payPending(db, p, per, today);
       // (the pay isn't in yet: it's on its way, so the account it comes into isn't short of it, and nothing is topped up for that)
       if (waiting && pdNow.pay) pend[pdNow.payAccount] = (pend[pdNow.payAccount] || 0) + pdNow.pay.amount;
-      if(journey.enabled)journey.steps.forEach(function (m) { if(!(m.remaining>.004)){if(m.net)items.push({type:'allocate',key:m.key,payday:true,what:'Apply the reconciled allocation',amount:0});return;}plan(m.key,m.from,m.to,m.remaining,"Payday: move "+money(m.remaining)+" to "+accName(db,m.to),m.why,{payday:true,waiting:waiting,net:!!m.net}); });
       // (money already moved that first week counts, even split into several moves or sent to the pot a pot keeps its
       // money in: what's still to move is what's left. A move To do asked for something else isn't counted.)
       var payMade = function (from, to) {
@@ -1349,6 +1348,7 @@
         });
         return round(Math.max(0, t));
       };
+      if(journey.enabled)journey.steps.forEach(function (m) { if(!(m.remaining>.004)){if(m.net)items.push({type:'allocate',key:m.key,payday:true,what:'Apply the reconciled allocation',amount:0});return;}var left=m.remaining;if(!m.net){var gross=m.allocation!==undefined?+m.allocation:+m.amount;if(isFinite(gross)&&gross>0)left=round(Math.min(left,gross-payMade(m.from,m.account||m.to)));}if(!(left>.004))return;plan(m.key,m.from,m.to,left,"Payday: move "+money(left)+" to "+accName(db,m.to),m.why,{payday:true,waiting:waiting,net:!!m.net}); });
       if(!journey.enabled)pdNow.moves.forEach(function(m){var key='pay:'+per.start+':'+m.to;if(ticked(db,p,key))return;var left=round(m.amount-payMade(m.from,m.to));plan(key,m.from,m.to,left,'Payday: move '+money(left)+' to '+accName(db,m.to),m.why,{payday:true,waiting:waiting});});
       // the payday screen's cover, from the pot that covers going over, counts as on its way while that screen still has
       // moves to tick; once they're all done (it can come later, when a bill's real amount is logged), To do asks for it
