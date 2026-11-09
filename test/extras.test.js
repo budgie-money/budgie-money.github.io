@@ -68,6 +68,22 @@ const household = (fx) => {
 const SUNDAY = "2026-11-01";
 const all = (m) => m.htmlBody + "\n" + m.body + "\n" + m.subject;
 
+// ================= 1b. pot heads-up =================
+{
+  const {env, c} = setupEnv(fx => {
+    fx.accounts.push({id: "e-hold", owner: "ethan", name: "Rent savings pot", kind: "pot", order: 2.5});
+    fx.settings.push({id: "ethan:hold.e-bills", person: "ethan", key: "hold.e-bills", value: "e-hold"}, {id: "ethan:email.to", person: "ethan", key: "email.to", value: "ethan@example.com"},
+      {id: "sophie:email.to", person: "sophie", key: "email.to", value: "sophie@example.com"}, {id: "sophie:email.pots", person: "sophie", key: "email.pots", value: "off"});
+    fx.moves.push({id: "bk-h1", person: "ethan", from: "e-main", to: "e-hold", amount: 2000, date: "2026-10-29", key: "pay:2026-10-29:e-hold"});
+  });
+  const early = c.exSendPots_("2026-11-06");
+  ok("POTS: nothing while the rent is more than 3 days off", early.length === 0 && env.mail.length === 0, {early, logs: env.logs});
+  const sent = c.exSendPots_("2026-11-13");
+  const m = env.mail[0] || {};
+  ok("POTS: 3 days before the rent, Ethan hears how much to move across", JSON.stringify(sent) === JSON.stringify(["ethan"]) && m.to === "ethan@example.com" && /Rent savings pot/.test(all(m)) && /Bills & Rent pot/.test(m.subject), {sent, subject: m.subject});
+  ok("POTS: once, not every day", c.exSendPots_("2026-11-13").length === 0 && env.mail.length === 1);
+}
+
 // ================= 1. Sunday email =================
 {
   const {env, c} = setupEnv(household);
@@ -294,7 +310,7 @@ const yearHousehold = (fx) => {
   env.triggers.push({getHandlerFunction: () => "updatePrices"}, {getHandlerFunction: () => "refreshBudgetTabs"}, {getHandlerFunction: () => "backupNow", calls: ["old"]});
   c.installExtras(); c.installExtras();
   const names = env.triggers.map(t => t.getHandlerFunction()).sort();
-  ok("TRIGGERS: adds what's missing, once, keeps the rest", JSON.stringify(names) === JSON.stringify(["backupNow", "refreshBudgetTabs", "sendSundayEmails", "updatePrices", "yearReviewCheck"]), names);
+  ok("TRIGGERS: adds what's missing, once, keeps the rest", JSON.stringify(names) === JSON.stringify(["backupNow", "refreshBudgetTabs", "sendPotReminders", "sendSundayEmails", "updatePrices", "yearReviewCheck"]), names);
   const calls = (fn) => (env.triggers.find(t => t.getHandlerFunction() === fn) || {}).calls || [];
   ok("TRIGGERS: Sunday email Sundays at 6pm", calls("sendSundayEmails").join(" ") === "timeBased() onWeekDay(SUNDAY) atHour(18) inTimezone(Europe/London)", calls("sendSundayEmails"));
   ok("TRIGGERS: round-up check daily", calls("yearReviewCheck").join(" ") === "timeBased() everyDays(1) atHour(9) inTimezone(Europe/London)", calls("yearReviewCheck"));

@@ -257,3 +257,11 @@ To do's credit payoff uses the existing rule: each budget's pot pays off its sha
 An unplanned payment between the two partners (one whose bank name has the partner's Budgie id, not a card payment, not a planned transfer) becomes one `settlements` row instead of spending or nothing. Either side's bank read makes it or reuses the one already there (amount, people, two days either way), recording its own bank payment in the new `settlements.bankId` column (`person:bankId`, comma-separated; schema 5, added automatically; phones can't write it). A due loan repayment becomes that repayment. Older unbudgeted bank rows for such payments become the settlement on the next read that sees them; budgeted or split ones are left as payments. Bank-made settlements are bank rows: phones can only take them off. See BANK-NOTES.md.
 
 Tests: `test/bank.test.js` (Flex end to end through the fake Monzo with the observed shapes, and settling up from either side) and `test/engine.test.js` (credit payoff To do). All data is invented.
+
+## Pots that keep their money elsewhere (1.7.4)
+
+- A pot can keep its money in another of the same person's pots until it's needed: setting `hold.<pot>` = the holding pot, `hold.<pot>.days` = how many days ahead (3 if not set). Set on the pot's edit screen ("Keep its money in", "Move it across"). One step only: a holding pot can't keep its own money elsewhere.
+- Payday moves that pot's money to the holding pot instead. The plan counts the two as one pot of money (what's already in either counts towards its bills).
+- To do asks for a move from the holding pot (`hold:<pot>:<date>`, a fill-style item) once a payment from the pot is within those days and the pot alone can't cover it. A pot isn't called short while the holding pot covers it.
+- A daily email (`sendPotReminders`, installed by `installExtras`) says how much to move and by when, once per move, to anyone with `email.to` set unless `email.pots` = off.
+- Payday's move counts as done when the money went in during payday's first week in parts, or into the holding pot (net of money moved back out). A move To do asked for something else isn't counted.

@@ -1887,6 +1887,25 @@ const monzoPaid = (id, date, minor, desc, time) => mtx(id, date, -minor, {scheme
   ok("BP: and the next read keeps it that way", again === 0 && (grow(G, "transactions").find(r => r.id === "bk-monzo-tx_bp_max") || {}).account === "e-bills", again);
 }
 {
+  // PP: money moved from one pot straight to another (Food pot to Bills pot) shows in the account's feed as the
+  // food pot's withdrawal and the bills pot's deposit at the same moment: one move, pot to pot, not two through Main.
+  // Two pots in one Budgie pot make no move at all.
+  freshMonzo(); NOW = RealDate.parse("2026-11-17T12:00:00Z");
+  const potMv = (id, date, minor, pot, time) => mtx(id, date, minor, {scheme: "uk_retail_pot", category: "transfers", description: pot, time: time, metadata: minor > 0 ? {pot_id: pot, pot_withdrawal_id: "potwd_" + id} : {pot_id: pot, pot_deposit_id: "potdep_" + id}});
+  monzo.txns = monzoData(planned).concat(
+    potMv("tx_pp_out", "2026-11-09", 12514, "pot_food", "12:00:00"), potMv("tx_pp_in", "2026-11-09", -12514, "pot_bills", "12:00:02"),
+    potMv("tx_pp_lone", "2026-11-10", 5000, "pot_food", "09:00:00"), potMv("tx_pp_later", "2026-11-10", -5000, "pot_bills", "11:00:00"));
+  const G = bankEnv(t => { t.meta.push({key: "pot.pairFromAt", value: "1"}); });
+  connectMonzo(G, {acc_00009main: "e-main", pot_bills: "e-bills", pot_food: "e-food"});
+  const mv = id => grow(G, "moves").find(m => m.id === "bk-monzo-" + id), live = r => r && r.deleted !== true;
+  const out = mv("tx_pp_out");
+  ok("PP: pot to pot is one move from the food pot to the bills pot", live(out) && out.from === "e-food" && out.to === "e-bills" && Math.abs(out.amount - 125.14) < 0.005, out);
+  ok("PP: and its deposit side isn't a second move", !live(mv("tx_pp_in")), mv("tx_pp_in"));
+  ok("PP: two moves two hours apart stay two moves through the account", live(mv("tx_pp_lone")) && mv("tx_pp_lone").to === "e-main" && live(mv("tx_pp_later")) && mv("tx_pp_later").from === "e-main", [mv("tx_pp_lone"), mv("tx_pp_later")]);
+  NOW += 15 * 60000; G.c.bankPoll();
+  ok("PP: the next read keeps one move", grow(G, "moves").filter(m => /tx_pp_(out|in)$/.test(m.id) && m.deleted !== true).length === 1);
+}
+{
   // BP2: a bill the plan has coming from the main account, paid from the Bills pot after all: the withdrawal is kept as
   // a move (the money did leave the pot, and the plan takes the bill from the account)
   freshMonzo(); NOW = RealDate.parse("2026-11-17T12:00:00Z");
