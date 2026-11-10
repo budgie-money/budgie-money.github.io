@@ -382,6 +382,17 @@
     return h;
   }
   function holdDays(db, acc) { var a = db.byId[acc] || {}, n = Math.round(+setting(db, a.owner, "hold." + acc + ".days", 3)); return isFinite(n) && n >= 0 && n <= 14 ? n : 3; }
+  // money moved for payday's move to a pot in payday's first week: in parts, or into the pot keeping its money, net of
+  // money moved back out. A move To do asked for something else isn't counted.
+  function payMadeFor(db, p, from, to, start, upto, taken) {
+    var g = holdGroup(db, to), end = addDays(start, 7), t = 0; if (upto && upto < end) end = upto;
+    db.moves.forEach(function (m) {
+      if (m.dup || m.person !== p || (taken && taken[m.id]) || m.date < start || m.date > end) return;
+      var k = String(m.key || ""); if (k && !/^bank:/.test(k) && k.indexOf("pay:" + start + ":") !== 0) return;
+      if (m.from === from && g.indexOf(m.to) >= 0) t += +m.amount || 0; else if (g.indexOf(m.from) >= 0 && m.to === from) t -= +m.amount || 0;
+    });
+    return round(Math.max(0, t));
+  }
   // the pots that hold money for this one, and the one this holds for (a pot and its holding pot are one pot of money)
   function holdGroup(db, acc) { var g = [acc], h = holdOf(db, acc); if (h) g.push(h); db.accounts.forEach(function (a) { if (a.id !== acc && holdOf(db, a.id) === acc) g.push(a.id); }); return g; }
   function startOf(db, p) { return setting(db, p, "start", "2026-10-26"); }
@@ -960,7 +971,7 @@
         rbk.forEach(function (g) { (g.bankIds || []).forEach(function (id) { tkn[id] = true; }); });
         if (pk.pay && !pk.opening) {
           var pdk = payday(db, p, pk);
-          pdk.moves.forEach(function(m){var left=round(m.amount-tickedBefore(db,p,"pay:"+pk.start+":"+m.to,from));if(left>0.004&&!takeLoose(db,p,tkn,m.from,m.to,left,pk.start,dayBefore))pendMove(m.from,m.to,left,pk.start,true);});
+          pdk.moves.forEach(function(m){var tb=tickedBefore(db,p,"pay:"+pk.start+":"+m.to,from),left=round(m.amount-(tb||payMadeFor(db,p,m.from,m.to,pk.start,dayBefore,tkn)));if(left>0.004&&!takeLoose(db,p,tkn,m.from,m.to,left,pk.start,dayBefore))pendMove(m.from,m.to,left,pk.start,true);});
           pdk.later.forEach(function (m) { var left = round(m.amount - tickedBefore(db, p, m.key, from)); if (left > 0.004 && !takeLoose(db, p, tkn, m.from, m.to, left, pk.start, dayBefore)) pendMove(m.from, m.to, left, m.date, true); });
         }
         rbk.forEach(function (g) {
@@ -1339,15 +1350,7 @@
       if (waiting && pdNow.pay) pend[pdNow.payAccount] = (pend[pdNow.payAccount] || 0) + pdNow.pay.amount;
       // (money already moved that first week counts, even split into several moves or sent to the pot a pot keeps its
       // money in: what's still to move is what's left. A move To do asked for something else isn't counted.)
-      var payMade = function (from, to) {
-        var g = holdGroup(db, to), end = addDays(per.start, 7), t = 0;
-        db.moves.forEach(function (m) {
-          if (m.dup || m.person !== p || bankTaken[m.id] || m.date < per.start || m.date > end) return;
-          var k = String(m.key || ""); if (k && !/^bank:/.test(k) && k.indexOf("pay:" + per.start + ":") !== 0) return;
-          if (m.from === from && g.indexOf(m.to) >= 0) t += +m.amount || 0; else if (g.indexOf(m.from) >= 0 && m.to === from) t -= +m.amount || 0;
-        });
-        return round(Math.max(0, t));
-      };
+      var payMade = function (from, to) { return payMadeFor(db, p, from, to, per.start, null, bankTaken); };
       if(journey.enabled)journey.steps.forEach(function (m) { if(!(m.remaining>.004)){if(m.net)items.push({type:'allocate',key:m.key,payday:true,what:'Apply the reconciled allocation',amount:0});return;}var left=m.remaining;if(!m.net){var gross=m.allocation!==undefined?+m.allocation:+m.amount;if(isFinite(gross)&&gross>0)left=round(Math.min(left,gross-payMade(m.from,m.account||m.to)));}if(!(left>.004))return;plan(m.key,m.from,m.to,left,"Payday: move "+money(left)+" to "+accName(db,m.to),m.why,{payday:true,waiting:waiting,net:!!m.net}); });
       if(!journey.enabled)pdNow.moves.forEach(function(m){var key='pay:'+per.start+':'+m.to;if(ticked(db,p,key))return;var left=round(m.amount-payMade(m.from,m.to));plan(key,m.from,m.to,left,'Payday: move '+money(left)+' to '+accName(db,m.to),m.why,{payday:true,waiting:waiting});});
       // the payday screen's cover, from the pot that covers going over, counts as on its way while that screen still has

@@ -1756,6 +1756,8 @@ const tickPay11 = (t, p, d) => { const L0 = B.load(t, d), per = B.periodAt(L0, p
   const plainAmt = plain.amount;
   const sp = db(t => { t.moves.push({id: "bk-s1", person: "ethan", from: "e-main", to: "e-bills", amount: 200, date: "2026-10-31", key: "bank:s1"}, {id: "bk-s2", person: "ethan", from: "e-main", to: "e-bills", amount: B.round(plainAmt - 200), date: "2026-11-02", key: "bank:s2"}); });
   eq("payday move made in two parts is done", B.todo(sp, "ethan", "2026-11-04").some(x => x.key === "pay:2026-10-29:e-bills"), false);
+  const nx = d => (B.payday(d, "ethan", B.periodAt(d, "ethan", "2026-12-01")).moves.filter(m => m.to === "e-bills")[0] || {}).amount || 0;
+  near("payday move made in two parts isn't counted again as next month's leftover", nx(sp), nx(db(t => t.moves.push({id: "bk-s0", person: "ethan", from: "e-main", to: "e-bills", amount: plainAmt, date: "2026-10-29", key: "pay:2026-10-29:e-bills"}))));
   const sp2 = db(t => { t.moves.push({id: "bk-s1", person: "ethan", from: "e-main", to: "e-bills", amount: 200, date: "2026-10-31", key: "bank:s1"}); });
   near("payday move part made: only the rest is asked for", (B.todo(sp2, "ethan", "2026-11-04").filter(x => x.key === "pay:2026-10-29:e-bills")[0] || {}).amount, plainAmt - 200);
 }
