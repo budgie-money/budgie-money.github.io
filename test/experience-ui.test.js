@@ -85,7 +85,7 @@ function problems(){
   p=await pageFor('sophie');await go(p,'today');ok('shortfall is not labelled On track',!(/On track/.test(await text(p)))&&/needs attention/i.test(await text(p)));
   await p.context().close();
   // Exercise every current screen and the new sheets on both phones, including text enlargement.
-  const screens=['today','money','plan','spare','add','partner','more','payday','pots','bills','goals','lisa','house','networth','debts','insights','gifts','settings','themes','bank','review','linked','emailset','sharing','sync','importcsv'];
+  const screens=['today','money','plan','spare','add','partner','more','payday','pots','bills','goals','lisa','house','networth','debts','insights','cooldown','gifts','settings','themes','bank','review','linked','emailset','sharing','sync','importcsv'];
   const layout=[];
   for(const width of [295,320,384,412])for(const size of ['normal','larger'])for(const who of ['ethan','sophie']){
    p=await pageFor(who,width);await p.evaluate(sz=>{window.BudgieApp.S.prefs.size=sz;},size);

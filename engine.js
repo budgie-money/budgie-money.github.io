@@ -6,7 +6,7 @@
   else root.Budgie = factory();
 })(this, function () {
   "use strict";
-  var VERSION = "1.7.4";
+  var VERSION = "1.7.5";
 
   // ---------- dates ----------
   function D(s) { var p = String(s).split("-"); return new Date(Date.UTC(+p[0], +p[1] - 1, +p[2])); }
@@ -201,7 +201,7 @@
     });
     return r;
   }
-  var TABLES = ["people", "accounts", "income", "bills", "budgets", "splits", "transfers", "transactions", "moves", "settlements", "loans", "loanItems", "goals", "valuations", "amounts", "exceptions", "settings", "gifts", "prices", "meta"];
+  var TABLES = ["people", "accounts", "income", "bills", "budgets", "splits", "transfers", "transactions", "moves", "settlements", "loans", "loanItems", "goals", "valuations", "amounts", "exceptions", "settings", "gifts", "cooldown", "prices", "meta"];
   // today (optional): money already in pots only counts for periods that have started
   function load(tables, today) {
     // (lookups by id have no built-in keys, so an id like "constructor" or "__proto__" is only ever that row)
@@ -2371,6 +2371,54 @@
       return {id: g.id, name: g.name, kind: g.kind, target: target, saved: round(saved), pct: target ? Math.min(100, Math.round(saved / target * 100)) : 0, due: g.due || "", parts: parts, notes: g.notes};
     });
   }
+  // ---------- Cooldown: a waiting room for things you want to buy ----------
+  // One row per thing parked (table cooldown): price, where it would come from (source: a spending budget's id, a
+  // savings account's id, or "next" for after payday), how long it cools (days, from date), how excited you were (hype,
+  // 1 to 5), and status (cooling, bought or letgo; rehype is the score when you looked again). It turns green only once
+  // its days are up and the money is really there today: the budget's allowance and the cash behind it (purchaseCheck),
+  // the savings account's balance, or payday having come for "next". Nothing is stored about the money itself, so it
+  // always follows the live numbers, bank feed included.
+  var COOL_STEPS = [[15, 1], [50, 3], [150, 7], [400, 14]];
+  function coolDays(price) { price = +price || 0; for (var i = 0; i < COOL_STEPS.length; i++) if (price < COOL_STEPS[i][0]) return COOL_STEPS[i][1]; return 30; }
+  // still want it? Kept (bought) unless the new score is below the lower of the first score and 4
+  function coolKeep(hype, again) { var h = Math.round(+hype || 0) || 3; return Math.round(+again || 0) >= Math.min(h, 4); }
+  function coolSavings(db, p) { return accountsOf(db, p).filter(function (a) { return a.kind === "saving" || a.kind === "isa"; }); }
+  function coolSources(db, p, date) {
+    var per = periodAt(db, p, date), st = budgetState(db, p, per), bal = balances(db, date), out = [];
+    Object.keys(st).forEach(function (id) { var s = st[id]; if (s.budget.mode === "saving") return; out.push({id: id, kind: "budget", name: s.budget.name, left: round(Math.max(0, s.left))}); });
+    coolSavings(db, p).forEach(function (a) { out.push({id: a.id, kind: "saving", name: a.name, left: round(bal[a.id] || 0)}); });
+    out.push({id: "next", kind: "next", name: "Next month", payday: per.next});
+    return out;
+  }
+  function coolCar(db, p, date) { return goals(db, p, date).filter(function (g) { return g.id === "g-car" || g.kind === "car"; })[0] || null; }
+  function coolState(db, p, date, row) {
+    var price = round(Math.max(0, +row.price || 0)), days = Math.max(0, Math.round(+row.days || 0)) || coolDays(price), from = isIso(row.date) ? row.date : date;
+    var readyOn = addDays(from, days), src = String(row.source || ""), acc = db.byId[src], bud = acc && db.budgets.indexOf(acc) >= 0 ? acc : null;
+    var r = {id: row.id, row: row, price: price, days: days, from: from, readyOn: readyOn, done: date >= readyOn, left: Math.max(0, diff(date, readyOn)), source: src, sourceName: "", kind: "", afford: false, has: null, payday: "", goals: []};
+    if (src === "next") { r.kind = "next"; r.sourceName = "Next month"; r.payday = periodAt(db, p, from).next; r.afford = date >= r.payday; }
+    else if (bud && bud.person === p) {
+      r.kind = "budget"; r.sourceName = bud.name;
+      var c = price > 0 ? purchaseCheck(db, p, date, bud.id, price) : null;
+      if (c) { r.has = round(Math.max(0, Math.min(c.budgetLeft, c.cashAvailable))); r.afford = c.budgetFits && c.cashFits; }
+      else { var s = budgetState(db, p, periodAt(db, p, date))[bud.id]; r.has = s ? round(Math.max(0, s.left)) : 0; r.afford = price === 0 || !!s; }
+    } else if (acc && acc.owner === p && coolSavings(db, p).indexOf(acc) >= 0) {
+      r.kind = "saving"; r.sourceName = acc.name; r.has = round(balances(db, date)[acc.id] || 0); r.afford = r.has >= price - 0.004;
+      // what it does to the goals this account counts towards, and to the car goal whichever account it's from
+      var gs = goals(db, p, date), car = coolCar(db, p, date);
+      gs.forEach(function (g) { if (g.parts.some(function (x) { return x.account === acc.id; }) || (car && g.id === car.id)) {
+        var linked = g.parts.some(function (x) { return x.account === acc.id; });
+        r.goals.push({id: g.id, name: g.name, car: !!car && g.id === car.id, linked: linked, target: g.target, saved: g.saved, after: linked ? round(g.saved - price) : g.saved, share: g.target ? Math.round(price / g.target * 100) : 0});
+      } });
+    } else { r.kind = "missing"; r.sourceName = "Not found"; }
+    var st = String(row.status || "cooling");
+    r.state = st === "bought" || st === "letgo" ? st : !r.done ? "cooling" : r.afford ? "ready" : "waiting";
+    return r;
+  }
+  function cooldown(db, p, date) {
+    var items = (db.cooldown || []).filter(function (x) { return x.person === p; }).map(function (x) { return coolState(db, p, date, x); }), n = {cooling: 0, ready: 0, waiting: 0, bought: 0, letgo: 0}, notSpent = 0;
+    items.forEach(function (x) { n[x.state]++; if (x.state === "letgo") notSpent += x.price; });
+    return {items: items, count: n, notSpent: round(notSpent)};
+  }
   function taxYearStart(date) { var y = +date.slice(0, 4); var s = ymd(y, 3, 6); return date >= s ? s : ymd(y - 1, 3, 6); }
   function planningRule(db,p,key,date){var history;try{history=JSON.parse(setting(db,p,key+'.history',''));}catch(e){}if(Array.isArray(history)){var active=history.filter(function(x){return isIso(x.from)&&x.from<=date;}).sort(function(a,b){return a.from.localeCompare(b.from);}).pop();return active&&active.on===true?active.from:'';}var from=setting(db,p,key,'');return isIso(from)&&from<=date?from:'';}
   function confirmedLisa(db,p,date) {
@@ -2696,7 +2744,7 @@
   }
 
   return {
-    VERSION: VERSION, TABLES: TABLES, dailyAllowances:dailyAllowances, planningRule:planningRule, confirmedLisa:confirmedLisa, purchaseCheck:purchaseCheck, financeQuote:financeQuote, goalScenario:goalScenario, reconcile:reconcile,
+    VERSION: VERSION, TABLES: TABLES, dailyAllowances:dailyAllowances, planningRule:planningRule, confirmedLisa:confirmedLisa, purchaseCheck:purchaseCheck, cooldown: cooldown, coolState: coolState, coolSources: coolSources, coolDays: coolDays, coolKeep: coolKeep, financeQuote:financeQuote, goalScenario:goalScenario, reconcile:reconcile,
     load: load, payPending: payPending, occurrences: occurrences, occurrencesAll: occurrencesAll, outgoings: outgoings, scheduleDates: scheduleDates, isWorkingDay: isWorkingDay, bankHolidays: bankHolidays,
     periods: periods, periodAt: periodAt, prevPeriod: prevPeriod, nextPeriod: nextPeriod, planFor: planFor, payday: payday, paydaySteps:paydaySteps, netParts:netParts, partialNetKey:partialNetKey,
     budgetState: budgetState, balances: balances, flows: flows, todo: todo, between: between, today: today, coming: coming,
