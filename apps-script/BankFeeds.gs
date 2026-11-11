@@ -1001,6 +1001,21 @@ function bankApply_(p, data, windowFrom, payCarry) {
       ((o.item && db.byItem.exceptions[o.item.id]) || []).forEach(function (x) { if (x.date === o.orig && String(x.action || "").toLowerCase() === "move" && x.newDate && !bankDay(x)) d = x.newDate; });
       return d;
     };
+    // a regular payment between you two that came late (up to five weeks, the same amount, not paid yet): it's that
+    // payment, not settling up, and it ticks it off
+    var latePlanned = function (from, to, amt, date) {
+      var hit = null;
+      if (!from || !to) return null;
+      db.transfers.forEach(function (tr) {
+        if (hit || tr.from !== from || tr.to !== to) return;
+        D.occurrences(db, tr, D.addDays(date, -35), D.addDays(date, -2)).forEach(function (o) {
+          if (hit || o.skipped || usedOcc[o.key] || !near(o.amount, amt)) return;
+          var paid = (db.byItem.exceptions[tr.id] || []).some(function (x) { return x.date === o.orig && /paid/i.test(String(x.action || "")) && !bankTrue_(x.deleted); });
+          if (!paid) hit = {item: tr, occ: o};
+        });
+      });
+      return hit;
+    };
     var plannedCands = function (t, needName) {
       if (bankTrue_(D.setting(db, p, "bank.undo." + t.id, ""))) return [];
       var toPartner = namesPartner(t), out = [], words = bankMerchantKey_(t.name).split(" ").filter(function (w) { return w.length > 2; });
@@ -1021,6 +1036,7 @@ function bankApply_(p, data, windowFrom, payCarry) {
       });
       if (needName) return out;
       db.transfers.forEach(function (tr) { if (tr.from === p) win(tr).forEach(function (o) { if (near(a, o.amount)) out.push({kind: "transfer", occ: o, score: (toPartner ? 0 : 10) + Math.abs(D.diff(planDay(o), t.date)) + 0.001}); }); });
+      if (a > 0 && !out.some(function (x) { return x.kind === "transfer"; })) { var lp = latePlanned(p, partnerId, a, t.date); if (lp) out.push({kind: "transfer", occ: lp.occ, score: (toPartner ? 5 : 15) + 0.001}); }
       // a payment between you two logged by your partner only counts if the bank names them (else a made-up one could
       // hide one of your payments)
       // (a payment that names your partner is matched to one below, as a payment between you: settleUp)
@@ -1312,7 +1328,7 @@ function bankApply_(p, data, windowFrom, payCarry) {
     var partnerPlanned = function (t) {
       var a = -t.amount, hit = false;
       db.transfers.forEach(function (tr) { if (tr.to === p) D.occurrences(db, tr, D.addDays(t.date, -10), D.addDays(t.date, 11)).forEach(function (o) { var d = planDay(o); if (d >= D.addDays(t.date, -3) && d < D.addDays(t.date, 4) && near(a, o.amount)) hit = true; }); });
-      return hit;
+      return hit || (a > 0 && !!latePlanned(partnerId, p, a, t.date));
     };
     // A payment between you a few days from a regular payment or a loan repayment between you, for a different amount
     // (within a quarter of it): it may be that one paid differently, so it isn't taken for settling up as well (it stays
@@ -1327,6 +1343,7 @@ function bankApply_(p, data, windowFrom, payCarry) {
     var settleUp = function (t, mine) {
       if (!partnerId) return false;
       if (nearPlanned(t.amount > 0 ? p : partnerId, t.amount > 0 ? partnerId : p, Math.abs(t.amount), t.date)) return false;
+      if (latePlanned(t.amount > 0 ? p : partnerId, t.amount > 0 ? partnerId : p, Math.abs(t.amount), t.date)) return false;
       if (mine) {
         if (mine.person !== p) return false;
         // dismissed on your phone: it stays as it is
