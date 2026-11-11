@@ -2396,6 +2396,14 @@ const flexReqs = () => reqs.filter(r => /\/transactions\?/.test(r.url) && new UR
   ok("SET: money in from your partner isn't a payment either", !liveTx(G).some(r => r.bankId === "tx_air"));
   let before = snap(G); readS(G, [sOut]); readE(G, [eIn]); readE(G, [eIn]);
   ok("SET: reading either side again changes nothing", snap(G) === before);
+  {
+    // LATE: the planned bills share paid ten days late is that share (ticked off), not settling up, from either side
+    const GL = bankEnv(), sLate = {id: "sfi-late", date: "2026-11-11", amount: 140, name: "Ethan Example"}, eLate = {id: "tx_late", date: "2026-11-11", amount: -140, name: "SOPHIE EXAMPLE"};
+    readS(GL, [sLate]); readE(GL, [eLate]);
+    ok("LATE: a late planned share isn't settling up", sets(GL).length === 0, sets(GL));
+    ok("LATE: nor a spending row on either side", !liveTx(GL).some(r => /late/.test(String(r.bankId || r.id))), liveTx(GL));
+    ok("LATE: it ticks off the planned share", grow(GL, "exceptions").some(r => r.item === "s-to-e-bills" && r.date === "2026-11-01" && /paid/.test(r.action) && !r.deleted), grow(GL, "exceptions"));
+  }
   // how it shows: Between you two, the same from both sides
   G.c.CACHE_ = {}; let d = B.load(G.c.allTables_(), "2026-11-17");
   const bE = B.between(d, "ethan", "2026-11-17"), bS = B.between(d, "sophie", "2026-11-17");
