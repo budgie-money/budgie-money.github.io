@@ -151,5 +151,6 @@
     if(window.BudgieClarity) window.BudgieClarity.install(A,{more:originalMore,sorted:sortedCard});
     if(window.BudgieTrust) window.BudgieTrust.install(A);
     if(window.BudgiePlanning) window.BudgiePlanning.install(A);
+    if(window.BudgieCooldown) window.BudgieCooldown.install(A);
   }};
 })();

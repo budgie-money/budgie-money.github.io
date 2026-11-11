@@ -51,6 +51,7 @@ People are `ethan` and `sophie`. Money is in pounds. Dates are real dates.
 | `amounts` | a price or pay change from a date, or a split's new shares | id, item, start, amount, shares |
 | `exceptions` | a change to one occurrence | id, item, date, action (skip, move, amount, paid), newDate, amount |
 | `settings` | a setting | id, person, key, value |
+| `cooldown` | something parked before buying | id, person, name, price, source, link, why, hype, days, date, status, rehype, end |
 | `meta` | schema version and other housekeeping | key, value |
 
 *Schedule* columns (income, bills, transfers): `unit` (month, week, year, once, dates), `every` (1, 2, 4…),
@@ -265,3 +266,28 @@ Tests: `test/bank.test.js` (Flex end to end through the fake Monzo with the obse
 - To do asks for a move from the holding pot (`hold:<pot>:<date>`, a fill-style item) once a payment from the pot is within those days and the pot alone can't cover it. A pot isn't called short while the holding pot covers it.
 - A daily email (`sendPotReminders`, installed by `installExtras`) says how much to move and by when, once per move, to anyone with `email.to` set unless `email.pots` = off.
 - Payday's move counts as done when the money went in during payday's first week in parts, or into the holding pot (net of money moved back out). A move To do asked for something else isn't counted.
+
+## Cooldown (1.7.5)
+
+A waiting room for impulse buys (More / Cooldown, or Cooldown beside Can I buy this? on Today). Each thing parked is one
+`cooldown` row (schema 6, added to the sheet by itself): name, price, `source` (a spending budget's id, one of your
+savings accounts (kind saving or isa), or `next` for after payday), optional `link` and `why`, `hype` (1 to 5), `days`
+and `date` (when it was parked), and `status` (cooling, bought or letgo; `rehype` and `end` when decided). Rows are
+private like gift lists: only their person sees or changes them, and they sync through the usual `applyOps_`/`readTable_`
+path, so both phones agree.
+
+- How long it cools is set from the price when it's parked (under £15 a day, under £50 three, under £150 a week, under
+  £400 two weeks, otherwise 30 days; `Budgie.coolDays`), and can be changed or extended by 3 days while it cools.
+- Whether it's green is never stored. `Budgie.cooldown(db, p, date)` works it out from today's numbers each time
+  (`coolState`): the days must be up and the money there now. A budget uses `purchaseCheck` (its allowance left and the cash
+  behind it, so spending logged or brought in by the bank feed counts straight away); a savings account its balance; `next`
+  the first payday after it was parked. Time up without the money is "Cooled, waiting for money", with what the budget has.
+  A source that's gone (or isn't yours) never turns green.
+- Still want it? asks for excitement again. Below the lower of the first score and 4 it's let go (`Budgie.coolKeep`);
+  otherwise it's bought, and Budgie offers the usual Log it screen filled in with the price, budget and name (nothing is
+  logged until you tap Log it, so a different real price can be typed).
+- Not spent is the total of everything let go. A savings item shows what it does to each goal its account counts towards,
+  and to the car goal (id `g-car` or kind car) as a share of its target when the account isn't part of it.
+
+Tests: `node test/cooldown.test.js` (rules, live numbers, privacy and the sheet) and, on a fresh fake server,
+`node test/cooldown-ui.test.js`. All data is invented.

@@ -23,7 +23,8 @@ function webAppUrl_() {
 var NO_URL_ = "Add a Script Property WEB_APP_URL (Project Settings > Script Properties) with your Web app URL, ending /exec (Deploy > Manage deployments), and run again.";
 var APP_URL = "https://budgie-money.github.io/";
 // 4: credit funding, daily saving transfers and move-confirmation batches. Raised whenever a table or column is added: the sheet gets it by itself (ensureSchema_)
-var SCHEMA_VERSION = 5;
+// 6: cooldown (things parked before buying)
+var SCHEMA_VERSION = 6;
 var COMMON = ["deleted", "updated", "by"];
 var SCHEMA = {
   people: ["id", "name", "bank", "potWord", "partner", "colour"],
@@ -44,6 +45,7 @@ var SCHEMA = {
   exceptions: ["id", "item", "date", "action", "newDate", "amount", "note", "bankId"],
   settings: ["id", "person", "key", "value"],
   gifts: ["id", "person", "name", "idea", "occasion", "date", "limit", "cost", "bought", "notes"],
+  cooldown: ["id", "person", "name", "price", "source", "link", "why", "hype", "days", "date", "status", "rehype", "end", "notes"],
   prices: ["id", "fund", "date", "price", "source"],
   meta: ["key", "value"]
 };
@@ -57,7 +59,7 @@ var HELP = {
   settlements: "One-off payments between you two. loan: a row id from loans if it repays one. bankId: the bank payments it is (person:bank id), set by the bank feed.", loans: "Money one of you owes the other. repay: amount each month from repayFrom. With items, amount is their total.", loanItems: "What a loan is made of: one row per thing. share is what the borrower owes for it (it can be negative); cost is the full price, if you want it kept.",
   goals: "owners: who it belongs to. accounts: which accounts count towards it.", valuations: "A balance you checked. Everything after its date is worked out.",
   amounts: "A price or pay change for a bill, income or budget, from the start date. Or a split's new shares (item: the split's id).", exceptions: "A change to one date: skip, move (newDate), amount (what it really was) or paid (it went out).",
-  settings: "Settings for each person.", gifts: "Gift ideas and what you bought. Only you see your own list.", prices: "Fund prices for the LISA tracker, filled in by the script.", meta: "Housekeeping."
+  settings: "Settings for each person.", gifts: "Gift ideas and what you bought. Only you see your own list.", cooldown: "Things you parked before buying. source: a budget, a savings account or next (after payday). days: how long it cools from date. hype and rehype: how excited you were, 1 to 5. status: cooling, bought or letgo. Only you see your own.", prices: "Fund prices for the LISA tracker, filled in by the script.", meta: "Housekeeping."
 };
 
 // ---------- setup ----------
@@ -290,7 +292,7 @@ function owner_(t, r) {
   switch (t) {
     case "people": return [r.id];
     case "accounts": return [r.owner];
-    case "income": case "bills": case "budgets": case "transactions": case "moves": case "settings": case "gifts": return [r.person];
+    case "income": case "bills": case "budgets": case "transactions": case "moves": case "settings": case "gifts": case "cooldown": return [r.person];
     case "transfers": case "settlements": return [r.from, r.to];
     case "loans": return [r.lender, r.borrower];
     // what a loan is made of is seen and changed by the same two people as the loan itself
@@ -318,7 +320,7 @@ var ITEM_TABS_ = ["income", "bills", "budgets", "transfers", "loans", "splits"];
 // The same holds for every other tab (payments, moves, balances...): nothing looks those up across tabs today, but
 // one id is one thing, so nothing added later can be fooled by a row that shares it.
 var ID_TABS_ = ["people", "accounts", "income", "bills", "budgets", "splits", "transfers", "loans", "goals"];
-var ID_ANY_TABS_ = ID_TABS_.concat(["transactions", "moves", "settlements", "valuations", "amounts", "exceptions", "settings", "gifts", "loanItems"]);
+var ID_ANY_TABS_ = ID_TABS_.concat(["transactions", "moves", "settlements", "valuations", "amounts", "exceptions", "settings", "gifts", "cooldown", "loanItems"]);
 function idUsedElsewhere_(t, id) { for (var i = 0; i < ID_ANY_TABS_.length; i++) if (ID_ANY_TABS_[i] !== t && byId_(ID_ANY_TABS_[i], id)) return ID_ANY_TABS_[i]; return ""; }
 // an id in more than one item tab (only possible by typing into the sheet) belongs to nobody: its changes can't be
 // seen or made by either of you
