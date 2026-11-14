@@ -36,7 +36,7 @@
   var v=view(),by={ready:[],cooling:[],waiting:[],done:[]};
   v.items.forEach(function(x){(x.state==='bought'||x.state==='letgo'?by.done:by[x.state]).push(x);});
   by.cooling.sort(function(a,b){return a.readyOn<b.readyOn?-1:1;});by.done.sort(function(a,b){return String(b.row.end||'')<String(a.row.end||'')?-1:1;});
-  var html=card('<div class="cool-stats"><div><b>'+v.count.cooling+'</b><span>cooling</span></div><div><b>'+v.count.ready+'</b><span>ready</span></div><div><b>'+M(v.notSpent)+'</b><span>not spent</span></div></div>'+btn('Park something','coolPark',undefined,'wide primary'));
+  var html=card('<div class="cool-stats"><div><b>'+(v.count.cooling+v.count.waiting)+'</b><span>cooling</span></div><div><b>'+v.count.ready+'</b><span>ready</span></div><div><b>'+M(v.notSpent)+'</b><span>not spent</span></div></div>'+btn('Park something','coolPark',undefined,'wide primary'));
   if(by.ready.length)html+='<h2 class="h2">Ready to buy</h2>'+by.ready.map(itemCard).join('');
   if(by.cooling.length)html+='<h2 class="h2">Cooling</h2>'+by.cooling.map(itemCard).join('');
   if(by.waiting.length)html+='<h2 class="h2">Cooled, waiting for money</h2>'+by.waiting.map(itemCard).join('');
@@ -61,7 +61,7 @@
  function hint(){
   var el=$('#coolHint');if(!el)return;var p=+($('#coolPrice')||{}).value||0,sel=$('#coolDays'),d=+(sel||{}).value||1,s=sources().filter(function(x){return x.id===($('#coolSource')||{}).value;})[0],t='';
   if(sel&&!S.ui.coolDaysSet&&p>0){sel.value=String(B.coolDays(p));d=+sel.value;}
-  if(p>0){t='Green '+(d===1?'tomorrow':'in '+daysText(d))+(s&&s.kind==='next'?', after payday':'')+(d===B.coolDays(p)?' (suggested for its price).':'.');if(s&&s.kind!=='next'&&s.left<p)t+=' '+s.name+' has '+M(s.left)+' now.';}
+  if(p>0){t='Green '+(d===1?'tomorrow':'in '+daysText(d))+(s&&s.kind==='next'?', after payday':'')+(d===B.coolDays(p)?' (suggested for its price).':'.');if(s&&s.kind!=='next'&&s.left<p)t='Waited '+(d===1?'tomorrow':'in '+daysText(d))+'; green once '+s.name+' has '+M(p)+' ('+M(s.left)+' now).';}
   var x=s&&s.kind==='saving'&&p>0?B.coolState(db(),me(),now(),{id:'',price:p,source:s.id,days:1}):null;if(x)x.goals.forEach(function(g){t+=g.car?' That’s '+g.share+'% of your car goal.':'';});
   el.textContent=t;
  }

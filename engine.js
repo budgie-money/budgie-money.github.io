@@ -6,7 +6,7 @@
   else root.Budgie = factory();
 })(this, function () {
   "use strict";
-  var VERSION = "1.7.8";
+  var VERSION = "1.7.9";
 
   // ---------- dates ----------
   function D(s) { var p = String(s).split("-"); return new Date(Date.UTC(+p[0], +p[1] - 1, +p[2])); }
@@ -2039,9 +2039,15 @@
     tiles.forEach(function (tl) { if (!capped(tl) || tl.left <= 0) return; leftSum += tl.left; if (tl.mode === "remainder") remSum += tl.left; });
     if (leftSum > cashFree + 0.004) {
       var cut = leftSum - cashFree, remCut = Math.min(cut, remSum), restCut = cut - remCut, rest = leftSum - remSum;
+      // (of the others, a budget whose own pot already has its money for it gives way last: what isn't there is first
+      // taken from the ones whose money isn't in their pot yet, the main account's say)
+      var potHas = dict(), safe = dict(), unsafeSum = 0;
+      Object.keys(spendAccs).forEach(function (a) { if (a === main) return; var h = (bal[a] || 0) + (projectedPot[a] || 0); fl0n.forEach(function (f) { if (f.account === a && f.amount < 0) h += f.amount; }); potHas[a] = Math.max(0, h); });
+      tiles.forEach(function (tl) { if (!capped(tl) || tl.left <= 0 || tl.mode === "remainder") return; var b = db.byId[tl.id], a = b && b.account || main, sv = potHas[a] !== undefined ? Math.min(tl.left, potHas[a]) : 0; if (potHas[a] !== undefined) potHas[a] -= sv; safe[tl.id] = sv; unsafeSum += tl.left - sv; });
+      var unCut = Math.min(restCut, unsafeSum), safeCut = restCut - unCut, safeSum = rest - unsafeSum;
       tiles.forEach(function (tl) {
         if (!capped(tl) || tl.left <= 0) return;
-        var by = tl.mode === "remainder" ? (remSum > 0 ? remCut * tl.left / remSum : 0) : (rest > 0 ? restCut * tl.left / rest : 0);
+        var sv = safe[tl.id] || 0, by = tl.mode === "remainder" ? (remSum > 0 ? remCut * tl.left / remSum : 0) : (unsafeSum > 0 ? unCut * (tl.left - sv) / unsafeSum : 0) + (safeSum > 0 ? safeCut * sv / safeSum : 0);
         if (by < 0.005) return;
         tl.notThere = round(by); tl.planLeft = tl.left; tl.left = round(Math.max(0, tl.left - by));
         if (tl.mode === "remainder") tl.amount = round(tl.spent + tl.left);
