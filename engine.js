@@ -1342,7 +1342,7 @@
   // is taken to be in on its day.
   // a regular payment to the partner has been made: when the payer's bank is read, only once it saw it (paid in parts or
   // early, the parts come in as settling up instead, so it isn't counted twice); before that, on its day
-  function bankFrom(db, p) { return memo(db, "bankFrom|" + p, function () { var d = "", at = function (x) { if (x && (!d || x < d)) d = x; }; db.valuations.forEach(function (v) { if (/^bk-/.test(String(v.id)) && (db.byId[v.account] || {}).owner === p) at(v.date); }); db.transactions.forEach(function (x) { if (x.person === p && (x.bankId || /^bk-/.test(String(x.id)))) at(x.date); }); db.settlements.forEach(function (x) { if (x.from === p && /^bk-/.test(String(x.id))) at(x.date); }); return d; }); }
+  function bankFrom(db, p) { return memo(db, "bankFrom|" + p, function () { var d = "", at = function (x) { if (x && (!d || x < d)) d = x; }; db.valuations.forEach(function (v) { if (/^bk-/.test(String(v.id)) && (db.byId[v.account] || {}).owner === p) at(v.date); }); db.transactions.forEach(function (x) { if (x.person === p && (x.bankId || /^bk-/.test(String(x.id)))) at(x.date); }); db.settlements.forEach(function (x) { if (String(x.bankId || "").split(",").some(function (g) { return g.indexOf(p + ":") === 0; })) at(x.date); }); return d; }); }
   // which month a regular payment to the partner counts in: its own (it pays that month's shared bills), the month of the
   // bill it's for when it's sent ahead of it (towards: that bill's id), or none at all (towards: "none", not for bills)
   function shareMonthDay(db, t, o) {
@@ -1350,7 +1350,13 @@
     var b = db.byId[w]; if (!b || db.bills.indexOf(b) < 0) return d;
     var nx = occurrences(db, b, addDays(d, -1), addDays(d, 45))[0]; return nx ? (nx.sched || nx.date) : d;
   }
-  function shareMade(db, t, o) { var f = bankFrom(db, t.from); return !!o.paid || !f || o.date < f; }
+  function shareKeyed(db, t, o) { var k = "share:" + t.id + "@" + (o.orig || o.date); return db.settlements.some(function (x) { return x.key === k; }); }
+  function shareMade(db, t, o) { if (shareKeyed(db, t, o)) return false; var f = bankFrom(db, t.from); return !!o.paid || !f || o.date < f; }
+  // a settlement that's part of a regular payment (key share:<id>@<day>): the day of the month it counts in
+  function settleMonthDay(db, s) {
+    var m = /^share:(.+)@(\d{4}-\d{2}-\d{2})$/.exec(String(s.key || "")), t = m ? db.byId[m[1]] : null;
+    return t && db.transfers.indexOf(t) >= 0 ? (shareMonthDay(db, t, {date: m[2], sched: m[2]}) || s.date) : s.date;
+  }
   function bankFed(db, p) {
     return db.valuations.some(function (v) { return /^bk-/.test(String(v.id)) && (db.byId[v.account] || {}).owner === p; }) || db.transactions.some(function (x) { return x.person === p && (!!x.bankId || /^bk-/.test(String(x.id))); });
   }
@@ -1413,7 +1419,8 @@
       payday(db, p, pk).later.forEach(function (m) {
         if (m.date > today || !m.loans.every(function (x) { var l = db.byId[x.id]; return !!l && loanPlan(db, l).some(function (r) { return r.date === x.date && r.paid; }); })) return;
         // (with the bank read, a payment from your partner or other money in has to have been seen arriving too)
-        if (bankFed(db, p) && !(m.occs || []).every(function (x) { var it = db.byId[x.id]; return !!it && occurrencesAll(db, it, addDays(x.date, -10), addDays(today, 1)).some(function (o) { return o.key === x.occ && o.paid; }); })) return;
+        // (only the payer's bank marks a payment from your partner as seen: when theirs isn't read, it's on its day)
+        if (!(m.occs || []).every(function (x) { var it = db.byId[x.id]; if (!it) return false; var tr = db.transfers.indexOf(it) >= 0, f = tr ? bankFrom(db, it.from) : (bankFed(db, p) ? "0000" : ""); if (!f || x.date < f) return true; return occurrencesAll(db, it, addDays(x.date, -10), addDays(today, 1)).some(function (o) { return o.key === x.occ && (o.paid || (tr && shareKeyed(db, it, o) && db.settlements.filter(function (z) { return z.key === "share:" + it.id + "@" + (o.orig || o.date); }).reduce(function (n, z) { return n + (+z.amount || 0); }, 0) >= o.amount - 0.005)); }); })) return;
         if (takeLoose(db, p, bankTaken, m.from, m.to, m.amount - ticked(db, p, m.key), pk.start, today)) return;
         plan(m.key, m.from, m.to, m.amount, "", m.names.join(" and ") + (m.date > pk.start ? " came in after payday" : " came in") + ", so its part of what's left goes to " + accName(db, m.to) + " now.", {partial: true, later: true});
       });
@@ -1751,6 +1758,9 @@
     });
     db.settlements.forEach(function (s) {
       if (s.loan || s.date > today || s.date < st) return;
+      // (part of a regular payment counts in that payment's month, as the payment would have)
+      var md = settleMonthDay(db, s);
+      if (md !== s.date && md >= monthStart) { if (s.from === q && s.to === p) month.paidIn += +s.amount; if (s.from === p && s.to === q) month.paidOut += +s.amount; return; }
       if (s.from === q && s.to === p) owed -= +s.amount;
       if (s.from === p && s.to === q) owed += +s.amount;
     });
@@ -1799,8 +1809,8 @@
     return memo(db, "owix|" + p, function () {
       var q = partnerOf(db, p), st = maxS(startOf(db, p), startOf(db, q)), hz = addDays(maxS(db.today || st, st), 400), now = [], month = [];
       db.transactions.forEach(function (x) { if (!x.split || x.date < st) return; if (x.person === p) now.push([x.date, round(shareOf(db, x.split, q, +x.amount, x.person, x.date))]); if (x.person === q) now.push([x.date, -round(shareOf(db, x.split, p, +x.amount, x.person, x.date))]); });
-      db.settlements.forEach(function (s) { if (s.loan || s.date < st) return; if (s.from === q && s.to === p) now.push([s.date, -(+s.amount)]); if (s.from === p && s.to === q) now.push([s.date, +s.amount]); });
-      db.bills.forEach(function (b) { if (!b.split || (b.person !== p && b.person !== q)) return; occurrences(db, b, st, hz).forEach(function (o) { month.push([o.sched || o.date, (b.person === p ? 1 : -1) * round(shareOf(db, b.split, b.person === p ? q : p, o.amount, b.person, o.date))]); }); });
+      db.settlements.forEach(function (s) { if (s.loan || s.date < st) return; var md = settleMonthDay(db, s), into = md !== s.date ? month : now, day = md !== s.date ? md : s.date; if (s.from === q && s.to === p) into.push([day, -(+s.amount)]); if (s.from === p && s.to === q) into.push([day, +s.amount]); });
+      db.bills.forEach(function (b) { if (!b.split || (b.person !== p && b.person !== q)) return; occurrences(db, b, st, hz).forEach(function (o) { if (db.today && o.date > db.today && (o.sched || o.date) <= db.today) return; month.push([o.sched || o.date, (b.person === p ? 1 : -1) * round(shareOf(db, b.split, b.person === p ? q : p, o.amount, b.person, o.date))]); }); });
       db.transfers.forEach(function (t) { var sign = t.from === q && t.to === p ? -1 : t.from === p && t.to === q ? 1 : 0; if (sign) occurrences(db, t, st, hz).forEach(function (o) { var md = shareMonthDay(db, t, o); if (md && (o.date > (db.today || "") || shareMade(db, t, o))) month.push([md, sign * o.amount]); }); });
       poolTrue(db, p, q, st, hz).forEach(function (x) { now.push([x.date, x.amount]); });
       var pack = function (list) { list.sort(function (a, c) { return a[0] < c[0] ? -1 : a[0] > c[0] ? 1 : 0; }); var dates = [], cum = [0]; list.forEach(function (x, i) { dates.push(x[0]); cum.push(cum[i] + x[1]); }); return {dates: dates, cum: cum}; };
@@ -2360,8 +2370,8 @@
     if(currentPlan.shortfall>0.004) { warnings.push("Current pay period is short; its remaining scheduled additions are excluded."); rows=rows.filter(function(r){return !(r.amount>0&&r.date<current.next);}); }
     if(current.pay&&!current.opening&&currentPlan.shortfall<=0.004){
       var currentPD=payday(db,p,current);
-      currentPD.moves.forEach(function(m){if(!mine(m.to))return;var left=round(Math.max(0,m.amount-ticked(db,p,"pay:"+current.start+":"+m.to)));if(left>0.004)rows.push({date:date,name:"Remaining allocation from this payday",amount:left,kind:"current-contribution"});});
-      (currentPD.later||[]).forEach(function(m){if(!mine(m.to)||m.date>deadline)return;var left=round(Math.max(0,m.amount-ticked(db,p,m.key)));if(left>0.004)rows.push({date:maxS(date,m.date),name:"Saving from later income",amount:left,kind:"current-contribution"});});
+      var gTaken=dict();currentPD.moves.forEach(function(m){if(!mine(m.to))return;var tb=ticked(db,p,"pay:"+current.start+":"+m.to),left=round(Math.max(0,m.amount-Math.max(tb,payMadeFor(db,p,m.from,m.to,current.start,date,gTaken))));if(left>0.004)rows.push({date:date,name:"Remaining allocation from this payday",amount:left,kind:"current-contribution"});});
+      (currentPD.later||[]).forEach(function(m){if(!mine(m.to)||m.date>deadline)return;var left=round(Math.max(0,m.amount-ticked(db,p,m.key)));if(left>0.004&&takeLoose(db,p,gTaken,m.from,m.to,left,current.start,date))left=0;if(left>0.004)rows.push({date:maxS(date,m.date),name:"Saving from later income",amount:left,kind:"current-contribution"});});
     }
     var per = nextPeriod(db, p, current), firstFuture=per.start, loops = 0;
     while (per.start <= deadline && loops++ < 50) {

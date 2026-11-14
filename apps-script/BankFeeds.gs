@@ -1014,7 +1014,7 @@ function bankApply_(p, data, windowFrom, payCarry) {
         if (hit || tr.from !== from || tr.to !== to) return;
         // (or paid early: up to two weeks before it's due, the same amount, is that payment too)
           D.occurrences(db, tr, D.addDays(date, -35), D.addDays(date, 15)).forEach(function (o) {
-          if (hit || o.skipped || usedOcc[o.key] || !near(o.amount, amt)) return;
+          if (hit || o.skipped || usedOcc[o.key] || usedOcc["in:" + o.key] || !near(o.amount, amt)) return;
           var paid = (db.byItem.exceptions[tr.id] || []).some(function (x) { return x.date === o.orig && /paid/i.test(String(x.action || "")) && !bankTrue_(x.deleted); });
           if (!paid) hit = {item: tr, occ: o};
         });
@@ -1326,16 +1326,38 @@ function bankApply_(p, data, windowFrom, payCarry) {
     // a repayment due on a loan between you (the same amount, 3 days either way): the settlement is that repayment
     var loanDueFor = function (from, to, amt, date) {
       var hit = null;
-      D.loans(db, p, date).forEach(function (l) { if (hit || l.lender !== to || l.borrower !== from) return; (l.plan || []).forEach(function (r) { if (!hit && !r.paid && Math.abs(D.diff(r.date, date)) <= 3 && (near(r.left, amt) || near(r.amount, amt))) hit = {l: l, r: r}; }); });
+      D.loans(db, p, date).forEach(function (l) { if (hit || l.lender !== to || l.borrower !== from) return; (l.plan || []).forEach(function (r) { if (!hit && !r.paid && Math.abs(D.diff(r.date, date)) <= 3 && (near(r.left, amt) || near(r.amount, amt))) hit = {tier: 1, l: l, r: r}; }); });
       // (or part of one: no more than is left of a repayment due within two weeks before it, or up to five weeks after)
-      if (!hit) D.loans(db, p, date).forEach(function (l) { if (hit || l.lender !== to || l.borrower !== from) return; (l.plan || []).forEach(function (r) { var dd = D.diff(r.date, date); if (!hit && !r.paid && dd >= -14 && dd <= 35 && amt <= r.left + 0.0105) hit = {l: l, r: r}; }); });
+      if (!hit) D.loans(db, p, date).forEach(function (l) { if (hit || l.lender !== to || l.borrower !== from) return; (l.plan || []).forEach(function (r) { var dd = D.diff(r.date, date); if (!hit && !r.paid && dd >= -14 && dd <= 35 && amt <= r.left + 0.0105) hit = {tier: 2, l: l, r: r}; }); });
+      // (or more than one, up to all that's left: paying it off early, or paying ahead. It's keyed to the first one still
+      // to pay; anything over what's owed is shown to give back)
+      if (!hit) D.loans(db, p, date).forEach(function (l) { if (hit || l.lender !== to || l.borrower !== from) return; var un = (l.plan || []).filter(function (r) { return !r.paid; }), owed = un.reduce(function (n, r) { return n + (+r.left || 0); }, 0); if (un.length && amt > un[0].left + 0.0105 && amt <= owed + 0.0105) hit = {tier: Math.abs(D.diff(un[0].date, date)) <= 3 ? 1 : 3, l: l, r: un[0]}; });
+      return hit;
+    };
+    // a regular payment between you paid in parts, or earlier than two weeks: no more than what's left of one due from five
+    // weeks before to five weeks after. It's settling up keyed to that payment (share:<id>@<day>), so it counts in that
+    // payment's month, and once the parts add up the payment is marked paid
+    var sharePaid = {};
+    var shareFor = function (from, to, amt, date) {
+      var hit = null, net = D.between(db, p, date).net, owes = from === p ? Math.max(0, -net) : Math.max(0, net);
+      // (not when it's what's owed between you for something else, an IOU being paid back, and not a small sum)
+      if (owes >= amt - 0.0105) return null;
+      db.transfers.forEach(function (tr) {
+        if (hit || tr.from !== from || tr.to !== to) return;
+        D.occurrences(db, tr, D.addDays(date, -35), D.addDays(date, 36)).forEach(function (o) {
+          var k = "share:" + tr.id + "@" + (o.orig || o.date); if (hit || o.paid || usedOcc[o.key]) return;
+          var got = sharePaid[k] !== undefined ? sharePaid[k] : setAll().filter(function (x) { return !bankTrue_(x.deleted) && x.key === k; }).reduce(function (n, x) { return n + (+x.amount || 0); }, 0);
+          if (amt >= o.amount * 0.25 && amt <= o.amount - got + 0.0105) hit = {tr: tr, o: o, key: k, got: got};
+        });
+      });
       return hit;
     };
     // money in from your partner that's a regular payment between you (a rent share): already in the plan
     var partnerPlanned = function (t) {
-      var a = -t.amount, hit = false;
-      db.transfers.forEach(function (tr) { if (tr.to === p) D.occurrences(db, tr, D.addDays(t.date, -10), D.addDays(t.date, 11)).forEach(function (o) { var d = planDay(o); if (d >= D.addDays(t.date, -3) && d < D.addDays(t.date, 4) && near(a, o.amount)) hit = true; }); });
-      return hit || (a > 0 && !!latePlanned(partnerId, p, a, t.date));
+      var a = -t.amount, hit = false, iou = Math.max(0, D.between(db, p, t.date).net);
+      // (when they owe you that much for something else, only a payment on the planned day itself is the planned one)
+      db.transfers.forEach(function (tr) { if (tr.to === p) D.occurrences(db, tr, D.addDays(t.date, -10), D.addDays(t.date, 11)).forEach(function (o) { var d = planDay(o); if (!hit && !usedOcc["in:" + o.key] && (d === t.date || iou < a - 0.0105) && d >= D.addDays(t.date, -3) && d < D.addDays(t.date, 4) && near(a, o.amount)) { usedOcc["in:" + o.key] = true; hit = true; } }); });
+      if (hit) return true; var lp = a > 0 && iou < a - 0.0105 ? latePlanned(partnerId, p, a, t.date) : null; if (lp) usedOcc["in:" + lp.occ.key] = true; return !!lp;
     };
     // A payment between you a few days from a regular payment or a loan repayment between you, for a different amount
     // (within a quarter of it): it may be that one paid differently, so it isn't taken for settling up as well (it stays
@@ -1350,7 +1372,9 @@ function bankApply_(p, data, windowFrom, payCarry) {
     var settleUp = function (t, mine) {
       if (!partnerId) return false;
       if (nearPlanned(t.amount > 0 ? p : partnerId, t.amount > 0 ? partnerId : p, Math.abs(t.amount), t.date)) return false;
-      if (latePlanned(t.amount > 0 ? p : partnerId, t.amount > 0 ? partnerId : p, Math.abs(t.amount), t.date)) return false;
+      // (a late regular payment, unless that much is owed between you for something else: then it's settling that)
+      var net0 = D.between(db, p, t.date).net, owes0 = t.amount > 0 ? Math.max(0, -net0) : Math.max(0, net0);
+      if (owes0 < Math.abs(t.amount) - 0.0105 && latePlanned(t.amount > 0 ? p : partnerId, t.amount > 0 ? partnerId : p, Math.abs(t.amount), t.date)) return false;
       if (mine) {
         if (mine.person !== p) return false;
         // dismissed on your phone: it stays as it is
@@ -1375,7 +1399,9 @@ function bankApply_(p, data, windowFrom, payCarry) {
       }
       // one already there: logged on a phone ("I've paid", "it's arrived"), or made by your partner's bank feed from their side
       // (the same two of you, the same amount, 2 days either way, and not already one of your own bank payments)
-      var loan = loanDueFor(from, to, amt, t.date);
+      // (a loan repayment due within a few days comes first; then part of a regular payment; then the rest of a loan)
+      var loan = loanDueFor(from, to, amt, t.date); if (loan && loan.tier > 1 && owes0 >= amt - 0.0105) loan = null;   // (that much owed for something else: it's settling that)
+      var share = loan && loan.tier === 1 ? null : shareFor(from, to, amt, t.date); if (share) loan = null;
       var cands = setAll().filter(function (s) {
         var d = D.parseDate(s.date);
         return !bankTrue_(s.deleted) && !setTaken[s.id] && s.from === from && s.to === to && near(+s.amount, amt) && d && Math.abs(D.diff(d, t.date)) <= 2 && !setTags(s).some(function (x) { return x.indexOf(p + ":") === 0; });
@@ -1389,7 +1415,8 @@ function bankApply_(p, data, windowFrom, payCarry) {
         update("settlements", s0.id, f);
         return true;
       }
-      var row = {id: sid, date: t.date, from: from, to: to, amount: amt, fromAccount: "", toAccount: "", loan: loan ? loan.l.id : "", key: loan ? loan.r.key : "", note: loan ? loan.l.name : String(t.name || ""), bankId: tag};
+      var row = {id: sid, date: t.date, from: from, to: to, amount: amt, fromAccount: "", toAccount: "", loan: loan ? loan.l.id : "", key: loan ? loan.r.key : share ? share.key : "", note: loan ? loan.l.name : share ? (share.tr.name || "Regular payment") : String(t.name || ""), bankId: tag};
+      if (share) { sharePaid[share.key] = Math.round((share.got + amt) * 100) / 100; if (sharePaid[share.key] >= share.o.amount - 0.0105 && from === p) paidMark(share.tr.id, share.o.orig || share.o.date, t.id); }
       if (acc && acc !== main) row[side] = acc;
       create("settlements", row); setTaken[sid] = true;
       return true;
