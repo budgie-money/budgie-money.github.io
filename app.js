@@ -1,7 +1,7 @@
 /* Budgie app: screens, syncing and offline queue. The maths lives in engine.js. */
 (function () {
   "use strict";
-  var B = window.Budgie, TH = window.BudgieThemes, APP_VERSION = "1.7.7";
+  var B = window.Budgie, TH = window.BudgieThemes, APP_VERSION = "1.7.8";
   var $ = function (s) { return document.querySelector(s); };
   var esc = function (s) { return String(s === undefined || s === null ? "" : s).replace(/[&<>"']/g, function (c) { return {"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]; }); };
   // wiped: Budgie's copy at the old address has been wiped (it's moving across), so nothing is saved here again
@@ -73,12 +73,16 @@
     if (i >= 0) list[i] = Object.assign({}, list[i], row); else list.push(row);
   }
   function put(t, row, quiet) {
+    // (what this phone last had of the row, and which fields this edit changes: if the row changed elsewhere since, only
+    // those fields are written, so an old edit synced late never undoes a newer one or brings back a deleted row)
+    var keyF = t === "meta" ? "key" : "id", was = (tables()[t] || []).filter(function (r) { return r[keyF] === row[keyF]; })[0], changed = [];
+    if (was) Object.keys(row).forEach(function (k) { if (k !== "updated" && k !== "by" && JSON.stringify(row[k]) !== JSON.stringify(was[k])) changed.push(k); });
     row = Object.assign({}, row, {updated: Date.now(), by: me()});
     // a setting, or a change to one date, has an id made from what it is: making it again after it was taken off
     // (Undo, or in the sheet) brings it back, rather than leaving it off on the phone and in the sheet
     if ((t === "settings" || t === "exceptions") && row.deleted === undefined) row.deleted = false;
     upsert(t, row);
-    if (!demoOn()) { S.data.queue.push({op: "put", table: t, row: row}); persist(); syncSoon(); }
+    if (!demoOn()) { S.data.queue.push({op: "put", table: t, row: was ? Object.assign({}, row, {_base: +was.updated || 0, _changed: changed}) : row}); persist(); syncSoon(); }
     dirty(); if (!quiet) render();
     return row;
   }
@@ -716,7 +720,7 @@
     });
     var bills = lns.length ? " for shared bills and payments" : "", line = bt.owedToMe > 0.004 ? esc(qp.name) + " owes you " + M(bt.owedToMe) + bills : bt.iOwe > 0.004 ? "You owe " + esc(qp.name) + " " + M(bt.iOwe) + bills : lns.length ? "All square on shared bills and payments" : "You're all square";
     html += '<h2 class="h2">Between you two' + infoBtn("between") + "</h2>" + card('<div class="row"><span style="font-weight:800;font-size:18px">' + line + "</span></div>" + loanLines +
-      (mo && (mo.bills || mo.paidIn || mo.paidOut) ? '<div class="banner small">This month so far: shared bills ' + M(mo.bills) + ". " + (mo.theirShare ? esc(qp.name) + "'s share " + M(mo.theirShare) + ", paid " + M(mo.paidIn) + ". " : "") + (mo.myShare ? "Your share " + M(mo.myShare) + ", paid " + M(mo.paidOut) + "." : "") + "</div>" : "") +
+      (mo && (mo.bills || mo.paidIn || mo.paidOut) ? '<div class="banner small">This month so far: shared bills ' + M(mo.bills) + ". " + (mo.theirShare ? esc(qp.name) + "'s share " + M(mo.theirShare) + ", paid " + M(mo.paidIn) + (mo.paidIn > mo.theirShare + 0.004 ? " (some sent ahead for next month)" : "") + ". " : "") + (mo.myShare ? "Your share " + M(mo.myShare) + ", paid " + M(mo.paidOut) + (mo.paidOut > mo.myShare + 0.004 ? " (some sent ahead for next month)" : "") + "." : "") + "</div>" : "") +
       (bt.owedToMe > 0.004 ? '<button type="button" class="btn ghost sm" style="margin-top:10px" data-a="settle" data-v="in">' + esc(shortName(qp.name)) + " has paid me</button>" : bt.iOwe > 0.004 ? '<button type="button" class="btn ghost sm" style="margin-top:10px" data-a="settle" data-v="out">I\'ve paid ' + esc(shortName(qp.name)) + "</button>" : ""));
     B.loans(d, p, now).forEach(function (l) { if (l.left > 0.004) html += loanCard(l, false); });
     var shared = d.bills.filter(function (b) { return b.split; });
@@ -1178,7 +1182,7 @@
     var n = B.noSpend(d, p, now); if (!n.days) return "";
     var togo = Math.max(0, B.diff(n.from, B.periodAt(d, p, now).next) - n.days), L = n.longest, marks = n.list.map(function (x) { return x.spent ? "<i></i>" : '<i class="on"></i>'; }).join("");
     for (var i = 0; i < togo; i++) marks += '<i class="to"></i>';
-    var line = "This month" + (L.days ? " · longest run " + L.days + " day" + (L.days === 1 ? "" : "s") + ", " + dayRange(L.from, L.to) : "");
+    var line = "This month" + (L.days ? " · longest run since you started " + L.days + " day" + (L.days === 1 ? "" : "s") + ", " + dayRange(L.from, L.to) : "");
     return card(khead("spend", "No-spend days", num(String(n.count))) + '<div class="days k-spend" aria-hidden="true">' + marks + '</div><p class="small muted" style="margin:8px 0 0">' + esc(line) + "</p>");
   }
   // what's saved out of new money in, month by month (the month still going is the lighter bar)
@@ -1622,11 +1626,14 @@
     var sh = root.querySelector('[data-sh="mode"]');
     if (sh) { var fixed = sh.value === "fixed", bits = []; root.querySelectorAll("[data-sh]").forEach(function (el) { if (el.dataset.sh !== "mode" && el.value.trim()) bits.push(el.dataset.sh + (fixed ? "=" : ":") + el.value.trim().replace(/[£,]/g, "")); }); r.shares = bits.join(", "); }
     if (EDIT.table === "budgets" && r.carry !== undefined) r.carry = r.carry === true || r.carry === "true";
-    ["amount", "target", "extra", "limit", "cost", "repay", "price"].forEach(function (k) { if (r[k] !== undefined && r[k] !== "") r[k] = B.round(+String(r[k]).replace(/[£,\s]/g, "") || 0); });
+    // (a typo isn't saved as £0: it's kept as typed, and saving says so)
+    EDIT.badNum = "";
+    ["amount", "target", "extra", "limit", "cost", "repay", "price"].forEach(function (k) { if (r[k] !== undefined && r[k] !== "") { var n = +String(r[k]).replace(/[£,\s]/g, ""); if (!isFinite(n) || Math.abs(n) > 1e7) EDIT.badNum = k; else r[k] = B.round(n); } });
     return r;
   }
   function saveEditor() {
     var t = EDIT.table, r = readForm(), F = FORMS[t], now = todayIso();
+    if (EDIT.badNum) { toast("Check the amount: it isn't a number"); return; }
     if (!r.name && t !== "splits") { toast("Give it a name first"); return; }
     if (!EDIT.id) r.id = newId(t.slice(0, 3));
     // a pooled bill turned on or off, or a new day: from the bills month going now (on), or the next one that hasn't
