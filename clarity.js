@@ -309,7 +309,7 @@
             "sync",
           );
         var days = Math.max(0, B.diff(now(), t.nextPay)),
-          paydayWord = days === 0 ? "Today" : days === 1 ? "Tomorrow" : days + " days",
+          paydayWord = t.period.noPayday ? "Not set" : days === 0 ? "Today" : days === 1 ? "Tomorrow" : days + " days",
           shortName = function (name) { return name.replace(/^Fun and spending$/i, "Fun").replace(/^Entertainment$/i,"Ents"); },
           active = parts.filter(function (x) { return x.available > 0.004; }),
           early = parts.filter(function(x){return x.early>.004;}),
