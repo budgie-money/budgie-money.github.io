@@ -416,6 +416,13 @@
   // what one person has ticked off under a key (a move is always its own person's, so the other one's moves never
   // tick off something of yours, whatever key they carry)
   function ticked(db, p, key) { return db.moveKeysBy[p + "|" + key] || 0; }
+  // what of a move was ticked after the bank's latest read of either account (only for accounts the bank reads)
+  function tickedSinceRead(db, p, key, from, to) {
+    var last = function (a) { var d = "", u = 0, any = false; db.valuations.forEach(function (v) { if (v.account !== a || !/^bk-/.test(String(v.id || ""))) return; any = true; if (v.date > d || (v.date === d && (+v.updated || 0) > u)) { d = v.date; u = +v.updated || 0; } }); return any ? {d: d, u: u} : null; };
+    var lf = last(from), lt = last(to); if (!lf && !lt) return 0;
+    var t = 0; (db.moveTicks[p + "|" + key] || []).forEach(function (m) { if (m.virtual) return; var ok = [lf, lt].every(function (r) { return !r || m.date > r.d || (m.date === r.d && (+m.updated || 0) >= r.u); }); if (ok) t += +m.amount || 0; });
+    return round(t);
+  }
   // the same, counting only moves dated before a day (the ones a balance at the end of the day before includes)
   function payReturnAmount(r,before){var m=r.move,t=!before||m.date<before?+m.amount:0;r.events.forEach(function(x){if(!before||x.date<before)t+=x.from===m.from?+x.amount:-x.amount;});return round(Math.max(0,Math.min(+m.amount,t)));}
   function tickedBefore(db, p, key, date) { var pk=p+"|"+key,r=db.payReturns&&db.payReturns[pk],t=r?payReturnAmount(r,date):0;(db.moveTicks[pk]||[]).forEach(function(m){if(m.date<date&&(!r||m.virtual))t+=(+m.amount||0)+1e-9;});return t; }
@@ -1343,6 +1350,15 @@
           var m = takeLoose(db, p, taken, xs[0].g.from, xs[0].g.to, sum, pk.start, today);
           if (m) xs.forEach(function (x) { x.g.bank = x.left; x.g.bankIds = [m.id]; });
         });
+        // (and one made in parts, £30 and then £25.30 say: the bank moves the same way in this pay period add up to it,
+        // never more than it)
+        var loose = looseBank(db, p);
+        rest.forEach(function (x) {
+          if (x.g.bankIds) return;
+          var got = 0, ids = [];
+          loose.forEach(function (m) { if (taken[m.id] || m.from !== x.g.from || m.to !== x.g.to || m.date > today || periodAt(db, p, m.date).start !== pk.start || got + (+m.amount) > x.left + 0.004) return; got = round(got + (+m.amount)); ids.push(m.id); });
+          if (ids.length > 1) { ids.forEach(function (id) { taken[id] = true; }); x.g.bank = got; x.g.bankIds = ids; }
+        });
       }
       return out;
     });
@@ -1406,6 +1422,9 @@
       // (a move to fill a pot is only asked for while the pot is still short, with what it's ticked already counted, so
       // one that's been ticked doesn't hide a shortfall that's grown since)
       else if (!(extra && extra.fill) && ticked(db, p, key)) return;
+      // (one you've said you've made since the bank last read both accounts: done, until the bank reads them again and
+      // shows whether it was)
+      if (extra && (extra.fill || extra.hold)) { var late = tickedSinceRead(db, p, key, from, to); if (late > 0.004) { amount = round(amount - late); if (!(amount > 0.004)) return; what = "Move " + money(amount) + " from " + accName(db, from) + " to " + accName(db, to); } }
       // keys: what ticking it saves (a move added after the grouping below, like one to fill a pot, is ticked by its own key)
       var it = {key: key, type: "move", from: from, to: to, fromName: accName(db, from), toName: accName(db, to), amount: amount, what: what, why: why, short: false, keys: [{key: key, amount: amount}]};
       for (var k in extra) it[k] = extra[k];
@@ -1422,14 +1441,14 @@
       // money in: what's still to move is what's left. A move To do asked for something else isn't counted.)
       var payMade = function (from, to) { return payMadeFor(db, p, from, to, per.start, null, bankTaken); };
       if(journey.enabled)journey.steps.forEach(function (m) { if(!(m.remaining>.004)){if(m.net)items.push({type:'allocate',key:m.key,payday:true,what:'Apply the reconciled allocation',amount:0});return;}var left=m.remaining;if(!m.net){var gross=m.allocation!==undefined?+m.allocation:+m.amount;if(isFinite(gross)&&gross>0)left=round(Math.min(left,gross-payMade(m.from,m.account||m.to)));}if(!(left>.004))return;plan(m.key,m.from,m.to,left,"Payday: move "+money(left)+" to "+accName(db,m.to),m.why,{payday:true,waiting:waiting,net:!!m.net}); });
-      if(!journey.enabled)pdNow.moves.forEach(function(m){var key='pay:'+per.start+':'+m.to;if(ticked(db,p,key))return;var left=round(m.amount-payMade(m.from,m.to));plan(key,m.from,m.to,left,'Payday: move '+money(left)+' to '+accName(db,m.to),m.why,{payday:true,waiting:waiting});});
-      // the payday screen's cover, from the pot that covers going over, counts as on its way while that screen still has
-      // moves to tick; once they're all done (it can come later, when a bill's real amount is logged), To do asks for it
+      // the payday screen's cover, from the pot that covers going over: asked for first, as a payday move, so the moves
+      // it pays for aren't short of it (it can also come later, when a bill's real amount is logged)
       var pc = pdNow.cover;
       if (pc && !ticked(db, p, pc.key) && !takeLoose(db, p, bankTaken, pc.from, pc.to, pc.amount, per.start, today)) {
-        if (pdNow.moves.some(function (m) { return !ticked(db, p, "pay:" + per.start + ":" + m.to); })) { pend[pc.from] = (pend[pc.from] || 0) - pc.amount; pend[pc.to] = (pend[pc.to] || 0) + pc.amount; }
-        else plan(pc.key, pc.from, pc.to, pc.amount, "Move " + money(pc.amount) + " from " + accName(db, pc.from) + " to " + accName(db, pc.to), pc.why + ". Your next pay tops it back up.", {});
+        var pcLeft = pdNow.moves.some(function (m) { return !ticked(db, p, "pay:" + per.start + ":" + m.to); });
+        plan(pc.key, pc.from, pc.to, pc.amount, (pcLeft ? "Payday: move " : "Move ") + money(pc.amount) + " from " + accName(db, pc.from) + " to " + accName(db, pc.to), pc.why + ". Your next pay tops it back up.", pcLeft ? {payday: true, waiting: waiting} : {});
       }
+      if(!journey.enabled)pdNow.moves.forEach(function(m){var key='pay:'+per.start+':'+m.to;if(ticked(db,p,key))return;var left=round(m.amount-payMade(m.from,m.to));plan(key,m.from,m.to,left,'Payday: move '+money(left)+' to '+accName(db,m.to),m.why,{payday:true,waiting:waiting});});
     }
     // 1b. money that came in after payday: its part of what's left goes on once it's in (a loan repayment once it's paid)
     periods(db, p, st, addDays(today, 1)).forEach(function (pk) {
@@ -1650,6 +1669,25 @@
     var bt = between(db, p, today), qn = person(db, bt.partner).name, pw = poolWhy(db, p, bt);
     if (bt.owedToMe > 0.004) items.push({key: "split:" + today, type: "settle", amount: bt.owedToMe, what: qn + " owes you " + money(bt.owedToMe), why: (pw || "For shared bills and split payments.") + " Tick when it arrives.", from: bt.partner, to: p, pool: !!pw});
     if (bt.iOwe > 0.004) items.push({key: "split:" + today, type: "settle", amount: bt.iOwe, what: "Pay " + qn + " " + money(bt.iOwe), why: pw || "For shared bills and split payments.", from: p, to: bt.partner, info: true, pool: !!pw});
+    // two moves that undo each other, between the same two accounts (money to put back from a pot, and money for that
+    // pot from the main account), are one move of the difference; ticking it saves both, each its own way round
+    // (not for the bank feed, which matches its moves to each one as it is)
+    var outItems = [];
+    items.forEach(function (it) {
+      if (db.looseOff || it.type !== "move" || it.payday || it.waiting) { outItems.push(it); return; }
+      var j = -1; outItems.forEach(function (x, i) { if (j < 0 && x.type === "move" && !x.payday && !x.waiting && !x.pair && x.from === it.to && x.to === it.from) j = i; });
+      if (j < 0) { outItems.push(it); return; }
+      var x = outItems[j], big = x.amount >= it.amount ? x : it, small = big === x ? it : x, d = round(big.amount - small.amount);
+      var fk = (big.keys || [{key: big.key, amount: big.amount}]).map(function (k) { return {key: k.key, amount: k.amount, from: big.from, to: big.to}; });
+      var rk = (small.keys || [{key: small.key, amount: small.amount}]).map(function (k) { return {key: k.key, amount: k.amount, from: small.from, to: small.to}; });
+      if (!(d > 0.004)) { outItems.splice(j, 1); return; }
+      var m = {}; for (var q in big) m[q] = big[q];
+      m.amount = d; m.pair = true; m.keys = fk.concat(rk); m.short = big.short ? round(Math.max(0, big.short - small.amount)) || false : false;
+      m.what = "Move " + money(d) + " from " + big.fromName + " to " + big.toName;
+      m.why = big.why + " (" + money(small.amount) + " of it stays, as it would only come back.)";
+      outItems[j] = m;
+    });
+    items = outItems;
     items.gotIt = gotIt;
     return items;
   }

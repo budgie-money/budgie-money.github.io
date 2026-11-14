@@ -80,7 +80,8 @@ function record(name, details){out.push({name,...details});}
   t.moves=[{id:'already-sorted',person:'alex',date:day,from:'a-main',to:'a-fun',amount:200,key:'pay:2026-10-29:a-fun'}];
   t.transactions=[{id:'spend',person:'alex',date:day,amount:35,account:'a-main',budget:'a-budget'}];
   const items=B.todo(B.load(t,day),'alex',day).filter(x=>!x.payday&&x.type==='move');
-  assert(items.some(x=>x.from==='a-fun'&&x.amount===35&&x.short));
+  // (1.7.9: the £35 back from the empty Fun pot and the £35 fill that puts it straight back are one move of nothing)
+  assert(!(items.some(x=>x.from==='a-fun'&&x.to==='a-main')&&items.some(x=>x.from==='a-main'&&x.to==='a-fun')));
   record('Move offered from empty budget pot',{items});
 }
 {

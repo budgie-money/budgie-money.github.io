@@ -2104,7 +2104,7 @@
     if (!it) return;
     if (it.type === "move" && (it.short || it.waiting || (B.balances(db(), todayIso())[it.from] || 0) < it.amount - 0.004)) { toast(it.waiting ? "Wait until your pay arrives" : "There isn't enough available to make this move yet"); render(); return; }
     var now = todayIso(), ids = [], batch = newId("batch");
-    if (it.type === "move") it.keys.forEach(function (k) { ids.push(put("moves", {id: newId("mv"), date: now, person: me(), from: it.from, to: it.to, amount: k.amount, key: k.key, batch: batch}, true).id); });
+    if (it.type === "move") it.keys.forEach(function (k) { ids.push(put("moves", {id: newId("mv"), date: now, person: me(), from: k.from || it.from, to: k.to || it.to, amount: k.amount, key: k.key, batch: batch}, true).id); });
     else if (it.type === "loan") ids.push(put("settlements", {id: newId("set"), date: now, from: it.borrower, to: it.lender, amount: it.amount, loan: it.loan, key: it.key}, true).id);
     else if (it.type === "settle") ids.push(put("settlements", {id: newId("set"), date: now, from: it.from, to: it.to, amount: it.amount, key: it.key, note: "Settled up"}, true).id);
     else if (it.type === "warn") ids.push(put("moves", {id: newId("mv"), date: now, person: me(), amount: 0, key: it.key, note: "dismissed"}, true).id);

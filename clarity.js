@@ -159,11 +159,12 @@
               if (amount < 0.005) return;
               // Partial reimbursement is useful; never mark its unfunded remainder done.
               var remaining = amount;
-              it.keys = (it.keys || [{ key: it.key, amount: it.amount }])
+              // (all of it: each part as it is, the two ways round of a netted pair too)
+              if (amount < it.amount - 0.004) it.keys = (it.keys || [{ key: it.key, amount: it.amount }])
                 .map(function (k) {
                   var a = B.round(Math.min(remaining, k.amount));
                   remaining = B.round(remaining - a);
-                  return { key: k.key, amount: a };
+                  return { key: k.key, amount: a, from: k.from, to: k.to };
                 })
                 .filter(function (k) {
                   return k.amount > 0.004;
