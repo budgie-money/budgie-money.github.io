@@ -926,6 +926,8 @@ function bankApply_(p, data, windowFrom, payCarry) {
           }
           var h = {key:m.key, to:m.to, start:pk.start};
           var expected=journey.enabled?m.remaining:m.amount;
+          // (ticked in the app already, then made at the bank: it's that tick, so nothing is added on top)
+          if (journey.enabled&&!(expected>0.004)&&m.from===D.mainOf(db,p)&&m.paid>0.004&&Math.abs(m.paid-amount)<=m.paid*0.1){close.push(h);return;}
           if (m.from!==D.mainOf(db,p)||!(expected>0.004))return;
           if (m.net?same(expected,amount):near(expected, amount)) hit = h; else if (!m.net&&Math.abs(expected - amount) <= expected * 0.1) close.push(h);
         });
@@ -954,7 +956,13 @@ function bankApply_(p, data, windowFrom, payCarry) {
       // Ticked by another payment from the bank, though, it's a second move of its own (a top-up the same week, say):
       // it comes in as a move that isn't the payday tick, as two moves with one payday key would count as one
       if (key && /^pay:/.test(key)) {
-        if (payTicks[key] === "app") return;
+        if (payTicks[key] === "app") {
+          // (the bank's amount is the real one: a single tick in the app takes it, so an account the bank doesn't read,
+          // a LISA say, follows the money that really went)
+          var tk = db.moves.filter(function (m) { return m.person === p && m.key === key && !/^bk-/.test(String(m.id)) && !m.dup; });
+          if (tk.length === 1 && !same(+tk[0].amount, amount) && Math.abs(+tk[0].amount - amount) <= +tk[0].amount * 0.1 + 0.01) update("moves", tk[0].id, {amount: amount});
+          return;
+        }
         if (payTicks[key] === "bank") key = "bank:" + t.id; else payTicks[key] = "bank";
       }
       // a payday move is dated on payday, unless it landed in the next tax year (a LISA or ISA payment on 6 April for a
@@ -1023,6 +1031,10 @@ function bankApply_(p, data, windowFrom, payCarry) {
     };
     var plannedCands = function (t, needName) {
       if (bankTrue_(D.setting(db, p, "bank.undo." + t.id, ""))) return [];
+      // (already matched to a planned payment on an earlier read, a card hold say, that then settled at another amount:
+      // it's still that payment, at the amount it settled at)
+      var was = pending[t.id] ? db.exceptions.filter(function (x) { return !bankTrue_(x.deleted) && String(x.bankId || "") === String(t.id) && /-bank(paid|day)?-/.test(String(x.id)); })[0] : null;
+      if (was) { var wi = db.byId[was.item], wo = wi ? D.occurrencesAll(db, wi, D.addDays(was.date, -40), D.addDays(was.date, 41)).filter(function (o) { return o.orig === was.date; })[0] : null; if (wo) return [{kind: db.bills.indexOf(wi) >= 0 ? "bill" : "transfer", item: wi, occ: wo, score: -1}]; }
       var toPartner = namesPartner(t), out = [], words = bankMerchantKey_(t.name).split(" ").filter(function (w) { return w.length > 2; });
       var a = t.amount, lo = D.addDays(t.date, -3), hi = D.addDays(t.date, 4);
       var win = function (item) { return D.occurrences(db, item, D.addDays(t.date, -10), D.addDays(t.date, 11)).filter(function (o) { var d = planDay(o); return d >= lo && d < hi; }); };
@@ -1257,9 +1269,10 @@ function bankApply_(p, data, windowFrom, payCarry) {
     //   Peckish shop that names the shop
     // - the bank's copy, not checked yet: one that names the shop
     // - the bank's copy, checked as food: a Peckish shop that names the shop
+    // (money in as well as out: a refund you logged yourself is the bank's refund when it comes, not a second one)
     var linkPairs = [];
     txList.forEach(function (t, ti) {
-      if (!t.date || t.declined || t.reversed || !(t.amount > 0) || t.pot || t.flexRepay || !accOf(t.acc, true)) return;
+      if (!t.date || t.declined || t.reversed || !t.amount || (t.amount < 0 && namesPartner(t)) || t.pot || t.flexRepay || !accOf(t.acc, true)) return;
       var mine = byBank[t.id] || byIdRow["bk-" + provider + "-" + t.id], mv = moveRows["bk-" + provider + "-" + t.id];
       if ((mine && mine.person !== p) || (mv && mv.person === p && !bankTrue_(mv.deleted))) return;
       var box = /moneybox/i.test(t.name) && !!(lisaAcc || isaAcc || paydayMatch(null, t.amount, t.date, /lisa|isa/)), mode = null;
@@ -1627,7 +1640,7 @@ function bankApply_(p, data, windowFrom, payCarry) {
       }
       // the same payment logged by hand (to the penny, within 2 days, best if the name matches) or by Peckish (a shop's
       // estimate: the shop's name, within 15% or £5, within 3 days): link it instead of adding it twice
-      var eid = "bk-" + provider + "-" + t.id, dupe = t.amount > 0 ? findDupe(t) : null;
+      var eid = "bk-" + provider + "-" + t.id, dupe = t.amount ? findDupe(t) : null;
       if (dupe) { linkDupe(t, dupe); return; }
       var g = bankGuess_(db, p, t.name, t.category, t.date);
       var row = {id: eid, date: t.date, person: p, amount: t.amount, budget: g.budget, account: acc, split: "", splitHint: g.splitHint || "", note: t.name, source: provider, bankId: t.id,
@@ -1636,13 +1649,22 @@ function bankApply_(p, data, windowFrom, payCarry) {
     });
 
     // one balance per mapped account per day
+    var valNow = {};
     data.accounts.forEach(function (a) {
       var acc = accOf(a.extId, false); if (!acc || a.balance === null || a.balance === undefined || isNaN(+a.balance)) return;   // no balance given: nothing saved, never £0
+      valNow["bk-" + a.extId + "-" + today] = true;
       // (Flex's balance is already what Budgie keeps for a credit account: negative is owed; above nothing is money in hand)
       var id = "bk-" + a.extId + "-" + today, ex = byId_("valuations", id), amount = +a.balance;
       if (ex && (byId_("accounts", ex.account) || {}).owner !== p) { Logger.log("Bank feed skipped valuations " + id + ": it isn't " + p + "'s."); return; }
       if (ex) { if (!same(+ex.amount, amount) || ex.account !== acc) update("valuations", id, {amount: amount, account: acc}); }
       else create("valuations", {id: id, account: acc, date: today, amount: amount, note: "from " + label});
+    });
+    // (today's balance from a pot no longer brought in, set to ignore or closed since this morning, comes off: it
+    // isn't part of that account any more)
+    if (data.accounts.length) readTable_("valuations").rows.forEach(function (v) {
+      var id = String(v.id || ""); if (!/^bk-/.test(id) || id.slice(-today.length - 1) !== "-" + today || valNow[id] || bankTrue_(v.deleted) || D.parseDate(v.date) !== today) return;
+      if ((byId_("accounts", v.account) || {}).owner !== p) return;
+      update("valuations", id, {deleted: true});
     });
 
     // a pending payment this read should have seen but didn't, more than a week old: the hold was dropped
