@@ -6,7 +6,7 @@
   else root.Budgie = factory();
 })(this, function () {
   "use strict";
-  var VERSION = "1.7.6";
+  var VERSION = "1.7.7";
 
   // ---------- dates ----------
   function D(s) { var p = String(s).split("-"); return new Date(Date.UTC(+p[0], +p[1] - 1, +p[2])); }
@@ -2851,7 +2851,7 @@
 
   // ---------- helpers for display ----------
   // rounded as everything else is (so half of £20.15 shows as the £10.08 that's owed, not £10.07)
-  function money(n) { var r = round(n), s = Math.abs(r).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ","); return (r < 0 ? "-£" : "£") + s; }
+  function money(n) { var r = round(n), s = Math.abs(r).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ","); return (r < 0 ? "−£" : "£") + s; }
   var DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
   function nice(s) { if (!isIso(s)) return ""; return DAYS[dow(s)] + " " + (+s.slice(8, 10)) + " " + MONTHS[+s.slice(5, 7) - 1]; }
   function describe(it) {
@@ -2870,7 +2870,7 @@
     VERSION: VERSION, TABLES: TABLES, dailyAllowances:dailyAllowances, planningRule:planningRule, confirmedLisa:confirmedLisa, purchaseCheck:purchaseCheck, cooldown: cooldown, coolState: coolState, coolSources: coolSources, coolDays: coolDays, coolKeep: coolKeep, financeQuote:financeQuote, goalScenario:goalScenario, reconcile:reconcile,
     load: load, payPending: payPending, occurrences: occurrences, occurrencesAll: occurrencesAll, outgoings: outgoings, scheduleDates: scheduleDates, isWorkingDay: isWorkingDay, bankHolidays: bankHolidays,
     periods: periods, periodAt: periodAt, prevPeriod: prevPeriod, nextPeriod: nextPeriod, planFor: planFor, payday: payday, paydaySteps:paydaySteps, netParts:netParts, partialNetKey:partialNetKey,
-    budgetState: budgetState, balances: balances, flows: flows, todo: todo, between: between, today: today, coming: coming,
+    budgetState: budgetState, bankFed: bankFed, balances: balances, flows: flows, todo: todo, between: between, today: today, coming: coming,
     calendar: calendar, pots: pots, monthView: monthView, year: year, kindOf: kindOf, newMoney: newMoney, kinds: kinds,
     savingFlexible: savingFlexible, recordedSaving: recordedSaving, dataAudit: dataAudit, goalForecast: goalForecast, savingFlexible: savingFlexible, recordedSaving: recordedSaving, dataAudit: dataAudit, goalForecast: goalForecast, goalFlow: goalFlow, goalProgress: goalProgress, goalDirect: goalDirect, directItems: directItems, spareRules: spareRules, spareMoney: spareMoney,
     spendWeek: spendWeek, noSpend: noSpend, savingRates: savingRates, forecast: forecast, goals: goals, lisa: lisa, checks: checks, netWorth: netWorth, loans: loans,

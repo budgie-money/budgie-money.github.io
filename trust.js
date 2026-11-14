@@ -63,7 +63,7 @@
       var future=!(per.pay&&!per.opening&&(B.diff(per.start,date)<=7||left));
       if(future){per=B.periodAt(d,p,B.today(d,p,date).nextPay);pd=B.payday(d,p,per);}
       var waiting=future||B.payPending(d,p,per,date),bal=B.balances(d,date),remain=0,done=0;
-      var html=card('<p class="small muted">'+E(waiting?'Next payday':'Pay received')+' · '+E(B.nice(per.start))+'</p><div class="trust-money">'+M(pd.pay?pd.pay.amount:0)+'</div><p class="small">Cover your bills, fund your spending, then save. Open each amount to see what it covers.</p><div class="trust-actions">'+btn('Refresh bank','go','bank')+(pd.pay&&pd.pay.occ?btn('Change pay amount','payedit',pd.pay.occ):'')+'</div>');
+      var html=card('<p class="small muted">'+E(waiting?'Next payday':'Pay received')+' · '+E(B.nice(per.start))+'</p><div class="trust-money">'+M(pd.pay?pd.pay.amount:0)+'</div><div class="trust-actions">'+btn('Refresh bank','go','bank')+(pd.pay&&pd.pay.occ?btn('Change pay amount','payedit',pd.pay.occ):'')+'</div>');
       var rows=pd.moves.map(function(m,i){
         var key='pay:'+per.start+':'+m.to,paid=Math.min(m.amount,B.ticked(d,p,key)),rest=B.round(Math.max(0,m.amount-paid)),complete=rest<.005,acc=d.byId[m.to]||{},returned=d.payReturns&&d.payReturns[p+'|'+key],connected=acc.kind==='pot',partial=paid>.004&&!complete;
         remain=B.round(remain+rest);if(complete)done++;
@@ -74,7 +74,7 @@
       }).join('');
       if(pd.cover)html+=card('<h2>Plan needs extra funding</h2><p>'+M(pd.cover.amount)+' is planned from '+E(B.accName(d,pd.cover.from))+'. Review your budgets and new saving before using it.</p><label class="li trust-confirm"><input type="checkbox" class="tick" data-c="paytick" data-v="'+E(pd.cover.key)+'|'+E(pd.cover.from)+'|'+E(pd.cover.to)+'|'+pd.cover.amount+'"'+(B.ticked(d,p,pd.cover.key)?' checked':'')+(waiting?' disabled':'')+'><span class="grow">I’ve made this cover transfer</span></label><div class="trust-actions">'+btn('Review budget','go','plan')+'</div>');
       if(pd.plan.adjustments&&pd.plan.adjustments.length)html+=card('<h2>Saving adjusted to this pay</h2>'+pd.plan.adjustments.map(function(x){return A.li(E(x.name),'Reduced from '+M(x.requested),A.num(M(x.amount)));}).join('')+'<p class="trust-note">Change any automatic instruction at your bank or provider.</p>');
-      html+=card('<div class="row"><h2>'+(waiting?'Planned allocations':'Fund your pots')+'</h2><span class="small muted">'+done+' of '+pd.moves.length+' funded</span></div><p class="trust-note">Moving money between your accounts does not spend it. The budget tracks your purchases separately.</p>')+rows;
+      html+=card('<div class="row"><h2>'+(waiting?'Planned allocations':'Fund your pots')+'</h2><span class="small muted">'+done+' of '+pd.moves.length+' funded</span></div>')+rows;
       var after=B.round((bal[pd.payAccount]||0)-remain);
       html+=card('<h2>'+E(B.accName(d,pd.payAccount))+' after transfers</h2><div class="trust-money">'+M(waiting?pd.keeps:after)+'</div>'+((waiting?pd.keeps:after)<-.004?'<p class="small warn">'+E(B.accName(d,pd.payAccount))+' would be '+M(-(waiting?pd.keeps:after))+' short. Check To do before moving it all.</p>':'<p class="small muted">'+(waiting?'Planned from the payday calculation.':'The latest balance less the transfers above.')+'</p>')+'<div class="trust-actions">'+btn('View spending budgets','go','plan')+'</div>');
       if(pd.uncovered>.004)html+=card('<h2>Plan is short by '+M(pd.uncovered)+'</h2><p>Reduce spending or new saving before making these transfers.</p>');

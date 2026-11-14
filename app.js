@@ -1,7 +1,7 @@
 /* Budgie app: screens, syncing and offline queue. The maths lives in engine.js. */
 (function () {
   "use strict";
-  var B = window.Budgie, TH = window.BudgieThemes, APP_VERSION = "1.7.6";
+  var B = window.Budgie, TH = window.BudgieThemes, APP_VERSION = "1.7.7";
   var $ = function (s) { return document.querySelector(s); };
   var esc = function (s) { return String(s === undefined || s === null ? "" : s).replace(/[&<>"']/g, function (c) { return {"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]; }); };
   // wiped: Budgie's copy at the old address has been wiped (it's moving across), so nothing is saved here again
@@ -64,7 +64,7 @@
   var M = function (n) { return S.prefs.hide && !S.ui.reveal ? "£••••" : B.money(n); };
   // the engine's own sentences ("Pay Sophie £40.00") are covered too
   var MT = function (s) { return S.prefs.hide && !S.ui.reveal ? String(s === undefined || s === null ? "" : s).replace(/-?£\d[\d,]*(\.\d+)?/g, "£••••") : s; };
-  var M0 = function (n) { var r = Math.round(+n || 0); return S.prefs.hide && !S.ui.reveal ? "£••••" : (r < 0 ? "-£" : "£") + Math.abs(r).toLocaleString("en-GB"); };
+  var M0 = function (n) { var r = Math.round(+n || 0); return S.prefs.hide && !S.ui.reveal ? "£••••" : (r < 0 ? "−£" : "£") + Math.abs(r).toLocaleString("en-GB"); };
 
   // ---------- changes ----------
   function upsert(t, row) {
@@ -394,64 +394,8 @@
       return card('<h2 style="font-size:20px">Let\'s set up Budgie</h2><p class="muted">Budgie works everything out from your pay, bills and budgets. Add these and Today fills itself in.</p><div class="list">' +
         li("1. Your pay", "How much and when it lands", "", "new", "income") + li("2. Your bills", "Rent, phone, subscriptions", "", "go", "bills") + li("3. Your budgets", hasBud ? "Done: change them any time" : "Food, fuel, fun and the rest", "", "go", "list:budgets") + "</div>");
     }
-    var t = B.today(d, p, now), html = "";
-    var spendNames = t.tiles.filter(function (x) { return x.day !== null; }).map(function (x) { return x.name.toLowerCase().replace(/ \(what's left\)/, ""); });
-    var daysTo = B.diff(now, t.nextPay);
-    // (a budget gone over that's been covered says which, so it doesn't read as something to fix)
-    var covered = t.status === "Over, but covered", pill = covered ? (t.overs.length === 1 ? esc(t.overs[0].name) + " covered" : "Overs covered") : esc(t.status);
-    var heroNotes = [];
-    if (t.period.opening) heroNotes.push("A short month: you started Budgie on " + esc(B.nice(B.startOf(d, p))) + ".");
-    if (t.spare && t.spare.amount > 0.5) heroNotes.push(M(t.spare.amount) + " spare in your " + esc(B.accName(d, B.mainOf(d, p))) + " goes to your " + esc(t.spare.toName) + " on payday.");
-    // tapping it shows how it's worked out: the cash there, what's still to go out, and the days left
-    html += '<button type="button" class="hero card" data-a="herosheet" style="display:block;width:100%;text-align:left"><div class="row"><span class="small" style="opacity:.92">You can spend today</span><span class="pill">' + pill + "</span></div>" +
-      '<div class="big">' + M(t.safe) + '</div><div class="small" style="opacity:.92">' + (spendNames.length ? "for " + esc(joinWords(spendNames)) : "") + "</div>" +
-      (heroNotes.length ? '<div class="small" style="opacity:.92;margin-top:6px">' + heroNotes.join(" ") + "</div>" : "") +
-      '<div class="line"><span>' + (daysTo === 0 ? "Payday is today" : "Payday in " + daysTo + " day" + (daysTo === 1 ? "" : "s") + " · " + esc(B.nice(t.nextPay))) + "</span><span class=\"num\">" + (t.nextPayAmount ? M(t.nextPayAmount) : "") + "</span></div></button>";
-    if (t.plan.shortfall > 0.5) html += card('<div class="what bad" style="font-weight:700">This month is ' + M(t.plan.shortfall) + " short</div><p class=\"small muted\" style=\"margin:4px 0 0\">Bills, budgets and savings add up to more than is coming in. Lower a budget or saving in Settings.</p>");
-    else if (daysTo <= 7) {
-      // (what the pot only covers until money comes in later that month isn't short)
-      var nextPd = B.payday(d, p, B.periodAt(d, p, t.nextPay)), gap = Math.max((nextPd.cover ? nextPd.cover.amount : 0) + (nextPd.uncovered || 0) - (nextPd.soon || 0), nextPd.plan.shortfall || 0);
-      if (gap > 0.5) html += '<button type="button" class="card li" style="display:block;text-align:left;padding:14px 16px" data-a="go" data-v="payday"><div class="what warn" style="font-weight:700">Next month looks ' + M(gap) + " short</div><div class=\"small muted\">Tap to see your payday plan and what covers it.</div></button>";
-    }
-    // to do
-    var items = t.todo, payItems = items.filter(function (x) { return x.payday; }), rest = items.filter(function (x) { return !x.payday; });
-    last.todo = rest;
-    var rowsA = [];
-    var reN = reviewRows().length;
-    if (reN) rowsA.push(li(reN + " new payment" + (reN === 1 ? "" : "s") + " from " + esc(bankName()), "Check what " + (reN === 1 ? "it was" : "they were") + " for", "", "go", "review"));
-    if (S.bank && S.bank.reapproveBy && B.diff(todayIso(), String(S.bank.reapproveBy).slice(0, 10)) <= 7) rowsA.push(li("Approve Budgie again in the Monzo app", "Monzo asks every 90 days. Do it by " + esc(B.nice(String(S.bank.reapproveBy).slice(0, 10))), "", "go", "bank"));
-    if (payItems.length) rowsA.push(li("Sort your pay into " + esc(potWord(true)), payItems.some(function (x) { return x.waiting; }) ? "Waiting for your pay to arrive" : payItems.length + " " + esc(payItems.length === 1 ? potWord() : potWord(true)) + " still to move", "", "go", "payday"));
-    rest.forEach(function (it, i) {
-      var right = num(it.type === "warn" ? "" : M(it.amount));
-      var why = esc(MT(it.why)) + (it.short ? ' <span class="warn">Only ' + M(Math.max(0, it.amount - it.short)) + " is there right now.</span>" : "");
-      if (it.type === "warn") rowsA.push('<div class="li"><span class="grow"><span class="what warn">' + esc(MT(it.what)) + '</span><span class="why">' + why + '</span></span><button type="button" class="btn ghost sm" data-a="tick" data-v="' + i + '">Got it</button></div>');
-      else if (it.info) rowsA.push('<div class="li"><span class="grow"><span class="what">' + esc(MT(it.what)) + '</span><span class="why">' + why + '</span></span><button type="button" class="btn ghost sm" data-a="tick" data-v="' + i + '">I\'ve paid</button></div>');
-      else rowsA.push('<label class="li" style="cursor:pointer"><input type="checkbox" class="tick" data-c="tick" data-v="' + i + '" aria-label="Done: ' + esc(MT(it.what)) + '"><span class="grow"><span class="what">' + esc(MT(it.what)) + '</span><span class="why">' + why + "</span></span>" + right + "</label>");
-    });
-    // three at a time: the rest are one tap away
-    var TODO_MAX = 3, moreN = Math.max(0, rowsA.length - TODO_MAX), rows = (S.ui.todoAll ? rowsA : rowsA.slice(0, TODO_MAX)).join("");
-    if (moreN) rows += '<button type="button" class="li tmore" data-a="todomore">' + '<span class="grow"><span class="what">' + (S.ui.todoAll ? "Show fewer" : "Show " + moreN + " more") + "</span></span>" + chev() + "</button>";
-    var leftN = rest.length + (payItems.length ? 1 : 0) + (reN ? 1 : 0);
-    html += card('<div class="row"><h2>To do</h2><span class="small muted">' + (leftN ? leftN + " left" : "") + "</span></div>" + (rows ? '<div class="list">' + rows + "</div>" : '<p class="muted" style="margin:8px 0 0">All done. Everything is where it should be.</p>'));
-    // tiles
-    if (t.tiles.length) {
-      html += '<h2 class="h2">' + (isEasy() ? "What you can spend" : "Each day until payday") + (t.tiles.some(function (x) { return x.mode === "weekly"; }) ? infoBtn("pace") : "") + '</h2><div class="grid2">';
-      t.tiles.forEach(function (x) {
-        var name = esc(x.name.replace(/ \(what's left\)/, "")), v, sub;
-        if (x.mode === "weekly") { v = M(x.weekLeft) + "<small> left</small>"; sub = "This week · " + M(Math.max(0, x.left)) + " left this month"; }
-        else if (x.day !== null) { v = M(x.day) + "<small> a day</small>"; sub = M(Math.max(0, x.left)) + " left of " + M(x.amount); }
-        // (a budget's money that isn't really there, because something before payday needs it, is said as that)
-        if (x.notThere > 0.004) sub = M(Math.max(0, x.left)) + " left · " + M(x.notThere) + " isn't there";
-        else { v = M(Math.max(0, x.left)) + "<small> left</small>"; sub = "For one-offs this month"; }
-        var pace = x.over > 0.004 ? '<span class="bad">' + M(x.over) + " over</span>" : x.pace < -0.5 ? '<span class="warn">' + M(-x.pace) + " over pace</span>" : x.mode === "oneoff" ? "" : '<span class="good">' + (x.pace > 0.5 ? M(x.pace) + " under pace" : "On pace") + "</span>";
-        html += '<button type="button" class="tile" data-a="go" data-v="money" style="text-align:left;color:var(--ink)"><div class="n">' + name + '</div><div class="v">' + v + "</div>" + bar(x.pct, x.mode === "oneoff" ? null : x.paceMark, "var(--k-spend)") + '<div class="small" style="margin-top:6px">' + sub + '</div><div class="tiny hide-easy" style="font-weight:600">' + pace + "</div></button>";
-      });
-      html += "</div>";
-    }
-    html += recentCard();
-    // just after 6 April: last tax year at a glance
-    if (now.slice(5) >= "04-06" && now.slice(5) <= "04-30") html += yearCard(taxYearStart(B.addDays(now, -40)), false);
-    return html;
+    // (once pay is set up, the Home screen is drawn by clarity.js; this is only the first-run card above)
+    return "";
   };
   // ----- Walkthrough
   // Five short cards the first time someone opens Budgie on a phone (once per person per phone), and any time from More.
