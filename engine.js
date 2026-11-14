@@ -1378,7 +1378,8 @@
   // returns pending moves and reminders for a person today
   function todo(db, p, today) {
     var per = periodAt(db, p, today), main = mainOf(db, p), fb = fallbackOf(db, p), st = startOf(db, p);
-    var bal = balances(db, today), items = [], pend = dict();
+    // (a shortfall you've said "Got it" to isn't shown again, but it's still short: today() keeps counting it)
+    var bal = balances(db, today), items = [], pend = dict(), gotIt = [];
     var avail = function (a) { return round((bal[a] || 0) + (pend[a] || 0)); };
     // a pot move already made in the bank (a loose bank move in that pay period, same two accounts, same amount to the
     // penny) is done, even though it was made before the item appeared: it's in the balance already, so it isn't asked
@@ -1570,7 +1571,7 @@
           if (justThis) warned[f.account] = false;
         } else if (!parts) {
           // "Got it" saves a move with this key: the warning stays away (a new date or pot makes a new one)
-          if (!ticked(db, p, "short:" + f.account + ":" + f.date)) items.push({key: "short:" + f.account + ":" + f.date, type: "warn", amount: need, what: accName(db, f.account) + " will be " + money(need) + " short", why: f.what + " on " + nice(f.date) + ", and there isn't enough spare money to cover it yet."});
+          (ticked(db, p, "short:" + f.account + ":" + f.date) ? gotIt : items).push({key: "short:" + f.account + ":" + f.date, type: "warn", amount: need, what: accName(db, f.account) + " will be " + money(need) + " short", why: f.what + " on " + nice(f.date) + ", and there isn't enough spare money to cover it yet."});
           run[f.account] = 0;
         }
       }
@@ -1587,7 +1588,7 @@
       if (lowM < -0.004) {
         var needM = round(-lowM), canM = round(Math.min(needM, Math.max(0, avail(fb)))), whenM = lowD === today ? " is " + money(needM) + " under" : " would be " + money(needM) + " under on " + nice(lowD);
         if (canM > 0.004) plan("fill:" + main + ":" + lowD, fb, main, canM, "Move " + money(canM) + " from " + accName(db, fb) + " to " + accName(db, main), accName(db, main) + whenM + ". Your next pay tops the " + accName(db, fb) + " back up.", {fill: true});
-        else if (!ticked(db, p, "short:" + main + ":" + lowD)) items.push({key: "short:" + main + ":" + lowD, type: "warn", amount: needM, what: accName(db, main) + whenM, why: "There isn't enough in your " + accName(db, fb) + " to cover it yet."});
+        else (ticked(db, p, "short:" + main + ":" + lowD) ? gotIt : items).push({key: "short:" + main + ":" + lowD, type: "warn", amount: needM, what: accName(db, main) + whenM, why: "There isn't enough in your " + accName(db, fb) + " to cover it yet."});
       }
     }
     // 3c. a spending pot with less in it than its budgets still have left this period (a payday that was never sorted, say,
@@ -1624,6 +1625,7 @@
     var bt = between(db, p, today), qn = person(db, bt.partner).name, pw = poolWhy(db, p, bt);
     if (bt.owedToMe > 0.004) items.push({key: "split:" + today, type: "settle", amount: bt.owedToMe, what: qn + " owes you " + money(bt.owedToMe), why: (pw || "For shared bills and split payments.") + " Tick when it arrives.", from: bt.partner, to: p, pool: !!pw});
     if (bt.iOwe > 0.004) items.push({key: "split:" + today, type: "settle", amount: bt.iOwe, what: "Pay " + qn + " " + money(bt.iOwe), why: pw || "For shared bills and split payments.", from: p, to: bt.partner, info: true, pool: !!pw});
+    items.gotIt = gotIt;
     return items;
   }
 
@@ -1904,19 +1906,20 @@
     // Reserve every other pending allocation and Main's upcoming payments first.
     // Moving the same money into its pot must not change the daily guide.
     var items = todo(db, p, date), mainOutTodo = 0, owe0 = partnerOf(db, p) ? between(db, p, date).iOwe : 0;
-    items.forEach(function (it) { if (it.type === "move" && !it.hold && !/^pay:/.test(String(it.key || "")) && it.from === main && !spendAccs[it.to]) mainOutTodo += Math.max(0, +it.amount || 0); });
-    var fundingInMain=0, projectedPot=dict(),rules=spareRules(db,p,date),held=rules?Math.max(0,+rules.buffer||0):0;
+    var payItem = function (it) { return it.payday || /^(pay|net):/.test(String(it.key || "")); };
+    items.forEach(function (it) { if (it.type === "move" && !it.hold && !payItem(it) && it.from === main && !spendAccs[it.to]) mainOutTodo += Math.max(0, +it.amount || 0); });
+    var fundingInMain=0, payGap=0, payOut=0, projectedPot=dict(),rules=spareRules(db,p,date),held=rules?Math.max(0,+rules.buffer||0):0;
     if(per.pay&&!per.opening&&!payPending(db,p,per,date)){
       var pd=payday(db,p,per), other=0,spending=0,mainDue=0;
       var journey=paydaySteps(db,p,date,per);
       // (what's still to move: ticked in the app, or made in the bank, in one go or in parts, as To do counts it)
       var ptk=dict();
       if(journey.enabled)journey.steps.forEach(function(m){var left=m.from===main?Math.max(0,round(m.remaining-(m.paid>0.004?0:payMadeFor(db,p,m.from,m.account||m.to,per.start,date,ptk)))):0;if(spendAccs[m.account]){spending+=left;projectedPot[m.account]=(projectedPot[m.account]||0)+left;}else other+=left;});
-      else pd.moves.forEach(function(m){var left=Math.max(0,round(m.amount-Math.max(ticked(db,p,"pay:"+per.start+":"+m.to),payMadeFor(db,p,m.from,m.to,per.start,date,ptk))));if(spendAccs[m.to]){spending+=left;projectedPot[m.to]=(projectedPot[m.to]||0)+left;}else other+=left;});
+      else pd.moves.forEach(function(m){var left=ticked(db,p,"pay:"+per.start+":"+m.to)>0.004?0:Math.max(0,round(m.amount-payMadeFor(db,p,m.from,m.to,per.start,date,ptk)));if(spendAccs[m.to]){spending+=left;projectedPot[m.to]=(projectedPot[m.to]||0)+left;}else other+=left;});
       flows(db,date,addDays(per.next,-1)).forEach(function(f){if(f.account===main&&f.amount<0)mainDue-=f.amount;});
       unseenBills(db,p,date).forEach(function(r){if(r.account===main)mainDue+=r.amount;});
       fundingInMain=round(Math.min(spending,Math.max(0,(bal[main]||0)-other-mainDue-held)));
-      if(spendAccs[main])committed-=other;else cash=round(cash+fundingInMain);
+      if(spendAccs[main])committed-=other;else{cash=round(cash+fundingInMain);payGap=round(Math.max(0,spending-fundingInMain));payOut=round(other+fundingInMain);}
       // A yearly-cost allocation arriving in a spending pot remains reserved.
       var used=0;Object.keys(plan.setAside||{}).forEach(function(id){var b=db.byId[id],acc=b?b.account||main:"",extra=Math.min(Math.max(0,plan.setAside[id]-Math.max(0,bal[acc]||0)),projectedPot[acc]||0,Math.max(0,fundingInMain-used));if(spendAccs[acc]){committed-=extra;used+=extra;}});
     } else if(!spendAccs[main]&&(per.opening||!per.pay)){
@@ -1933,15 +1936,18 @@
     // money the To do says must go from a spending account into a bills pot before payday isn't spare, and a pot that
     // will be short for a bill with nothing to cover it means less than nothing is spare: both come off first
     var potShort = 0;
-    items.forEach(function (it) {
+    items.concat(items.gotIt || []).forEach(function (it) {
       // (any move To do asks for out of a spending account into one that isn't: a bills pot, paying off a card, putting
       // money back. Payday's own moves are counted above, and a holding pot's move isn't from spending money.)
-      if (it.type === "move" && !it.hold && !/^pay:/.test(String(it.key || "")) && spendAccs[it.from] && !spendAccs[it.to]) committed -= Math.max(0, +it.amount || 0);
+      if (it.type === "move" && !it.hold && !payItem(it) && spendAccs[it.from] && !spendAccs[it.to]) committed -= Math.max(0, +it.amount || 0);
       // (and money To do brings into a spending pot from elsewhere for one of its payments, the fallback pot covering a
       // bill say, is on its way to it)
-      else if (it.type === "move" && it.fill && !spendAccs[it.from] && spendAccs[it.to]) cash += Math.max(0, +it.amount || 0);
+      // (not from a pot that keeps spending pots' money: that's counted above already)
+      else if (it.type === "move" && it.fill && !spendAccs[it.from] && !heldIn[it.from] && spendAccs[it.to]) cash += Math.max(0, +it.amount || 0);
       // (a spending account's own payments are already counted above: only another account's shortfall is added)
-      else if (it.type === "warn" && /^short:/.test(it.key) && !spendAccs[it.key.split(":")[1]]) potShort += Math.max(0, +it.amount || 0);
+      // (the main account short because payday's moves to the spending pots would take more than it can spare: the part
+      // of those moves it can't pay was never counted as spending money, so it isn't taken off again)
+      else if (it.type === "warn" && /^short:/.test(it.key) && !spendAccs[it.key.split(":")[1]]) { var sa = Math.max(0, +it.amount || 0); if (it.key.split(":")[1] === main && payGap > 0) { var g0 = Math.min(sa, payGap); sa -= g0; payGap -= g0; } potShort += sa; }
     });
     // what you're due to pay back before payday, and what you owe your partner, come out of the main account too
     if (spendAccs[main]) {
@@ -1950,7 +1956,8 @@
     } else if (owe0 > 0.004) {
       // (Main without spending budgets: what it can't pay of what's owed to your partner, after its own payments and the
       // moves To do takes out of it, comes out of the spending money)
-      var mainLeft = (bal[main] || 0) - held - mainOutTodo; fl0n.forEach(function (f) { if (f.account === main && f.amount < 0) mainLeft += f.amount; });
+      // (and payday's moves still to make out of it, with the spending money counted as still in it)
+      var mainLeft = (bal[main] || 0) - held - mainOutTodo - payOut; fl0n.forEach(function (f) { if (f.account === main && f.amount < 0) mainLeft += f.amount; });
       unseenBills(db, p, date).forEach(function (r) { if (r.account === main) mainLeft -= r.amount; });
       committed -= Math.max(0, owe0 - Math.max(0, mainLeft));
     }
