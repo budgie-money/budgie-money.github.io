@@ -69,16 +69,19 @@
         );
       }
       function categories(per) {
-        var states = B.budgetState(db(), me(), per);
+        var states = B.budgetState(db(), me(), per), td = B.today(db(), me(), now()), cut = {};
+        // (this pay period's budgets never show more left than is really there: the same figures as Today)
+        if (td.period.start === per.start) td.tiles.forEach(function (x) { if (x.notThere > 0.004) cut[x.id] = x; });
         return Object.keys(states)
           .map(function (id) {
-            var s = states[id];
+            var s = states[id], c = cut[id];
             return {
               id: id,
               name: s.budget.name,
-              amount: s.avail,
+              amount: c && s.budget.mode === "remainder" ? c.amount : s.avail,
               spent: s.spent,
-              left: s.left,
+              left: c ? c.left : s.left,
+              notThere: c ? c.notThere : 0,
               mode: s.budget.mode,
               current: s.current,
             };
@@ -106,8 +109,8 @@
                 ' class="c-budget-row"><span><strong>' +
                 E(t.name.replace(/ \(what\x27s left\)/, "")) +
                 "</strong><small>" +
-                M(t.amount) +
-                ' budget</small></span><span class="c-amount">' +
+                (t.notThere > 0.004 ? M(t.notThere) + " isn't there" : M(t.amount) + " budget") +
+                '</small></span><span class="c-amount">' +
                 M(t.spent) +
                 '</span><span class="c-amount ' +
                 (over ? "c-over" : "") +
@@ -177,7 +180,7 @@
           review = A.reviewRows().length,
           html = "";
         if (review)
-          html += A.li(review + " payments to check", "", "", "go", "review");
+          html += A.li(review + (review === 1 ? " payment" : " payments") + " to check", "", "", "go", "review");
         if (
           t.todo.some(function (it) {
             return it.payday && !it.waiting;
@@ -317,10 +320,10 @@
             : active.length===1 ? "Built up in "+shortName(active[0].name)
             : "Unused allowances build up each day";
         html += '<button type="button" id="c-guide" class="hero card c-guide" data-a="herosheet"><div class="c-guide-top"><span>Daily guide</span><span class="c-guide-link">View breakdown ↗</span></div><div class="c-guide-main"><div class="c-guide-total"><div class="big">'+M(bank.available)+'</div><span class="small">built up to spend</span><span class="c-guide-rate">'+M(bank.daily)+' daily allowance</span></div><div class="c-guide-payday">'+A.icon("cal",22)+'<span>Payday</span><strong>'+E(paydayWord)+'</strong><span>'+E(B.nice(t.nextPay))+'</span></div></div><div class="c-guide-parts">'+parts.map(function(x){
-          var over=x.left<-.004,fill=x.limit>0?Math.min(100,Math.round(x.available/x.limit*100)):0,
-              state=over?M(-x.left)+" over budget":x.left<.005&&x.notThere>.004?"Not there yet":x.left<.005?"Budget used":x.early>.004?M(x.early)+" used early":M(x.daily)+" per day",
+          var over=x.left<-.004,cap=bank.cashLimited&&x.available-x.cash>.004,fill=x.limit>0?Math.min(100,Math.round(x.cash/x.limit*100)):0,
+              state=over?M(-x.left)+" over budget":cap?M(x.available)+" built up":x.limit<.005&&x.spent<.005?"Nothing this period":x.left<.005?"Budget used":x.early>.004?M(x.early)+" used early":M(x.daily)+" per day",
               symbol=/food|grocer/i.test(x.name)?"basket":/fuel|travel|petrol/i.test(x.name)?"fuel":"spark";
-          return '<div class="'+(over||x.early>.004?"is-over":x.available>.004?"is-active":"")+'"><span class="c-guide-category"><span class="c-guide-icon">'+A.icon(symbol,21)+'</span><span class="c-guide-name">'+E(shortName(x.name))+'</span></span><b>'+M(x.available)+'</b><span class="c-guide-state">'+state+'</span><span class="c-guide-meter" aria-hidden="true"><i style="width:'+fill+'%"></i></span></div>';
+          return '<div class="'+(over||x.early>.004?"is-over":x.cash>.004?"is-active":"")+'"><span class="c-guide-category"><span class="c-guide-icon">'+A.icon(symbol,21)+'</span><span class="c-guide-name">'+E(shortName(x.name))+'</span></span><b>'+M(x.cash)+'</b><span class="c-guide-state">'+state+'</span><span class="c-guide-meter" aria-hidden="true"><i style="width:'+fill+'%"></i></span></div>';
         }).join('')+'</div><div class="c-guide-context">'+A.icon("info",14)+'<span>'+E(context)+'</span></div></button>';
         if (t.plan.shortfall > 0.004)
           html += A.li(
@@ -1106,7 +1109,7 @@
         overview += sm.mainBalance ? A.li("Current account", "Last balance · " + E(B.nice(sm.mainBalance.date)), A.num(M(sm.mainBalance.amount))) : A.li("Current account", "Bank balance isn’t shared", "");
         if(sm.accumulated) overview+=A.li("Built up to spend",M(sm.accumulated.daily)+" daily allowance"+(sm.accumulated.cashLimited?" · cash limited":""),A.num(M(sm.accumulated.available)));
         else if (sm.safe !== undefined) overview += A.li("Daily guide", "Cash-limited budget pace", A.num(M(sm.safe)));
-        if (sm.billDetails && sm.billDetails.length) overview += '<details class="trust-details"><summary>Bill breakdown · ' + M(sm.bills || sm.billDetails.reduce(function(n,l){return n+l.amount;},0)) + '</summary><div class="list">' + sm.billDetails.map(function(l){return A.li(E(l.name), E(l.date ? B.nice(l.date) : "Set aside this payday") + (l.estimate ? " · estimate" : ""), A.num(M(l.amount)));}).join("") + '</div></details>';
+        if (sm.billDetails && sm.billDetails.length) overview += '<details class="trust-details"><summary>Bill breakdown · ' + M(sm.billDetails.reduce(function(n,l){return n+l.amount;},0)) + '</summary><div class="list">' + sm.billDetails.map(function(l){return A.li(E(l.name), E(l.date ? B.nice(l.date) : "Set aside this payday") + (l.estimate ? " · estimate" : ""), A.num(M(l.amount)));}).join("") + '</div></details>';
         if (sm.saved > 0.004) overview += A.li("Saving this pay period", "Planned contributions", A.num(M(sm.saved)));
         overview += '</div></div></section>';
         var shared = Array.from(box.children).filter(function(el){return Array.from(el.querySelectorAll("h2")).some(function(h){return h.textContent === "Shared bills";});})[0];

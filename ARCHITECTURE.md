@@ -291,3 +291,14 @@ path, so both phones agree.
 
 Tests: `node test/cooldown.test.js` (rules, live numbers, privacy and the sheet) and, on a fresh fake server,
 `node test/cooldown-ui.test.js`. All data is invented.
+
+## Accuracy review (1.7.6)
+
+A blind review in four areas (spending, balances and bank feed, money between partners, screens) led to these changes:
+
+- **Spending is capped at money really there.** `today()` takes off, before anything counts as spare: moves To do needs from a spending account into a bills pot before payday; any pot (or a Main without spending budgets) that will be short with nothing to cover it; loan repayments you owe before payday; and what you owe your partner. Budgets never show more left than that. A "whatever is left" budget gives way first, then the others in proportion (`tile.notThere`, `tile.planLeft`). The shortfall is `today().short` and the status says `Short`. Home and Money show it. The Daily guide keeps its built-up figure, and each category shows its share of what cash allows (`part.cash`), so the categories add up to the total.
+- **Bank-read balances are the truth for their day.** A To do move ticked after the bank's read, between two accounts the bank read that day, isn't added on top. `hold:` keys are matched like other To do keys (engine, bank feed, server). A pot-to-pot item done through Main (out to Main, then on to the pot, the same amount within 3 days) is recognised.
+- **Bills due today.** A bill due today, or up to 2 days late, that the bank hasn't taken yet is still in To do and the pots' "should" figures. A pot with more than one payment before payday is warned about the later, bigger one even when only the first can be covered. Holding pots look ahead past payday, and a pot the bank reads below nothing today gets its move.
+- **Partners.** A share paid up to two weeks early counts as that share. Shares and bills moved across a month end by a weekend count in their scheduled month. A refund on a fixed-amount split comes back the way it went out.
+- **One "whatever is left" budget.** Only the remainder budget the plan picks gets what's left.
+- **Cooldown** goes green on what's built up and free, the same as the Daily guide, and after payday a "Next month" item still has to fit.

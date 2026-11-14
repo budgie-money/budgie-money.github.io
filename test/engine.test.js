@@ -531,7 +531,7 @@ const savedUp = (pl, id) => lineAmt(pl, l => l.setAside && l.bill === id && l.ki
   const bs = B.budgetState(c, me, per);
   eq("compat: budgetState(db, me, per)", ["amount", "spent", "left", "avail", "carryIn", "carryOut", "over"].every(k => k in bs["e-fun"]) && bs["e-fun"].period.start === per.start, true);
   eq("compat: still exported", ["load", "coming", "periodAt", "planFor", "budgetState", "today", "checks", "lisa", "yearly", "yearReview"].every(k => typeof B[k] === "function"), true);
-  eq("compat: version", B.VERSION, "1.7.5");
+  eq("compat: version", B.VERSION, "1.7.6");
 })();
 
 // C3: a payday move ticked in the app and by the bank feed counts once (the latest)
@@ -1793,7 +1793,8 @@ const tickPay11 = (t, p, d) => { const L0 = B.load(t, d), per = B.periodAt(L0, p
   eq("short for bills before payday: status says so", t.status, "Short");
   eq("short for bills before payday: the injection pot's shortfall is in it", t.short >= 190, true);
   eq("no budget shows more left than is there", t.tiles.every(x => x.day === null || x.left <= t.cashFree + 0.01), true);
-  eq("daily guide has nothing built up when the money isn't there", a.builtUp, 0);
+  eq("daily guide has nothing to spend when the money isn't there", a.available, 0);
+  eq("and each category's share adds up to it", a.parts.reduce((n, x) => n + x.cash, 0), 0);
   eq("the bigger bill later is warned about, not just the first one", B.todo(db, "sophie", D).some(x => x.type === "warn" && /^short:s-pb:/.test(x.key) && x.amount >= 190), true);
 }
 

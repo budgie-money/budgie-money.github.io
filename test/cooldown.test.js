@@ -50,7 +50,8 @@ const get = (v, id) => v.items.find(x => x.id === id);
   t.transactions.push({id: "t-spent", date: "2026-11-02", person: "ethan", amount: 100, budget: "e-fun", account: "e-main"});
   t.transactions.push({id: "t-bank", date: "2026-11-02", person: "ethan", amount: 60, budget: "e-fun", account: "e-main", bankId: "tx_example"});
   eq(at(t, "2026-11-03").v.items[0].state, "waiting", "Fun spent down: cooled, waiting for money");
-  eq(at(t, "2026-11-26").v.items[0].state, "ready", "and green again after payday with a new allowance");
+  eq(at(t, "2026-11-26").v.items[0].state, "waiting", "on payday only a day has built up: not yet");
+  eq(at(t, "2026-11-29").v.items[0].state, "ready", "and green again once the new allowance has built up enough");
 }
 
 // a car goal the account isn't part of: shown as a share of its target

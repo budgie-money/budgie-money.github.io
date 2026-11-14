@@ -6,7 +6,7 @@
   else root.Budgie = factory();
 })(this, function () {
   "use strict";
-  var VERSION = "1.7.5";
+  var VERSION = "1.7.6";
 
   // ---------- dates ----------
   function D(s) { var p = String(s).split("-"); return new Date(Date.UTC(+p[0], +p[1] - 1, +p[2])); }
@@ -300,7 +300,7 @@
   // in the app later: the same money twice. A loose bank move that is the same as one ticked in the app (the same two
   // accounts, the same amount to the penny, in the same pay period, one for one) is the tick itself, so it counts once:
   // the tick stays (it carries the key) and the loose bank move is set aside as a duplicate.
-  var TODO_TICK = /^(back|cover|fill|lent|late|refund|goal|sweep|net):|^pay:\d{4}-\d{2}-\d{2}:cover$/;
+  var TODO_TICK = /^(back|cover|fill|hold|lent|late|refund|goal|sweep|net):|^pay:\d{4}-\d{2}-\d{2}:cover$/;
   function tickPeriod(db, m) {
     var k = String(m.key || "").match(/^(?:back|cover|lent|refund):.*:(\d{4}-\d{2}-\d{2}):[^:]*$/);
     return k ? k[1] : periodAt(db, m.person, m.date).start;
@@ -346,6 +346,16 @@
       var m = list[i];
       if (taken[m.id] || m.from !== from || m.to !== to || round(m.amount) !== amount || (upTo && m.date > upTo) || periodAt(db, p, m.date).start !== start) continue;
       taken[m.id] = true; return m;
+    }
+    // (or done the long way round, through the main account: out to the main account and on to the pot, the same amount,
+    // within a few days. Both halves are this item's then.)
+    var main = mainOf(db, p);
+    if (from !== main && to !== main) for (var a = 0; a < list.length; a++) {
+      var m1 = list[a]; if (taken[m1.id] || m1.from !== from || m1.to !== main || round(m1.amount) !== amount || (upTo && m1.date > upTo) || periodAt(db, p, m1.date).start !== start) continue;
+      for (var b = 0; b < list.length; b++) {
+        var m2 = list[b]; if (b === a || taken[m2.id] || m2.from !== main || m2.to !== to || round(m2.amount) !== amount || m2.date < m1.date || diff(m1.date, m2.date) > 3 || (upTo && m2.date > upTo)) continue;
+        taken[m1.id] = true; taken[m2.id] = true; return m2;
+      }
     }
     return null;
   }
@@ -421,6 +431,8 @@
   // date (optional): the day it's for, for a split that has changed
   function shareOf(db, splitId, who, amount, payer, date) {
     if (!splitId) return who === payer ? amount : 0;
+    // (money back, a refund, is shared the way the money out was, the other way round: a fixed share comes back too)
+    if (amount < 0) return -shareOf(db, splitId, who, -amount, payer, date);
     var txt = sharesAt(db, splitId, date);
     var people = db.people.map(function (x) { return x.id; });
     if (!txt || /^half$/i.test(txt)) return people.indexOf(who) >= 0 ? amount / Math.max(1, people.length) : 0;
@@ -544,7 +556,8 @@
     var plan = planFor(db, p, per);
     budgetsOf(db, p, per).forEach(function (b) {
       if (!isSpend(db, b)) return;
-      var amt = b.mode === "remainder" ? plan.remainder : budgetAmount(db, b, per);
+      // (only the one "whatever is left" budget the plan gives it to: two can't each have all of it)
+      var amt = b.mode === "remainder" ? (!plan.remainderBudget || plan.remainderBudget.id === b.id ? plan.remainder : 0) : budgetAmount(db, b, per);
       // only budgets marked carry keep what's unspent (up to one month's worth); "whatever is left" never piles up
       var carries = b.carry === true && b.mode !== "oneoff" && b.mode !== "remainder";
       var carryIn = carries ? ((prev[b.id] || {}).carryOut || 0) : 0;
@@ -1187,7 +1200,7 @@
       var main = mainOf(db, p), fb = fallbackOf(db, p), st = startOf(db, p), out = [];
       budgetsOf(db, p, pk).forEach(function (b) {
         if (!isSpend(db, b)) return;
-        var home = b.account || main, amt = b.mode === "remainder" ? planFor(db, p, pk).remainder : budgetAmount(db, b, pk);
+        var plk = b.mode === "remainder" ? planFor(db, p, pk) : null, home = b.account || main, amt = plk ? (!plk.remainderBudget || plk.remainderBudget.id === b.id ? plk.remainder : 0) : budgetAmount(db, b, pk);
         var mineB = memo(db, "txb|" + b.id, function () { return db.transactions.filter(function (x) { return !x.isBillPayment && x.budget === b.id; }).sort(function (a, c) { return a.date < c.date ? -1 : a.date > c.date ? 1 : 0; }); });
         var from0 = maxS(pk.start, st), inPeriod = function (x) { return x.date >= from0 && x.date < pk.next && x.date <= today; };
         var lo = lowerBound(mineB.map(function (x) { return x.date; }), from0);
@@ -1397,6 +1410,10 @@
     // what the budgets kept in the main account still have to spend before payday isn't spare, and nor is what its
     // bills and payments take out before then
     var stNow = budgetState(db, p, per), mainKeep = 0, flowsAhead = flows(db, today, addDays(per.next, -1)), mainOut = 0;
+    // a bill due today, or a day or two late, that the bank hasn't taken yet isn't in today's bank balance or in what's
+    // ahead: it's still to come out, today, so a pot it needs filling is still asked for
+    var unseenNow = unseenBills(db, p, today).filter(function (r) { return r.date >= addDays(today, -2); }).map(function (r) { return {date: today, account: r.account, amount: -round(r.amount), what: r.name}; });
+    flowsAhead = unseenNow.concat(flowsAhead);
     Object.keys(stNow).forEach(function (id) { var s = stNow[id]; if ((s.budget.account || main) === main) mainKeep += Math.max(0, s.left || 0); });
     flowsAhead.forEach(function (f) { if (f.account === main) mainOut += f.amount; });
     mainKeep = round(mainKeep); mainOut = round(Math.max(0, -mainOut));
@@ -1447,10 +1464,14 @@
     items = grouped;
     // 2c. a pot that keeps its money in another until it's needed: a few days before it pays out, move across what it
     // needs (only from the pot holding it; if that's short too, 3 below finds the rest)
-    var soonAll = flowsAhead.slice().sort(function (a, c) { return a.date < c.date ? -1 : a.date > c.date ? 1 : a.amount - c.amount; });
+    // (its own look ahead, which can run past payday: a bill due on payday itself needs its money moved before)
+    var soonAll = unseenNow.concat(flows(db, today, addDays(today, 14))).sort(function (a, c) { return a.date < c.date ? -1 : a.date > c.date ? 1 : a.amount - c.amount; });
     accountsOf(db, p).forEach(function (a) {
       var h = holdOf(db, a.id); if (!h) return;
       var until = addDays(today, holdDays(db, a.id)), r = avail(a.id), low = 0, lowF = null, names = [];
+      // (already below nothing by the bank's own reading today: a bill taken today, on payday say, before the money was
+      // moved across)
+      if (r < -0.004 && db.valuations.some(function (v) { return v.account === a.id && v.date === today && /^bk-/.test(String(v.id || "")); })) { low = r; lowF = {date: today}; }
       soonAll.forEach(function (f) {
         if (f.account !== a.id || f.date > until) return;
         r = round(r + f.amount); if (f.amount < 0 && names.indexOf(f.what) < 0) names.push(f.what);
@@ -1464,6 +1485,9 @@
     var run = dict(); Object.keys(bal).forEach(function (a) { run[a] = avail(a); });
     var heldIn = function (a) { var h = holdOf(db, a); return h && run[h] !== undefined ? run[h] : 0; };
     // (on the same day, money going out is counted before money coming in: which the bank takes first isn't known)
+    // (a pot already below nothing with nothing more due before payday, a bill taken today that came in higher say, is
+    // caught too; one with more due is caught at that payment, keeping the item's key steady)
+    Object.keys(bal).forEach(function (a) { var ac = db.byId[a] || {}; if (ac.owner === p && a !== main && ac.kind !== "credit" && /pot|saving/.test(ac.kind || "pot") && avail(a) < -0.004 && !flowsAhead.some(function (f) { return f.account === a; })) flowsAhead = [{date: today, account: a, amount: 0, what: "What's already gone out"}].concat(flowsAhead); });
     var warned = dict(), ahead = flowsAhead.slice().sort(function (a, c) { return a.date < c.date ? -1 : a.date > c.date ? 1 : a.amount - c.amount; });
     ahead.forEach(function (f, i) {
       // (a credit account below nothing is what's owed on it, not a pot running short)
@@ -1681,14 +1705,15 @@
       if (!b.split || (b.person !== p && b.person !== q)) return;
       occurrences(db, b, st, addDays(today, 1)).forEach(function (o) {
         var theirs = round(shareOf(db, b.split, b.person === p ? q : p, o.amount, b.person, o.date)), sign = b.person === p ? 1 : -1;
-        if (o.date < monthStart) owed += sign * theirs;
+        // (by the day it was scheduled for: a bill or share moved across a month end by a weekend stays in its own month)
+        if ((o.sched || o.date) < monthStart) owed += sign * theirs;
         else { month.bills += o.amount; if (b.person === p) month.theirShare += theirs; else month.myShare += theirs; }
       });
     });
     db.transfers.forEach(function (t) {
       occurrences(db, t, st, addDays(today, 1)).forEach(function (o) {
         var sign = t.from === q && t.to === p ? -1 : t.from === p && t.to === q ? 1 : 0; if (!sign) return;
-        if (o.date < monthStart) owed += sign * o.amount;
+        if ((o.sched || o.date) < monthStart) owed += sign * o.amount;
         else if (sign < 0) month.paidIn += o.amount; else month.paidOut += o.amount;
       });
     });
@@ -1743,8 +1768,8 @@
       var q = partnerOf(db, p), st = maxS(startOf(db, p), startOf(db, q)), hz = addDays(maxS(db.today || st, st), 400), now = [], month = [];
       db.transactions.forEach(function (x) { if (!x.split || x.date < st) return; if (x.person === p) now.push([x.date, round(shareOf(db, x.split, q, +x.amount, x.person, x.date))]); if (x.person === q) now.push([x.date, -round(shareOf(db, x.split, p, +x.amount, x.person, x.date))]); });
       db.settlements.forEach(function (s) { if (s.loan || s.date < st) return; if (s.from === q && s.to === p) now.push([s.date, -(+s.amount)]); if (s.from === p && s.to === q) now.push([s.date, +s.amount]); });
-      db.bills.forEach(function (b) { if (!b.split || (b.person !== p && b.person !== q)) return; occurrences(db, b, st, hz).forEach(function (o) { month.push([o.date, (b.person === p ? 1 : -1) * round(shareOf(db, b.split, b.person === p ? q : p, o.amount, b.person, o.date))]); }); });
-      db.transfers.forEach(function (t) { var sign = t.from === q && t.to === p ? -1 : t.from === p && t.to === q ? 1 : 0; if (sign) occurrences(db, t, st, hz).forEach(function (o) { month.push([o.date, sign * o.amount]); }); });
+      db.bills.forEach(function (b) { if (!b.split || (b.person !== p && b.person !== q)) return; occurrences(db, b, st, hz).forEach(function (o) { month.push([o.sched || o.date, (b.person === p ? 1 : -1) * round(shareOf(db, b.split, b.person === p ? q : p, o.amount, b.person, o.date))]); }); });
+      db.transfers.forEach(function (t) { var sign = t.from === q && t.to === p ? -1 : t.from === p && t.to === q ? 1 : 0; if (sign) occurrences(db, t, st, hz).forEach(function (o) { month.push([o.sched || o.date, sign * o.amount]); }); });
       poolTrue(db, p, q, st, hz).forEach(function (x) { now.push([x.date, x.amount]); });
       var pack = function (list) { list.sort(function (a, c) { return a[0] < c[0] ? -1 : a[0] > c[0] ? 1 : 0; }); var dates = [], cum = [0]; list.forEach(function (x, i) { dates.push(x[0]); cum.push(cum[i] + x[1]); }); return {dates: dates, cum: cum}; };
       return {hz: hz, now: pack(now), month: pack(month)};
@@ -1818,8 +1843,13 @@
     var items = todo(db, p, date), potShort = 0;
     items.forEach(function (it) {
       if (it.type === "move" && it.fill && !it.hold && spendAccs[it.from] && !spendAccs[it.to]) committed -= Math.max(0, +it.amount || 0);
-      else if (it.type === "warn" && /^short:/.test(it.key) && it.key.split(":")[1] !== main) potShort += Math.max(0, +it.amount || 0);
+      else if (it.type === "warn" && /^short:/.test(it.key) && (it.key.split(":")[1] !== main || !spendAccs[main])) potShort += Math.max(0, +it.amount || 0);
     });
+    // what you're due to pay back before payday, and what you owe your partner, come out of the main account too
+    if (spendAccs[main]) {
+      db.loans.forEach(function (l) { if (l.borrower === p) loanPlan(db, l).forEach(function (r) { if (!r.paid && r.date < per.next) committed -= Math.max(0, +r.left || 0); }); });
+      if (partnerOf(db, p)) committed -= between(db, p, date).iOwe;
+    }
     committed -= potShort;
     var cashFree = round(Math.max(0, cash + committed)), short = round(Math.max(0, -(cash + committed)));
     // what's left in a budget is never more than the money that's really there: a "whatever is left" budget gives way
@@ -1862,12 +1892,12 @@
   function dailyAllowances(db,p,date,t) {
     t=t||today(db,p,date);var per=t.period,from=maxS(per.start,startOf(db,p)),days=Math.max(1,diff(from,per.next)),elapsed=Math.max(0,Math.min(days,diff(from,date)+1)),state=budgetState(db,p,per),parts=[];
     Object.keys(state).forEach(function(id){var s=state[id],mode=s.budget.mode||'daily';if(!s.current||!isSpend(db,s.budget)||mode==='oneoff')return;
-      var tl=(t.tiles||[]).filter(function(x){return x.id===id;})[0],base=Math.max(0,s.amount),earned=round(base*elapsed/days),spent=spentOn(db,p,s.budget,from,minS(addDays(date,1),per.next)),balance=round(s.carryIn+earned-spent),left=round(s.avail-spent);
-      // (what's left is never more than what's really there)
-      if(tl&&tl.notThere)left=round(Math.min(left,tl.left));
+      var tl=(t.tiles||[]).filter(function(x){return x.id===id;})[0],base=Math.max(0,s.amount),earned=round(base*elapsed/days),spent=spentOn(db,p,s.budget,from,minS(addDays(date,1),per.next)),balance=round(s.carryIn+earned-spent),left=round(Math.min(s.avail-spent,s.left));
       parts.push({id:id,name:s.budget.name,notThere:tl&&tl.notThere||0,daily:round(base/days),carry:s.carryIn,earned:earned,spent:spent,balance:balance,available:round(Math.max(0,Math.min(balance,left))),early:round(Math.max(0,-balance)),left:left,limit:s.avail,days:elapsed});
     });
     var available=round(parts.reduce(function(n,x){return n+x.available;},0)),cashAvailable=round(Math.min(available,Math.max(0,t.cashFree)));
+    // (each category's share of what cash allows, so the categories always add up to the total shown)
+    var ratio=available>0.004?cashAvailable/available:0,given=0;parts.forEach(function(x,i){x.cash=i===parts.length-1?round(Math.max(0,cashAvailable-given)):round(x.available*ratio);given=round(given+x.cash);});
     return {date:date,period:per,from:from,days:days,elapsed:elapsed,parts:parts,daily:round(parts.reduce(function(n,x){return n+x.daily;},0)),builtUp:available,available:cashAvailable,cashLimited:cashAvailable<available-.004};
   }
   function coming(db, p, date, days) {
@@ -1904,6 +1934,9 @@
   function pots(db, p, date) {
     var bal = balances(db, date), items = todo(db, p, date), pend = dict();
     items.forEach(function (t) { if (t.type === "move") { pend[t.from] = (pend[t.from] || 0) - t.amount; pend[t.to] = (pend[t.to] || 0) + t.amount; } });
+    // (what should be there also takes off a bill due today the bank hasn't taken yet, and adds a pay that's on its way)
+    unseenBills(db, p, date).forEach(function (r) { if (r.date >= addDays(date, -2)) pend[r.account] = (pend[r.account] || 0) - (+r.amount || 0); });
+    var perP = periodAt(db, p, date); if (payPending(db, p, perP, date)) { var pdP = payday(db, p, perP); if (pdP.pay) pend[pdP.payAccount] = (pend[pdP.payAccount] || 0) + pdP.pay.amount; }
     return accountsOf(db, p).filter(function (a) { return /main|pot|saving/.test(a.kind || "pot"); }).map(function (a) {
       return {id: a.id, name: a.name, kind: a.kind, purpose: a.purpose, now: round(bal[a.id] || 0), should: round((bal[a.id] || 0) + (pend[a.id] || 0)), pending: round(pend[a.id] || 0), fallback: !!a.fallback};
     });
@@ -2420,7 +2453,8 @@
   function coolSavings(db, p) { return accountsOf(db, p).filter(function (a) { return a.kind === "saving" || a.kind === "isa"; }); }
   function coolSources(db, p, date) {
     var per = periodAt(db, p, date), st = budgetState(db, p, per), bal = balances(db, date), out = [];
-    Object.keys(st).forEach(function (id) { var s = st[id]; if (s.budget.mode === "saving") return; out.push({id: id, kind: "budget", name: s.budget.name, left: round(Math.max(0, s.left))}); });
+    var t = today(db, p, date), parts = dict(); dailyAllowances(db, p, date, t).parts.forEach(function (x) { parts[x.id] = x; });
+    Object.keys(st).forEach(function (id) { var s = st[id]; if (s.budget.mode === "saving") return; var x = parts[id]; out.push({id: id, kind: "budget", name: s.budget.name, left: round(Math.max(0, Math.min(x ? x.available : s.left, s.left, t.cashFree)))}); });
     coolSavings(db, p).forEach(function (a) { out.push({id: a.id, kind: "saving", name: a.name, left: round(bal[a.id] || 0)}); });
     out.push({id: "next", kind: "next", name: "Next month", payday: per.next});
     return out;
@@ -2430,11 +2464,13 @@
     var price = round(Math.max(0, +row.price || 0)), days = Math.max(0, Math.round(+row.days || 0)) || coolDays(price), from = isIso(row.date) ? row.date : date;
     var readyOn = addDays(from, days), src = String(row.source || ""), acc = db.byId[src], bud = acc && db.budgets.indexOf(acc) >= 0 ? acc : null;
     var r = {id: row.id, row: row, price: price, days: days, from: from, readyOn: readyOn, done: date >= readyOn, left: Math.max(0, diff(date, readyOn)), source: src, sourceName: "", kind: "", afford: false, has: null, payday: "", goals: []};
-    if (src === "next") { r.kind = "next"; r.sourceName = "Next month"; r.payday = periodAt(db, p, from).next; r.afford = date >= r.payday; }
+    // (after payday it still has to fit: what's free to spend, money for bills and budgets kept back)
+    if (src === "next") { r.kind = "next"; r.sourceName = "Next month"; r.payday = periodAt(db, p, from).next; if (date >= r.payday) { r.has = round(Math.max(0, today(db, p, date).cashFree)); r.afford = r.has >= price - 0.004; } }
     else if (bud && bud.person === p) {
       r.kind = "budget"; r.sourceName = bud.name;
       var c = price > 0 ? purchaseCheck(db, p, date, bud.id, price) : null;
-      if (c) { r.has = round(Math.max(0, Math.min(c.budgetLeft, c.cashAvailable))); r.afford = c.budgetFits && c.cashFits; }
+      // (what's built up so far, not the whole pay period's budget: the same as the Daily guide and Can I buy this?)
+      if (c) { var built = c.accrued ? c.accrued.available : c.budgetLeft; r.has = round(Math.max(0, Math.min(built, c.budgetLeft, c.cashAvailable))); r.afford = c.budgetFits && c.cashFits && !(c.accrued && c.accrued.usesFuture); }
       else { var s = budgetState(db, p, periodAt(db, p, date))[bud.id]; r.has = s ? round(Math.max(0, s.left)) : 0; r.afford = price === 0 || !!s; }
     } else if (acc && acc.owner === p && coolSavings(db, p).indexOf(acc) >= 0) {
       r.kind = "saving"; r.sourceName = acc.name; r.has = round(balances(db, date)[acc.id] || 0); r.afford = r.has >= price - 0.004;
