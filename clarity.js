@@ -310,14 +310,15 @@
           shortName = function (name) { return name.replace(/^Fun and spending$/i, "Fun").replace(/^Entertainment$/i,"Ents"); },
           active = parts.filter(function (x) { return x.available > 0.004; }),
           early = parts.filter(function(x){return x.early>.004;}),
-          context = bank.cashLimited ? "Available cash is limiting what you can spend"
+          context = t.short > .004 ? M(t.short)+" short for what's due before payday"
+            : bank.cashLimited ? "Available cash is limiting what you can spend"
             : t.fundingInMain > .004 ? "Includes budget money still in Main — sort payday to fund your pots"
             : early.length ? shortName(early[0].name)+" has used some future days’ allowance"
             : active.length===1 ? "Built up in "+shortName(active[0].name)
             : "Unused allowances build up each day";
         html += '<button type="button" id="c-guide" class="hero card c-guide" data-a="herosheet"><div class="c-guide-top"><span>Daily guide</span><span class="c-guide-link">View breakdown ↗</span></div><div class="c-guide-main"><div class="c-guide-total"><div class="big">'+M(bank.available)+'</div><span class="small">built up to spend</span><span class="c-guide-rate">'+M(bank.daily)+' daily allowance</span></div><div class="c-guide-payday">'+A.icon("cal",22)+'<span>Payday</span><strong>'+E(paydayWord)+'</strong><span>'+E(B.nice(t.nextPay))+'</span></div></div><div class="c-guide-parts">'+parts.map(function(x){
           var over=x.left<-.004,fill=x.limit>0?Math.min(100,Math.round(x.available/x.limit*100)):0,
-              state=over?M(-x.left)+" over budget":x.left<.005?"Budget used":x.early>.004?M(x.early)+" used early":M(x.daily)+" per day",
+              state=over?M(-x.left)+" over budget":x.left<.005&&x.notThere>.004?"Not there yet":x.left<.005?"Budget used":x.early>.004?M(x.early)+" used early":M(x.daily)+" per day",
               symbol=/food|grocer/i.test(x.name)?"basket":/fuel|travel|petrol/i.test(x.name)?"fuel":"spark";
           return '<div class="'+(over||x.early>.004?"is-over":x.available>.004?"is-active":"")+'"><span class="c-guide-category"><span class="c-guide-icon">'+A.icon(symbol,21)+'</span><span class="c-guide-name">'+E(shortName(x.name))+'</span></span><b>'+M(x.available)+'</b><span class="c-guide-state">'+state+'</span><span class="c-guide-meter" aria-hidden="true"><i style="width:'+fill+'%"></i></span></div>';
         }).join('')+'</div><div class="c-guide-context">'+A.icon("info",14)+'<span>'+E(context)+'</span></div></button>';
