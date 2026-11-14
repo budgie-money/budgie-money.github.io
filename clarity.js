@@ -82,6 +82,8 @@
               spent: s.spent,
               left: c ? c.left : s.left,
               notThere: c ? c.notThere : 0,
+              carry: s.budget.mode === "remainder" ? 0 : Math.max(0, +s.carryIn || 0),
+              future: per.start > now(),
               mode: s.budget.mode,
               current: s.current,
             };
@@ -109,7 +111,7 @@
                 ' class="c-budget-row"><span><strong>' +
                 E(t.name.replace(/ \(what\x27s left\)/, "")) +
                 "</strong><small>" +
-                (t.notThere > 0.004 ? M(t.notThere) + " isn't there" : M(t.amount) + " budget") +
+                (t.notThere > 0.004 ? M(t.notThere) + " isn't there" : t.carry > 0.004 ? M(t.amount - t.carry) + " + " + M(t.carry) + (t.future ? " if unspent" : " carried") : M(t.amount) + " budget") +
                 '</small></span><span class="c-amount">' +
                 M(t.spent) +
                 '</span><span class="c-amount ' +
@@ -309,7 +311,7 @@
             "sync",
           );
         var days = Math.max(0, B.diff(now(), t.nextPay)),
-          paydayWord = days === 0 ? "Today" : days === 1 ? "Tomorrow" : days + " days",
+          paydayWord = t.period.noPayday ? "Not set" : days === 0 ? "Today" : days === 1 ? "Tomorrow" : days + " days",
           shortName = function (name) { return name.replace(/^Fun and spending$/i, "Fun").replace(/^Entertainment$/i,"Ents"); },
           active = parts.filter(function (x) { return x.available > 0.004; }),
           early = parts.filter(function(x){return x.early>.004;}),
@@ -386,9 +388,11 @@
           all = B.outgoings(d, p, per, now()).filter(function (r) {
             return ["bill", "transfer", "loan"].indexOf(r.kind) >= 0 && r.status !== "skipped";
           }),
+          fed = B.bankFed ? B.bankFed(d, p) : true,
           due = all
             .filter(function (r) {
-              return r.status !== "paid";
+              // (without a bank feed, a payment whose day has passed has gone out, as the balances already have it)
+              return r.status !== "paid" && (fed || r.kind === "loan" || !r.date || r.date >= now());
             })
             .reduce(function (n, r) {
               return n + Math.max(0, r.kind === "loan" ? r.left : r.pool ? r.amount - r.pool.actual : r.amount);
@@ -691,7 +695,9 @@
       };
       V.pots = function () {
         var d = db(),
-          balances = B.balances(d, now());
+          balances = B.balances(d, now()),
+          info = {};
+        B.pots(d, me(), now()).forEach(function (x) { info[x.id] = x; });
         return card(
           '<div class="list">' +
             B.accountsOf(d, me())
@@ -699,10 +705,13 @@
                 return /^(main|pot|saving)$/.test(a.kind);
               })
               .map(function (a) {
+                // (what it should be once To do is done, and a figure below nothing said as Budgie's count, not the bank's)
+                var x = info[a.id] || {}, bal = balances[a.id] || 0,
+                  sub = bal < -0.004 ? "Below £0 by Budgie's count" : Math.abs(x.pending || 0) > 0.004 ? "Should be " + M(x.should) + " after To do" : "";
                 return A.li(
                   E(a.name),
-                  "",
-                  A.num(M(balances[a.id] || 0)),
+                  E(sub),
+                  A.num(M(bal)),
                   "cPot",
                   a.id,
                 );

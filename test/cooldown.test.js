@@ -82,7 +82,7 @@ const get = (v, id) => v.items.find(x => x.id === id);
   Object.keys(fx).forEach(t => { const sh = env.sheets[t]; if (!sh) return; const head = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0]; fx[t].forEach(r => sh.appendRow(head.map(h => r[h] === undefined ? "" : r[h]))); });
   c.CACHE_ = {}; c.setup();
   const kE = env.props.KEY_ethan, kS = env.props.KEY_sophie;
-  ok(env.sheets.cooldown && c.SCHEMA_VERSION === 6, "cooldown tab made, schema 6");
+  ok(env.sheets.cooldown && c.SCHEMA_VERSION >= 6, "cooldown tab made, schema 6 or later");
   let r = call({key: kE, ops: [{op: "put", table: "cooldown", row: {id: "cd-ex1", person: "ethan", name: "Example lamp", price: 60, source: "e-fun", hype: 5, days: 7, date: "2026-11-02", status: "cooling", link: "https://example.com/lamp", why: "=1+1"}}]});
   eq([r.applied.length, r.rejected.length], [1, 0], "Ethan parks something");
   c.CACHE_ = {};

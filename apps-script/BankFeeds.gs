@@ -851,9 +851,13 @@ function bankApply_(p, data, windowFrom, payCarry) {
     // rows a payment could be the same as, by date, worked out once (a first import can be thousands of payments
     // against thousands of rows). Only ever your own rows: reading your bank never looks at, links or changes
     // anything your partner wrote, so nothing they log can tell them about your payments.
+    // (a payment you logged that's linked to a hold this read shows was dropped is free to link to the real charge)
+    var inRead = {}; (data.txns || []).forEach(function (t) { if (t && t.id) inRead[t.id] = true; });
+    var dropped = function (id) { var x = pending[id]; return !!x && !inRead[id] && !!x.date && !(windowFrom && x.date < windowFrom) && D.diff(x.date, today) > BANK_PENDING_DROP_DAYS_; };
+    var linked = function (r) { return r.bankId && !dropped(String(r.bankId)); };
     var candDays = {};
     rawTx.forEach(function (r, i) {
-      if (r.bankId || bankTrue_(r.deleted) || /^bk-/.test(String(r.id)) || r.person !== p) return;
+      if (linked(r) || bankTrue_(r.deleted) || /^bk-/.test(String(r.id)) || r.person !== p) return;
       var day = D.parseDate(r.date); if (!day) return;
       (candDays[day] = candDays[day] || []).push({r: r, i: i, pk: r.source === "peckish", a: +r.amount || 0});
     });
@@ -866,7 +870,7 @@ function bankApply_(p, data, windowFrom, payCarry) {
     var dupesOf = function (t, needName, pkOnly) {
       var out = [], words = bankMerchantKey_(t.name).split(" ").filter(function (w) { return w.length > 2; });
       for (var off = -3; off <= 3; off++) (candDays[D.addDays(t.date, off)] || []).forEach(function (c) {
-        var r = c.r, a = c.a, dd = Math.abs(off); if (r.bankId || (pkOnly && !c.pk)) return;
+        var r = c.r, a = c.a, dd = Math.abs(off); if (linked(r) || (pkOnly && !c.pk)) return;
         if (c.pk ? (dd > 3 || Math.abs(a - t.amount) > Math.max(5, t.amount * 0.15)) : (dd > 2 || !near(a, t.amount))) return;
         if (!c.noteWords) c.noteWords = bankMerchantKey_(r.note).split(" ");
         var nameHit = words.some(function (w) { return c.noteWords.indexOf(w) >= 0; });
@@ -1323,6 +1327,8 @@ function bankApply_(p, data, windowFrom, payCarry) {
     var loanDueFor = function (from, to, amt, date) {
       var hit = null;
       D.loans(db, p, date).forEach(function (l) { if (hit || l.lender !== to || l.borrower !== from) return; (l.plan || []).forEach(function (r) { if (!hit && !r.paid && Math.abs(D.diff(r.date, date)) <= 3 && (near(r.left, amt) || near(r.amount, amt))) hit = {l: l, r: r}; }); });
+      // (or part of one: no more than is left of a repayment due within two weeks before it, or up to five weeks after)
+      if (!hit) D.loans(db, p, date).forEach(function (l) { if (hit || l.lender !== to || l.borrower !== from) return; (l.plan || []).forEach(function (r) { var dd = D.diff(r.date, date); if (!hit && !r.paid && dd >= -14 && dd <= 35 && amt <= r.left + 0.0105) hit = {l: l, r: r}; }); });
       return hit;
     };
     // money in from your partner that's a regular payment between you (a rent share): already in the plan
@@ -1407,7 +1413,10 @@ function bankApply_(p, data, windowFrom, payCarry) {
       // a pending hold that went to nothing, or a payment refused or reversed: drop the row the bank added
       if (t.declined || t.reversed || (!t.amount && t.pending !== undefined && (t.pending || pending[t.id]))) {
         delete pending[t.id];
-        if (mine && (mine.bankId || /^bk-/.test(mine.id)) && !bankTrue_(mine.deleted) && (t.reversed || !t.amount || bankTrue_(mine.review))) update("transactions", mine.id, {deleted: true});
+        // (a payment you logged yourself that the hold was linked to is still yours: it's let go of the hold, to link to
+        // the real charge when it comes, and marked to check)
+        if (mine && !/^bk-/.test(mine.id) && mine.bankId && !bankTrue_(mine.deleted) && !t.reversed && !t.declined) update("transactions", mine.id, {bankId: "", review: true});
+        else if (mine && (mine.bankId || /^bk-/.test(mine.id)) && !bankTrue_(mine.deleted) && (t.reversed || !t.amount || bankTrue_(mine.review))) update("transactions", mine.id, {deleted: true});
         db.exceptions.forEach(function (x) { var it = db.byId[x.item] || {}; if (String(x.bankId || "") === String(t.id) && /-bank(paid|day)?-/.test(String(x.id)) && (it.person === p || it.from === p) && !activeOccurrence(x.item, x.date)) update("exceptions", x.id, {deleted: true}); });
         // Older releases did not save the bank reference. Migrate an unambiguous cancelled match only;
         // another live payment assigned to the occurrence always takes precedence.
@@ -1616,6 +1625,8 @@ function bankApply_(p, data, windowFrom, payCarry) {
       if (D.diff(x.date, today) <= BANK_PENDING_DROP_DAYS_) return;
       var row = byBank[id] || byIdRow["bk-" + provider + "-" + id];
       if (row && row.person === p && /^bk-/.test(row.id) && !bankTrue_(row.deleted)) { update("transactions", row.id, {deleted: true}); updates[updates.length - 1].pend = {id: id, x: x}; }
+      // (one you logged yourself is let go of the dropped hold instead, so it can link to the real charge)
+      else if (row && row.person === p && !used[row.id] && !bankTrue_(row.deleted) && String(row.bankId || "") === String(id)) { update("transactions", row.id, {bankId: "", review: true}); updates[updates.length - 1].pend = {id: id, x: x}; }
       delete pending[id];
     });
     Object.keys(pending).forEach(function (id) { if (!pending[id] || !pending[id].date || D.diff(pending[id].date, today) >= BANK_RECENT_DAYS_) delete pending[id]; });

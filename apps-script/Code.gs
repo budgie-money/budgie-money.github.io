@@ -24,7 +24,7 @@ var NO_URL_ = "Add a Script Property WEB_APP_URL (Project Settings > Script Prop
 var APP_URL = "https://budgie-money.github.io/";
 // 4: credit funding, daily saving transfers and move-confirmation batches. Raised whenever a table or column is added: the sheet gets it by itself (ensureSchema_)
 // 6: cooldown (things parked before buying)
-var SCHEMA_VERSION = 6;
+var SCHEMA_VERSION = 7;
 var COMMON = ["deleted", "updated", "by"];
 var SCHEMA = {
   people: ["id", "name", "bank", "potWord", "partner", "colour"],
@@ -33,7 +33,7 @@ var SCHEMA = {
   bills: ["id", "person", "name", "category", "amount", "account", "split", "variable", "setAside", "unit", "every", "on", "shift", "start", "end", "dates", "pool", "notes", "creditAccount", "toAccount", "dailyIncrease"],
   budgets: ["id", "person", "name", "amount", "mode", "account", "carry", "start", "end", "notes"],
   splits: ["id", "name", "shares", "notes"],
-  transfers: ["id", "from", "to", "name", "amount", "fromAccount", "toAccount", "purpose", "unit", "every", "on", "shift", "start", "end", "dates", "notes"],
+  transfers: ["id", "from", "to", "name", "amount", "fromAccount", "toAccount", "purpose", "unit", "every", "on", "shift", "start", "end", "dates", "notes", "towards"],
   transactions: ["id", "date", "person", "amount", "budget", "account", "split", "note", "source", "bankId", "review", "splitHint", "refundOf", "loanItem", "purchaseTotal", "iouShare", "planId", "billId", "billDate", "creditAccount"],
   moves: ["id", "date", "person", "from", "to", "amount", "key", "note", "review", "batch"],
   settlements: ["id", "date", "from", "to", "amount", "fromAccount", "toAccount", "loan", "key", "note", "bankId"],

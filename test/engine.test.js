@@ -531,7 +531,7 @@ const savedUp = (pl, id) => lineAmt(pl, l => l.setAside && l.bill === id && l.ki
   const bs = B.budgetState(c, me, per);
   eq("compat: budgetState(db, me, per)", ["amount", "spent", "left", "avail", "carryIn", "carryOut", "over"].every(k => k in bs["e-fun"]) && bs["e-fun"].period.start === per.start, true);
   eq("compat: still exported", ["load", "coming", "periodAt", "planFor", "budgetState", "today", "checks", "lisa", "yearly", "yearReview"].every(k => typeof B[k] === "function"), true);
-  eq("compat: version", B.VERSION, "1.7.6");
+  eq("compat: version", B.VERSION, "1.7.7");
 })();
 
 // C3: a payday move ticked in the app and by the bank feed counts once (the latest)
@@ -615,7 +615,7 @@ const savedUp = (pl, id) => lineAmt(pl, l => l.setAside && l.bill === id && l.ki
 passes++;
 
 // R1: money on screen is rounded the same way as the sums (halves away from zero)
-eq("R1: money shows halves rounded as the sums are", [B.money(10.075), B.money(1.005), B.money(2.675), B.money(-0.005), B.money(-0.004), B.money(1234567.891), B.money("x")], ["£10.08", "£1.01", "£2.68", "-£0.01", "£0.00", "£1,234,567.89", "£0.00"]);
+eq("R1: money shows halves rounded as the sums are", [B.money(10.075), B.money(1.005), B.money(2.675), B.money(-0.005), B.money(-0.004), B.money(1234567.891), B.money("x")], ["£10.08", "£1.01", "£2.68", "−£0.01", "£0.00", "£1,234,567.89", "£0.00"]);
 eq("R1: half of £20.15 shows as what's owed", B.money(B.shareOf(db(), "half", "sophie", 20.15, "ethan")), "£10.08");
 
 // L1: a loan paid back early (in one go, or partly) isn't planned to be paid (or to come in) again
@@ -1796,6 +1796,27 @@ const tickPay11 = (t, p, d) => { const L0 = B.load(t, d), per = B.periodAt(L0, p
   eq("daily guide has nothing to spend when the money isn't there", a.available, 0);
   eq("and each category's share adds up to it", a.parts.reduce((n, x) => n + x.cash, 0), 0);
   eq("the bigger bill later is warned about, not just the first one", B.todo(db, "sophie", D).some(x => x.type === "warn" && /^short:s-pb:/.test(x.key) && x.amount >= 190), true);
+}
+
+// 1.7.7: two bank pots brought into one Budgie pot add up
+{
+  const T = fixture(), d = "2026-11-17";
+  T.valuations.push({id: "bk-potA-" + d, account: "e-bills", date: d, amount: 100, updated: 1}, {id: "bk-potB-" + d, account: "e-bills", date: d, amount: 50, updated: 2});
+  eq("two bank pots in one account add up", B.balances(B.load(T, d), d)["e-bills"], 150);
+}
+// 1.7.7: a regular payment that isn't for shared bills doesn't count towards them
+{
+  const base = fixture(), d = "2027-01-10", net0 = B.between(B.load(base, d), "ethan", d).net;
+  const T = fixture(); T.transfers.push({id: "s-car", from: "sophie", to: "ethan", name: "Towards the car", amount: 100, fromAccount: "s-main", toAccount: "e-main", unit: "month", on: "2", start: "2026-11-01", towards: "none"});
+  eq("a payment not for shared bills leaves what's owed alone", B.between(B.load(T, d), "ethan", d).net, net0);
+}
+// 1.7.7: pay put in as dates with none after: the period rolls on to take in today and says there's no payday
+{
+  const T = fixture(); T.income = T.income.filter(i => !(i.person === "ethan" && /^(true)$/i.test(String(i.isPay)) || i.isPay === true && i.person === "ethan"));
+  T.income.push({id: "e-pay-dates", person: "ethan", name: "Pay", amount: 2000, account: "e-main", unit: "dates", dates: "2026-10-01,2026-11-01", isPay: true});
+  const per = B.periodAt(B.load(T, "2026-12-10"), "ethan", "2026-12-10");
+  eq("no next payday: the period takes in today", per.start <= "2026-12-10" && per.next > "2026-12-10", true);
+  eq("no next payday: it says so", !!per.noPayday, true);
 }
 
 console.log(fails ? fails + " failed, " + passes + " passed" : "All " + passes + " passed");
