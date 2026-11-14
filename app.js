@@ -73,12 +73,16 @@
     if (i >= 0) list[i] = Object.assign({}, list[i], row); else list.push(row);
   }
   function put(t, row, quiet) {
+    // (what this phone last had of the row, and which fields this edit changes: if the row changed elsewhere since, only
+    // those fields are written, so an old edit synced late never undoes a newer one or brings back a deleted row)
+    var keyF = t === "meta" ? "key" : "id", was = (tables()[t] || []).filter(function (r) { return r[keyF] === row[keyF]; })[0], changed = [];
+    if (was) Object.keys(row).forEach(function (k) { if (k !== "updated" && k !== "by" && JSON.stringify(row[k]) !== JSON.stringify(was[k])) changed.push(k); });
     row = Object.assign({}, row, {updated: Date.now(), by: me()});
     // a setting, or a change to one date, has an id made from what it is: making it again after it was taken off
     // (Undo, or in the sheet) brings it back, rather than leaving it off on the phone and in the sheet
     if ((t === "settings" || t === "exceptions") && row.deleted === undefined) row.deleted = false;
     upsert(t, row);
-    if (!demoOn()) { S.data.queue.push({op: "put", table: t, row: row}); persist(); syncSoon(); }
+    if (!demoOn()) { S.data.queue.push({op: "put", table: t, row: was ? Object.assign({}, row, {_base: +was.updated || 0, _changed: changed}) : row}); persist(); syncSoon(); }
     dirty(); if (!quiet) render();
     return row;
   }
@@ -1622,11 +1626,14 @@
     var sh = root.querySelector('[data-sh="mode"]');
     if (sh) { var fixed = sh.value === "fixed", bits = []; root.querySelectorAll("[data-sh]").forEach(function (el) { if (el.dataset.sh !== "mode" && el.value.trim()) bits.push(el.dataset.sh + (fixed ? "=" : ":") + el.value.trim().replace(/[£,]/g, "")); }); r.shares = bits.join(", "); }
     if (EDIT.table === "budgets" && r.carry !== undefined) r.carry = r.carry === true || r.carry === "true";
-    ["amount", "target", "extra", "limit", "cost", "repay", "price"].forEach(function (k) { if (r[k] !== undefined && r[k] !== "") r[k] = B.round(+String(r[k]).replace(/[£,\s]/g, "") || 0); });
+    // (a typo isn't saved as £0: it's kept as typed, and saving says so)
+    EDIT.badNum = "";
+    ["amount", "target", "extra", "limit", "cost", "repay", "price"].forEach(function (k) { if (r[k] !== undefined && r[k] !== "") { var n = +String(r[k]).replace(/[£,\s]/g, ""); if (!isFinite(n) || Math.abs(n) > 1e7) EDIT.badNum = k; else r[k] = B.round(n); } });
     return r;
   }
   function saveEditor() {
     var t = EDIT.table, r = readForm(), F = FORMS[t], now = todayIso();
+    if (EDIT.badNum) { toast("Check the amount: it isn't a number"); return; }
     if (!r.name && t !== "splits") { toast("Give it a name first"); return; }
     if (!EDIT.id) r.id = newId(t.slice(0, 3));
     // a pooled bill turned on or off, or a new day: from the bills month going now (on), or the next one that hasn't

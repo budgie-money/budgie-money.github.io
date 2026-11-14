@@ -453,8 +453,12 @@ function applyOne_(me, op, now, by, opts) {
   var bankRow = !sys && isBankRow_(t, existing);
   if (op.op === "delete") { if (!existing) return; if (op.ifBankId && String(existing.bankId || "") !== String(op.ifBankId)) return; row.deleted = true; }
   else {
+    // an edit made on a phone that hadn't seen a newer change to this row (it was offline, say): only the fields that edit
+    // changed are written, so it never puts back old values, or brings back a row taken off since (unless that's what it did)
+    var only = existing && !sys && Array.isArray(src._changed) && +src._base > 0 && +existing.updated > +src._base + 1 ? src._changed.map(String) : null;
     for (var k in src) {
-      if (k === "updated" || k === "by" || k === "_row") continue;
+      if (k === "updated" || k === "by" || k === "_row" || k === "_base" || k === "_changed") continue;
+      if (only && only.indexOf(k) < 0) continue;
       // a "__proto__" field (JSON.parse keeps it) would hand the row fields the rules below never look at
       if (!Object.prototype.hasOwnProperty.call(src, k) || k === "__proto__" || k === "constructor" || k === "prototype") continue;
       if (!sys && k === "bankId") continue;   // only the bank feed links a payment to the bank
@@ -471,6 +475,20 @@ function applyOne_(me, op, now, by, opts) {
       row[k] = src[k];
     }
     row.id = id;
+  }
+  // what a phone sends has to be money and dates Budgie can use: a typo (1e999, 12..50, 31 November) is refused, not
+  // saved as £0, infinity or the next month, and a planned amount is never below nothing
+  if (!sys && op.op !== "delete") {
+    ["amount", "target", "price", "repay", "balance"].forEach(function (k) {
+      if (src[k] === undefined || src[k] === "" || src[k] === null) return; var n = +src[k];
+      if (typeof src[k] === "boolean" || !isFinite(n) || Math.abs(n) > 1e7) throw refuse_("That amount isn't one Budgie can use");
+      if (n < 0 && /^(bills|budgets|income|transfers|loans|goals|cooldown|amounts)$/.test(t)) throw refuse_("That amount can't be below £0");
+    });
+    ["date", "start", "end", "repayFrom", "newDate", "dates"].forEach(function (k) {
+      if (typeof src[k] !== "string" || !src[k]) return;
+      var bad = src[k].split(",").some(function (d) { d = d.trim(); return !!d && /^\d{4}-\d{2}-\d{2}$/.test(d) && Budgie.parseDate(d) !== d; });
+      if (bad) throw refuse_("That date doesn't exist");
+    });
   }
   if (!sys && !app) { var will = writers_(t, row); if (will !== null && will.indexOf(me) < 0) throw cant(); }
   // (only when Peckish asks to take it off: sending its shop again, for one you took off in Budgie, leaves it as it is)
@@ -513,6 +531,9 @@ function applyOne_(me, op, now, by, opts) {
     var twin = tab.rows.filter(function (r) { return r.from === row.from && r.to === row.to && !r.loan && !toBoolCell_(r.deleted) && String(r.date) <= String(row.date); })
       .sort(function (x, y) { return String(x.date) < String(y.date) ? 1 : -1; })[0];
     if (twin && bt.partner === String(row.from) && !(bt.owedToMe > 0.004)) { row.deleted = true; row.note = "Same settling up as " + twin.id; }
+    // (one ticked the same day for more than is still owed, from a phone that hadn't seen the other: it's the same payment
+    // seen from the other side, so it's kept as a copy and what's still owed stays owed)
+    else if (twin && bt.partner === String(row.from) && String(twin.date) === String(row.date) && +row.amount > bt.owedToMe + 0.004) { row.deleted = true; row.note = "Same settling up as " + twin.id + " (more than was still owed)"; }
   }
   if (!existing && !sys && t === "settlements" && row.loan && /^loanreturn:/.test(String(row.key || "")) && !toBoolCell_(row.deleted)) {
     var returnDb = Budgie.load(allTables_(), String(row.date || "")), returnLoan = returnDb.byId[String(row.loan)];

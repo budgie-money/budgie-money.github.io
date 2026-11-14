@@ -2568,9 +2568,15 @@
       var c = price > 0 ? purchaseCheck(db, p, date, bud.id, price) : null;
       // (what's built up so far, not the whole pay period's budget: the same as the Daily guide and Can I buy this?)
       if (c) { var built = c.accrued ? c.accrued.available : c.budgetLeft; r.has = round(Math.max(0, Math.min(built, c.budgetLeft, c.cashAvailable))); r.afford = c.budgetFits && c.cashFits && !(c.accrued && c.accrued.usesFuture); }
-      else { var s = budgetState(db, p, periodAt(db, p, date))[bud.id]; r.has = s ? round(Math.max(0, s.left)) : 0; r.afford = price === 0 || !!s; }
+      else { var s = budgetState(db, p, periodAt(db, p, date))[bud.id]; r.has = s ? round(Math.max(0, s.left)) : 0; r.afford = price === 0 || (!!s && price <= r.has + 0.004); }
     } else if (acc && acc.owner === p && coolSavings(db, p).indexOf(acc) >= 0) {
-      r.kind = "saving"; r.sourceName = acc.name; r.has = round(balances(db, date)[acc.id] || 0); r.afford = r.has >= price - 0.004;
+      // (what's free in it: less the cover payday still has to take from it, what To do moves out of it, and its own
+      // payments before payday)
+      var perC = periodAt(db, p, date), out = 0, pdC = perC.pay ? payday(db, p, perC) : null;
+      if (pdC && pdC.cover && pdC.cover.from === acc.id) out += Math.max(0, pdC.cover.amount - ticked(db, p, pdC.cover.key || ""));
+      todo(db, p, date).forEach(function (it) { if (it.type === "move" && it.from === acc.id && !(pdC && pdC.cover && it.key === pdC.cover.key)) out += Math.max(0, +it.amount || 0); });
+      flows(db, date, addDays(perC.next, -1)).forEach(function (f) { if (f.account === acc.id && f.amount < 0) out -= f.amount; });
+      r.kind = "saving"; r.sourceName = acc.name; r.has = round(Math.max(0, (balances(db, date)[acc.id] || 0) - out)); r.afford = r.has >= price - 0.004;
       // what it does to the goals this account counts towards, and to the car goal whichever account it's from
       var gs = goals(db, p, date), car = coolCar(db, p, date);
       gs.forEach(function (g) { if (g.parts.some(function (x) { return x.account === acc.id; }) || (car && g.id === car.id)) {
