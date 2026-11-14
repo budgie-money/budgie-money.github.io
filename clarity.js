@@ -315,7 +315,11 @@
           shortName = function (name) { return name.replace(/^Fun and spending$/i, "Fun").replace(/^Entertainment$/i,"Ents"); },
           active = parts.filter(function (x) { return x.available > 0.004; }),
           early = parts.filter(function(x){return x.early>.004;}),
-          context = t.short > .004 ? M(t.short)+" short for what's due before payday"
+          bkS = S.bank || {}, bkH = bkS.provider && bkS.lastSync ? (Date.now() - (+bkS.lastSync || 0)) / 36e5 : 0,
+          context = bkS.provider && bkS.needsReconnect ? "Bank needs reconnecting, so these figures may be out of date"
+            : bkH > 24 ? "Bank last read " + (bkH < 48 ? "over a day" : Math.floor(bkH / 24) + " days") + " ago, so these figures may be out of date"
+            : t.status === "Pay on its way" ? "Pay is on its way: the guide catches up once your bank shows it"
+            : t.short > .004 ? M(t.short)+" short for what's due before payday"
             : bank.cashLimited ? "Available cash is limiting what you can spend"
             : t.fundingInMain > .004 ? "Includes budget money still in Main — sort payday to fund your pots"
             : early.length ? shortName(early[0].name)+" has used some future days’ allowance"
