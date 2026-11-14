@@ -1197,7 +1197,7 @@ const fails = [], check = (name, cond, extra) => { if (cond) console.log("ok", n
     check("and it doesn't come back", !(await page.$("#sheets .sheet")) || (await titleOf(page)) !== "Today");
     // from More
     await page.click('nav [data-v="more"]'); await page.waitForTimeout(80);
-    check("More has How Budgie works", /How Budgie works/.test(T(await page.textContent("main"))));
+    check("More has How it works", /How it works/.test(T(await page.textContent("main"))));
     await page.click('main [data-a="tour"]'); await page.waitForTimeout(80);
     check("which opens it again from the start", (await titleOf(page)) === "Today");
     await page.click('#sheets [data-a="tourskip"]'); await page.waitForTimeout(60);

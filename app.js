@@ -1,7 +1,7 @@
 /* Budgie app: screens, syncing and offline queue. The maths lives in engine.js. */
 (function () {
   "use strict";
-  var B = window.Budgie, TH = window.BudgieThemes, APP_VERSION = "1.7.8";
+  var B = window.Budgie, TH = window.BudgieThemes, APP_VERSION = "1.7.9";
   var $ = function (s) { return document.querySelector(s); };
   var esc = function (s) { return String(s === undefined || s === null ? "" : s).replace(/[&<>"']/g, function (c) { return {"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]; }); };
   // wiped: Budgie's copy at the old address has been wiped (it's moving across), so nothing is saved here again
@@ -720,7 +720,7 @@
     });
     var bills = lns.length ? " for shared bills and payments" : "", line = bt.owedToMe > 0.004 ? esc(qp.name) + " owes you " + M(bt.owedToMe) + bills : bt.iOwe > 0.004 ? "You owe " + esc(qp.name) + " " + M(bt.iOwe) + bills : lns.length ? "All square on shared bills and payments" : "You're all square";
     html += '<h2 class="h2">Between you two' + infoBtn("between") + "</h2>" + card('<div class="row"><span style="font-weight:800;font-size:18px">' + line + "</span></div>" + loanLines +
-      (mo && (mo.bills || mo.paidIn || mo.paidOut) ? '<div class="banner small">This month so far: shared bills ' + M(mo.bills) + ". " + (mo.theirShare ? esc(qp.name) + "'s share " + M(mo.theirShare) + ", paid " + M(mo.paidIn) + (mo.paidIn > mo.theirShare + 0.004 ? " (some sent ahead for next month)" : "") + ". " : "") + (mo.myShare ? "Your share " + M(mo.myShare) + ", paid " + M(mo.paidOut) + (mo.paidOut > mo.myShare + 0.004 ? " (some sent ahead for next month)" : "") + "." : "") + "</div>" : "") +
+      (mo && (mo.bills || mo.paidIn || mo.paidOut) ? '<div class="banner small">This month so far: shared bills ' + M(mo.bills) + ". " + (mo.theirShare ? esc(qp.name) + "'s share " + M(mo.theirShare) + ", paid " + M(mo.paidIn) + (mo.paidIn > mo.theirShare + 0.004 ? " (some for bills still to come)" : "") + ". " : "") + (mo.myShare ? "Your share " + M(mo.myShare) + ", paid " + M(mo.paidOut) + (mo.paidOut > mo.myShare + 0.004 ? " (some for bills still to come)" : "") + "." : "") + "</div>" : "") +
       (bt.owedToMe > 0.004 ? '<button type="button" class="btn ghost sm" style="margin-top:10px" data-a="settle" data-v="in">' + esc(shortName(qp.name)) + " has paid me</button>" : bt.iOwe > 0.004 ? '<button type="button" class="btn ghost sm" style="margin-top:10px" data-a="settle" data-v="out">I\'ve paid ' + esc(shortName(qp.name)) + "</button>" : ""));
     B.loans(d, p, now).forEach(function (l) { if (l.left > 0.004) html += loanCard(l, false); });
     var shared = d.bills.filter(function (b) { return b.split; });
@@ -741,7 +741,7 @@
   SCREENS.more = function () {
     var items = [["payday", "pay", "Payday", "Sort your pay into " + potWord(true)], ["pots", "pot", cap(potWord(true)), "What should be where"], ["bills", "cal", "Bills", "Calendar and subscriptions"], ["goals", "target", "Goals", "House, car, holidays"],
       ["lisa", "lisa", "LISA tracker", "Balance, bonus, allowance"], ["house", "house", "House", "Deposit and mortgage"], ["networth", "scale", "Net worth", "Own minus owe"], ["debts", "debt", "Debts and IOUs", "Who owes what"],
-      ["spare", "pot", "Saving rules", "Buffer and spare money"], ["insights", "spark", "Insights", "Trends and nudges"], ["gifts", "gift", "Gifts", "Christmas and birthdays"], ["settings", "gear", "Settings", "Bills, pay, budgets, themes"], ["tour", "info", "How Budgie works", "A quick tour"]];
+      ["spare", "pot", "Saving rules", "Buffer and spare money"], ["insights", "spark", "Insights", "Trends and nudges"], ["gifts", "gift", "Gifts", "Christmas and birthdays"], ["settings", "gear", "Settings", "Bills, pay, budgets, themes"], ["tour", "info", "How it works", "A quick tour"]];
     return '<div class="more">' + items.map(function (x) { return '<button type="button" data-a="' + (x[0] === "tour" ? "tour" : "go") + '" data-v="' + x[0] + '"><span class="ic">' + icon(x[1], 20) + '</span><span style="font-weight:700">' + esc(x[2]) + '</span><span class="tiny muted">' + esc(x[3]) + "</span></button>"; }).join("") + "</div>";
   };
 
@@ -2104,7 +2104,7 @@
     if (!it) return;
     if (it.type === "move" && (it.short || it.waiting || (B.balances(db(), todayIso())[it.from] || 0) < it.amount - 0.004)) { toast(it.waiting ? "Wait until your pay arrives" : "There isn't enough available to make this move yet"); render(); return; }
     var now = todayIso(), ids = [], batch = newId("batch");
-    if (it.type === "move") it.keys.forEach(function (k) { ids.push(put("moves", {id: newId("mv"), date: now, person: me(), from: it.from, to: it.to, amount: k.amount, key: k.key, batch: batch}, true).id); });
+    if (it.type === "move") it.keys.forEach(function (k) { ids.push(put("moves", {id: newId("mv"), date: now, person: me(), from: k.from || it.from, to: k.to || it.to, amount: k.amount, key: k.key, batch: batch}, true).id); });
     else if (it.type === "loan") ids.push(put("settlements", {id: newId("set"), date: now, from: it.borrower, to: it.lender, amount: it.amount, loan: it.loan, key: it.key}, true).id);
     else if (it.type === "settle") ids.push(put("settlements", {id: newId("set"), date: now, from: it.from, to: it.to, amount: it.amount, key: it.key, note: "Settled up"}, true).id);
     else if (it.type === "warn") ids.push(put("moves", {id: newId("mv"), date: now, person: me(), amount: 0, key: it.key, note: "dismissed"}, true).id);

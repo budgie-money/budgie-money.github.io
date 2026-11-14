@@ -63,7 +63,7 @@
       var future=!(per.pay&&!per.opening&&(B.diff(per.start,date)<=7||left));
       if(future){per=B.periodAt(d,p,B.today(d,p,date).nextPay);pd=B.payday(d,p,per);}
       var waiting=future||B.payPending(d,p,per,date),bal=B.balances(d,date),remain=0,done=0;
-      var html=card('<p class="small muted">'+E(waiting?'Next payday':'Pay received')+' · '+E(B.nice(per.start))+'</p><div class="trust-money">'+M(pd.pay?pd.pay.amount:0)+'</div><div class="trust-actions fit">'+btn('Refresh bank','go','bank')+(pd.pay&&pd.pay.occ?btn('Change pay amount','payedit',pd.pay.occ):'')+'</div>');
+      var html=card('<p class="small muted">'+E(waiting?'Next payday':B.payUnseen(d,p,per,date)?'Pay not seen yet':'Pay received')+' · '+E(B.nice(per.start))+'</p><div class="trust-money">'+M(pd.pay?pd.pay.amount:0)+'</div><div class="trust-actions fit">'+btn('Refresh bank','go','bank')+(pd.pay&&pd.pay.occ?btn('Change pay amount','payedit',pd.pay.occ):'')+'</div>');
       var rows=pd.moves.map(function(m,i){
         var key='pay:'+per.start+':'+m.to,paid=Math.min(m.amount,B.ticked(d,p,key)),rest=B.round(Math.max(0,m.amount-paid)),complete=rest<.005,acc=d.byId[m.to]||{},returned=d.payReturns&&d.payReturns[p+'|'+key],connected=acc.kind==='pot',partial=paid>.004&&!complete;
         remain=B.round(remain+rest);if(complete)done++;
