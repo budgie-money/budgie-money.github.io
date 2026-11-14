@@ -33,7 +33,7 @@ ok(await p.evaluate(()=>{const n=x=>+x.textContent.replace(/[£,]/g,'');return M
 await p.locator('[data-a="herosheet"]').click();ok(/£5.00 over budget/.test(await p.locator('#sheets').innerText()),'breakdown retains an overspend instead of clamping it to zero');await go('today');
 await send(scenarioRows.map(x=>({op:'put',table:x.table,row:{...x.row,amount:0}})));await go('today');
 ok(await p.evaluate(()=>Budgie.dailyAllowances(BudgieApp.db(),'ethan','2026-11-02').builtUp>0),'cash cap example has genuinely accumulated allowance');
-ok(/Available cash is limiting/.test(await p.locator('.c-guide-context').innerText()),'cash cap is distinguished from remaining budget');
+ok(/Available cash is limiting|short for what.s due before payday/.test(await p.locator('.c-guide-context').innerText()),'cash cap is distinguished from remaining budget');
 const pennyRows=await p.evaluate(()=>{const d=BudgieApp.db(),t=Budgie.today(d,'ethan','2026-11-02');return d.transactions.filter(x=>/^guide-state-/.test(x.id)).map(x=>{const tile=t.tiles.find(y=>y.id===x.budget);return {op:'put',table:'transactions',row:{...x,amount:Budgie.round(x.amount+tile.left-1)}};});});
 await send(pennyRows.concat(scenarioRows.filter(x=>x.table==='valuations').map(x=>({op:'put',...x})),[{op:'put',table:'budgets',row:{id:'guide-empty-budget',person:'ethan',name:'Empty example',mode:'daily',amount:0,account:'e-main'}}]));await go('today');
 ok(await p.evaluate(()=>{const rows=[...document.querySelectorAll('.c-guide-parts>div')],r=rows.find(x=>/Empty example/.test(x.textContent));return !!r&&r.querySelector('b').textContent==='£0.00';}),'rounding never gives an exhausted category a daily contribution');

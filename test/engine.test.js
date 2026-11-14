@@ -531,7 +531,7 @@ const savedUp = (pl, id) => lineAmt(pl, l => l.setAside && l.bill === id && l.ki
   const bs = B.budgetState(c, me, per);
   eq("compat: budgetState(db, me, per)", ["amount", "spent", "left", "avail", "carryIn", "carryOut", "over"].every(k => k in bs["e-fun"]) && bs["e-fun"].period.start === per.start, true);
   eq("compat: still exported", ["load", "coming", "periodAt", "planFor", "budgetState", "today", "checks", "lisa", "yearly", "yearReview"].every(k => typeof B[k] === "function"), true);
-  eq("compat: version", B.VERSION, "1.7.5");
+  eq("compat: version", B.VERSION, "1.7.6");
 })();
 
 // C3: a payday move ticked in the app and by the bank feed counts once (the latest)
@@ -1760,6 +1760,42 @@ const tickPay11 = (t, p, d) => { const L0 = B.load(t, d), per = B.periodAt(L0, p
   near("payday move made in two parts isn't counted again as next month's leftover", nx(sp), nx(db(t => t.moves.push({id: "bk-s0", person: "ethan", from: "e-main", to: "e-bills", amount: plainAmt, date: "2026-10-29", key: "pay:2026-10-29:e-bills"}))));
   const sp2 = db(t => { t.moves.push({id: "bk-s1", person: "ethan", from: "e-main", to: "e-bills", amount: 200, date: "2026-10-31", key: "bank:s1"}); });
   near("payday move part made: only the rest is asked for", (B.todo(sp2, "ethan", "2026-11-04").filter(x => x.key === "pay:2026-10-29:e-bills")[0] || {}).amount, plainAmt - 200);
+}
+
+// 1.7.6: a To do move ticked after the bank read, between two accounts the bank read that day, isn't added on top
+// (it was done in the bank a different way, through the main account), so neither pot goes below what the bank says
+{
+  const T = fixture(), d = "2026-11-14";
+  T.accounts.push({id: "e-hold", owner: "ethan", name: "Holding pot", kind: "pot", order: 6});
+  T.valuations.push({id: "bk-a-" + d, account: "e-hold", date: d, amount: 150, updated: 1000}, {id: "bk-b-" + d, account: "e-bills", date: d, amount: 1611.91, updated: 1000}, {id: "bk-c-" + d, account: "e-main", date: d, amount: 181.88, updated: 1000});
+  T.moves.push({id: "bk-1", date: d, person: "ethan", from: "e-hold", to: "e-main", amount: 939.26, key: "bank:1", updated: 900}, {id: "bk-2", date: d, person: "ethan", from: "e-main", to: "e-bills", amount: 1050, key: "bank:2", updated: 900});
+  T.moves.push({id: "tick", date: d, person: "ethan", from: "e-hold", to: "e-bills", amount: 880, key: "hold:e-bills:2026-11-15", updated: 2000});
+  const bal = B.balances(B.load(T, d), d);
+  eq("ticked move after the bank read: holding pot stays the bank's", bal["e-hold"], 150);
+  eq("ticked move after the bank read: bills pot stays the bank's", bal["e-bills"], 1611.91);
+  // the same tick into an account the bank doesn't read still counts
+  T.moves.push({id: "tick2", date: d, person: "ethan", from: "e-main", to: "e-lisa", amount: 50, key: "x:1", updated: 2000});
+  eq("a move into an account the bank doesn't read still counts", B.balances(B.load(T, d), d)["e-main"], 131.88);
+}
+// 1.7.6: what's left to spend is never more than the money really there. Planned money that didn't come (or went
+// elsewhere) and a bills pot that's short before payday come off it, and the person is told they're short
+{
+  const T = fixture(), D = "2026-11-14";
+  T.accounts.push({id: "s-pb", owner: "sophie", name: "Personal bills Space", kind: "pot", order: 3});
+  T.bills.push({id: "s-jab", person: "sophie", name: "Injection", amount: 190, account: "s-pb", unit: "month", on: "25", start: "2026-11-01"});
+  T.valuations = T.valuations.filter(v => !/^s-/.test(v.account));
+  T.income.push({id: "s-gift", person: "sophie", name: "Gift", amount: 700, account: "s-main", unit: "dates", dates: "2026-10-28"});
+  T.valuations.push({id: "vs1", account: "s-main", date: "2026-11-01", amount: 900}, {id: "vs2", account: "s-pb", date: "2026-11-01", amount: 0}, {id: "vs3", account: "s-rent", date: "2026-11-01", amount: 640});
+  T.valuations.push({id: "bk-vs4", account: "s-main", date: D, amount: 3.97}, {id: "bk-vs5", account: "s-pb", date: D, amount: 0});
+  T.transactions.push({id: "x2", person: "sophie", account: "s-main", date: "2026-11-06", amount: 25, budget: "s-fun", note: "Cinema"});
+  const db = B.load(T, D), t = B.today(db, "sophie", D), a = B.dailyAllowances(db, "sophie", D, t);
+  eq("short for bills before payday: nothing is spare", t.cashFree, 0);
+  eq("short for bills before payday: status says so", t.status, "Short");
+  eq("short for bills before payday: the injection pot's shortfall is in it", t.short >= 190, true);
+  eq("no budget shows more left than is there", t.tiles.every(x => x.day === null || x.left <= t.cashFree + 0.01), true);
+  eq("daily guide has nothing to spend when the money isn't there", a.available, 0);
+  eq("and each category's share adds up to it", a.parts.reduce((n, x) => n + x.cash, 0), 0);
+  eq("the bigger bill later is warned about, not just the first one", B.todo(db, "sophie", D).some(x => x.type === "warn" && /^short:s-pb:/.test(x.key) && x.amount >= 190), true);
 }
 
 console.log(fails ? fails + " failed, " + passes + " passed" : "All " + passes + " passed");

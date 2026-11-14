@@ -1,7 +1,7 @@
 /* Budgie app: screens, syncing and offline queue. The maths lives in engine.js. */
 (function () {
   "use strict";
-  var B = window.Budgie, TH = window.BudgieThemes, APP_VERSION = "1.7.5";
+  var B = window.Budgie, TH = window.BudgieThemes, APP_VERSION = "1.7.6";
   var $ = function (s) { return document.querySelector(s); };
   var esc = function (s) { return String(s === undefined || s === null ? "" : s).replace(/[&<>"']/g, function (c) { return {"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]; }); };
   // wiped: Budgie's copy at the old address has been wiped (it's moving across), so nothing is saved here again
@@ -440,6 +440,8 @@
         var name = esc(x.name.replace(/ \(what's left\)/, "")), v, sub;
         if (x.mode === "weekly") { v = M(x.weekLeft) + "<small> left</small>"; sub = "This week · " + M(Math.max(0, x.left)) + " left this month"; }
         else if (x.day !== null) { v = M(x.day) + "<small> a day</small>"; sub = M(Math.max(0, x.left)) + " left of " + M(x.amount); }
+        // (a budget's money that isn't really there, because something before payday needs it, is said as that)
+        if (x.notThere > 0.004) sub = M(Math.max(0, x.left)) + " left · " + M(x.notThere) + " isn't there";
         else { v = M(Math.max(0, x.left)) + "<small> left</small>"; sub = "For one-offs this month"; }
         var pace = x.over > 0.004 ? '<span class="bad">' + M(x.over) + " over</span>" : x.pace < -0.5 ? '<span class="warn">' + M(-x.pace) + " over pace</span>" : x.mode === "oneoff" ? "" : '<span class="good">' + (x.pace > 0.5 ? M(x.pace) + " under pace" : "On pace") + "</span>";
         html += '<button type="button" class="tile" data-a="go" data-v="money" style="text-align:left;color:var(--ink)"><div class="n">' + name + '</div><div class="v">' + v + "</div>" + bar(x.pct, x.mode === "oneoff" ? null : x.paceMark, "var(--k-spend)") + '<div class="small" style="margin-top:6px">' + sub + '</div><div class="tiny hide-easy" style="font-weight:600">' + pace + "</div></button>";

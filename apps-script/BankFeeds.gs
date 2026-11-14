@@ -962,7 +962,7 @@ function bankApply_(p, data, windowFrom, payCarry) {
     // main account, the payday cover): to the same place, the same amount to the penny, within the last week. It takes
     // that move's key (one row for each part it ticks), so To do counts it as done rather than asking for it again; and
     // one you'd already ticked in your app (within 3 days) isn't added a second time
-    var TODO_KEY_ = /^(back|cover|fill|lent|late|refund|goal|sweep|net):|^pay:\d{4}-\d{2}-\d{2}:cover$/, openTodo = null, todoTaken = {}, appTaken = {};
+    var TODO_KEY_ = /^(back|cover|fill|hold|lent|late|refund|goal|sweep|net):|^pay:\d{4}-\d{2}-\d{2}:cover$/, openTodo = null, todoTaken = {}, appTaken = {};
     var todoMatch = function (from, to, amount, date) {
       if (D.diff(date, today) > 7) return null;
       // (looking at it as if no pot move had been made at the bank yet, so one saved under the bank's own key is found too)
@@ -1008,7 +1008,8 @@ function bankApply_(p, data, windowFrom, payCarry) {
       if (!from || !to) return null;
       db.transfers.forEach(function (tr) {
         if (hit || tr.from !== from || tr.to !== to) return;
-        D.occurrences(db, tr, D.addDays(date, -35), D.addDays(date, -2)).forEach(function (o) {
+        // (or paid early: up to two weeks before it's due, the same amount, is that payment too)
+          D.occurrences(db, tr, D.addDays(date, -35), D.addDays(date, 15)).forEach(function (o) {
           if (hit || o.skipped || usedOcc[o.key] || !near(o.amount, amt)) return;
           var paid = (db.byItem.exceptions[tr.id] || []).some(function (x) { return x.date === o.orig && /paid/i.test(String(x.action || "")) && !bankTrue_(x.deleted); });
           if (!paid) hit = {item: tr, occ: o};
