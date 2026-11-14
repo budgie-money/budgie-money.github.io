@@ -955,6 +955,10 @@
         // and what it really put into a pot that would have run short before a payment (a ticked move to fill it), or
         // back into a pot for your partner's share of something it paid, until you settled up
         db.moves.forEach(function (m) { if (!m.dup && m.person === p && m.from === fb && /^(fill|lent):/.test(m.key || "") && m.date >= pvT.start && m.date < pvT.next) top += +m.amount || 0; });
+        // (or made in the bank another way, through the main account say: what the bank moved out of it that period, less
+        // what went back in, the same as a ticked move)
+        var bnk = 0; db.moves.forEach(function (m) { if (m.dup || m.person !== p || !/^bank:/.test(m.key || "") || m.date < pvT.start || m.date >= pvT.next) return; if (m.from === fb) bnk += +m.amount || 0; if (m.to === fb) bnk -= +m.amount || 0; });
+        if (bnk > 0.004) top += bnk;
         // and what last payday's move into it came up short of (or over), once it was ticked: spending from before then
         // logged after it was moved (its cover is asked for, but that payday's top-up was already done), say
         var tk = pvT.pay && !pvT.opening ? db.moveKeysBy[p + "|pay:" + pvT.start + ":" + fb] || 0 : 0;
@@ -1011,6 +1015,8 @@
           // purchase was on that snapshot's day. A balance is not evidence it was repaid.
           // Don't invent fallback cash for an overspend that Main already funds.
           if(g.kind==="over"&&g.to===main&&!ticked(db,p,g.key)&&!(g.bank>0)&&(bal[main]||0)>=0)return;
+          // (and with Main under, only what puts it back to nothing, as far as the pot that covers it has it)
+          if(g.kind==="over"&&g.to===main&&!ticked(db,p,g.key)&&!(g.bank>0))left=round(Math.min(left,Math.max(0,-(bal[main]||0)),Math.max(0,bal[g.from]||0)));
           if(left>0.004)pendMove(g.from,g.to,left,from);
         });
         // money sent straight to a goal that isn't moved yet is as good as moved: it isn't counted again as left over
