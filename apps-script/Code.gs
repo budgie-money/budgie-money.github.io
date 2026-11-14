@@ -509,7 +509,7 @@ function applyOne_(me, op, now, by, opts) {
   // the bank feed): when To do no longer asks for anything under its key, it's kept but marked as a copy, as for a
   // payday move, so neither the balances nor To do change. (A key To do still asks for, say more to move back after
   // another shop, is a new tick.)
-  if (!existing && !sys && t === "moves" && /^(back|cover|fill|hold|lent|late|refund|goal):/.test(String(row.key || "")) && !toBoolCell_(row.deleted) && Budgie.isIso(String(row.date || ""))) {
+  if (!existing && !sys && t === "moves" && /^(back|cover|fill|fund|hold|lent|late|refund|goal):/.test(String(row.key || "")) && !toBoolCell_(row.deleted) && Budgie.isIso(String(row.date || ""))) {
     var before = tab.rows.filter(function (r) { return String(r.key) === String(row.key) && r.person === row.person && !toBoolCell_(r.deleted); })[0];
     if (before) {
       var mdb = Budgie.load(allTables_(), String(row.date));
@@ -899,7 +899,7 @@ function partnerSummary_(tables, partner, today) {
   var key = "sum:" + Budgie.VERSION + ":" + partner + ":" + today + ":" + latest, cache = null;
   try { cache = typeof CacheService !== "undefined" ? CacheService.getScriptCache() : null; var hit = cache && cache.get(key); if (hit) return JSON.parse(hit); } catch (x) { cache = null; }
   var summary;
-  try { summary = Budgie.summary(Budgie.load(tables, today), partner, today); } catch (x) { return {error: String(x)}; }
+  try { summary = Budgie.summary(Budgie.load(tables, today), partner, today); summary.asOf = today; } catch (x) { return {error: String(x)}; }
   try { if (cache) cache.put(key, JSON.stringify(summary), 21600); } catch (x) {}
   return summary;
 }

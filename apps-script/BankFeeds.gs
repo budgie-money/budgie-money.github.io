@@ -974,7 +974,7 @@ function bankApply_(p, data, windowFrom, payCarry) {
     // main account, the payday cover): to the same place, the same amount to the penny, within the last week. It takes
     // that move's key (one row for each part it ticks), so To do counts it as done rather than asking for it again; and
     // one you'd already ticked in your app (within 3 days) isn't added a second time
-    var TODO_KEY_ = /^(back|cover|fill|hold|lent|late|refund|goal|sweep|net):|^pay:\d{4}-\d{2}-\d{2}:cover$/, openTodo = null, todoTaken = {}, appTaken = {};
+    var TODO_KEY_ = /^(back|cover|fill|fund|hold|lent|late|refund|goal|sweep|net):|^pay:\d{4}-\d{2}-\d{2}:cover$/, openTodo = null, todoTaken = {}, appTaken = {};
     var todoMatch = function (from, to, amount, date) {
       if (D.diff(date, today) > 7) return null;
       // (looking at it as if no pot move had been made at the bank yet, so one saved under the bank's own key is found too)

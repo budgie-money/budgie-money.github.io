@@ -131,7 +131,7 @@
       ACT.herosheet = function () {
         var t=B.today(db(),me(),now()),bank=B.dailyAllowances(db(),me(),now(),t);
         A.openSheet('<h2>Daily guide</h2><p class="small muted">Day '+bank.elapsed+' of '+bank.days+' · '+M(bank.daily)+' daily allowance</p><div class="c-guide-sheet list">'+bank.parts.map(function(x){
-          return '<div class="c-allowance-detail">'+A.li(E(x.name),M(x.daily)+' per day',A.num(M(x.available)))+'<p class="small muted">'+(x.carry?M(x.carry)+' carried + ':'')+M(x.earned)+' built up − '+M(x.spent)+' spent</p>'+(x.early>.004?'<p class="small warn">'+M(x.early)+' used from future days. This category builds back up before more becomes available.</p>':'')+'<p class="small muted">'+(x.left<-.004?M(-x.left)+' over budget':M(x.left)+' left in the full pay-period budget')+'</p></div>';
+          return '<div class="c-allowance-detail">'+A.li(E(x.name),M(x.daily)+' per day',A.num(M(x.available)))+'<p class="small muted">'+(x.carry?M(x.carry)+' carried + ':'')+M(x.earned)+' built up − '+M(x.spent)+' spent</p>'+(x.early>.004?'<p class="small warn">'+M(x.early)+' used from future days.'+(x.left>.004&&x.days<x.limitDays?' This category builds back up before more becomes available.':'')+'</p>':'')+'<p class="small muted">'+(x.left<-.004?M(-x.left)+' over budget':x.notThere>.004?M(Math.max(0,x.usable))+' left · '+M(x.notThere)+" isn't there":M(x.left)+' left in the full pay-period budget')+'</p></div>';
         }).join('')+'</div>'+(bank.cashLimited?'<p class="small warn">'+M(bank.builtUp)+' has built up in your allowances; available cash limits spending to '+M(bank.available)+'.</p>':'')+'<p class="small muted">Unused allowance builds up each day. Spending reduces only its own category. These are budget allowances, separate from your bank-pot balances. Your existing payday rollover settings still apply.</p>'+button('Got it','sheetclose',undefined,'wide'));
       };
       function feasibleActions(t) {
@@ -327,14 +327,15 @@
               symbol=/food|grocer/i.test(x.name)?"basket":/fuel|travel|petrol/i.test(x.name)?"fuel":"spark";
           return '<div class="'+(over||x.early>.004?"is-over":x.cash>.004?"is-active":"")+'"><span class="c-guide-category"><span class="c-guide-icon">'+A.icon(symbol,21)+'</span><span class="c-guide-name">'+E(shortName(x.name))+'</span></span><b>'+M(x.cash)+'</b><span class="c-guide-state">'+state+'</span><span class="c-guide-meter" aria-hidden="true"><i style="width:'+fill+'%"></i></span></div>';
         }).join('')+'</div><div class="c-guide-context">'+A.icon("info",14)+'<span>'+E(context)+'</span></div></button>';
+        // (one shortfall figure at a time: when the hero already says how short you are, the plan's own gap is on Payday)
         if (t.plan.shortfall > 0.004)
-          html += A.li(
+          html += card('<div class="list">' + A.li(
             "Budget needs attention",
-            M(t.plan.shortfall) + " more planned than available",
+            t.short > 0.004 ? "Open Payday to see where the plan falls short" : M(t.plan.shortfall) + " more planned than available",
             "",
             "go",
             "payday",
-          );
+          ) + "</div>");
         html += actionsCard(t);
         html += '<section id="c-budget">' + card(
           '<div class="row"><h2>Your budget</h2><span class="tiny muted">to ' +
@@ -707,7 +708,7 @@
               .map(function (a) {
                 // (what it should be once To do is done, and a figure below nothing said as Budgie's count, not the bank's)
                 var x = info[a.id] || {}, bal = balances[a.id] || 0,
-                  sub = bal < -0.004 ? "Below £0 by Budgie's count" : Math.abs(x.pending || 0) > 0.004 ? "Should be " + M(x.should) + " after To do" : "";
+                  sub = (bal < -0.004 ? "Below £0 by Budgie's count" : "") + (Math.abs(x.pending || 0) > 0.004 ? (bal < -0.004 ? " · " : "Should be ") + M(x.should) + " after To do" : "");
                 return A.li(
                   E(a.name),
                   E(sub),
@@ -1113,7 +1114,8 @@
           box = document.createElement("div");
         box.innerHTML = oldPartner();
         if (box.firstElementChild) box.firstElementChild.remove();
-        var next = sm.nextPay ? 'Next payday · ' + B.nice(sm.nextPay) : "";
+        // (figures worked out on another day, the last time this phone synced, say so)
+        var next = (sm.nextPay ? 'Next payday · ' + B.nice(sm.nextPay) : "") + (sm.asOf && sm.asOf !== now() ? (sm.nextPay ? " · " : "") + "As of " + B.nice(sm.asOf) : "");
         var overview = '<section id="c-partner"><div class="card"><div class="row"><h2>' + E(A.person(q).name) + '</h2></div><p class="small muted">' + E(next) + '</p><div class="list c-partner-overview">';
         overview += sm.mainBalance ? A.li("Current account", "Last balance · " + E(B.nice(sm.mainBalance.date)), A.num(M(sm.mainBalance.amount))) : A.li("Current account", "Bank balance isn’t shared", "");
         if(sm.accumulated) overview+=A.li("Built up to spend",M(sm.accumulated.daily)+" daily allowance"+(sm.accumulated.cashLimited?" · cash limited":""),A.num(M(sm.accumulated.available)));

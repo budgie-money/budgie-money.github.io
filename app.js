@@ -1,7 +1,7 @@
 /* Budgie app: screens, syncing and offline queue. The maths lives in engine.js. */
 (function () {
   "use strict";
-  var B = window.Budgie, TH = window.BudgieThemes, APP_VERSION = "1.7.7";
+  var B = window.Budgie, TH = window.BudgieThemes, APP_VERSION = "1.7.8";
   var $ = function (s) { return document.querySelector(s); };
   var esc = function (s) { return String(s === undefined || s === null ? "" : s).replace(/[&<>"']/g, function (c) { return {"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]; }); };
   // wiped: Budgie's copy at the old address has been wiped (it's moving across), so nothing is saved here again
@@ -720,7 +720,7 @@
     });
     var bills = lns.length ? " for shared bills and payments" : "", line = bt.owedToMe > 0.004 ? esc(qp.name) + " owes you " + M(bt.owedToMe) + bills : bt.iOwe > 0.004 ? "You owe " + esc(qp.name) + " " + M(bt.iOwe) + bills : lns.length ? "All square on shared bills and payments" : "You're all square";
     html += '<h2 class="h2">Between you two' + infoBtn("between") + "</h2>" + card('<div class="row"><span style="font-weight:800;font-size:18px">' + line + "</span></div>" + loanLines +
-      (mo && (mo.bills || mo.paidIn || mo.paidOut) ? '<div class="banner small">This month so far: shared bills ' + M(mo.bills) + ". " + (mo.theirShare ? esc(qp.name) + "'s share " + M(mo.theirShare) + ", paid " + M(mo.paidIn) + ". " : "") + (mo.myShare ? "Your share " + M(mo.myShare) + ", paid " + M(mo.paidOut) + "." : "") + "</div>" : "") +
+      (mo && (mo.bills || mo.paidIn || mo.paidOut) ? '<div class="banner small">This month so far: shared bills ' + M(mo.bills) + ". " + (mo.theirShare ? esc(qp.name) + "'s share " + M(mo.theirShare) + ", paid " + M(mo.paidIn) + (mo.paidIn > mo.theirShare + 0.004 ? " (some sent ahead for next month)" : "") + ". " : "") + (mo.myShare ? "Your share " + M(mo.myShare) + ", paid " + M(mo.paidOut) + (mo.paidOut > mo.myShare + 0.004 ? " (some sent ahead for next month)" : "") + "." : "") + "</div>" : "") +
       (bt.owedToMe > 0.004 ? '<button type="button" class="btn ghost sm" style="margin-top:10px" data-a="settle" data-v="in">' + esc(shortName(qp.name)) + " has paid me</button>" : bt.iOwe > 0.004 ? '<button type="button" class="btn ghost sm" style="margin-top:10px" data-a="settle" data-v="out">I\'ve paid ' + esc(shortName(qp.name)) + "</button>" : ""));
     B.loans(d, p, now).forEach(function (l) { if (l.left > 0.004) html += loanCard(l, false); });
     var shared = d.bills.filter(function (b) { return b.split; });
@@ -1182,7 +1182,7 @@
     var n = B.noSpend(d, p, now); if (!n.days) return "";
     var togo = Math.max(0, B.diff(n.from, B.periodAt(d, p, now).next) - n.days), L = n.longest, marks = n.list.map(function (x) { return x.spent ? "<i></i>" : '<i class="on"></i>'; }).join("");
     for (var i = 0; i < togo; i++) marks += '<i class="to"></i>';
-    var line = "This month" + (L.days ? " · longest run " + L.days + " day" + (L.days === 1 ? "" : "s") + ", " + dayRange(L.from, L.to) : "");
+    var line = "This month" + (L.days ? " · longest run since you started " + L.days + " day" + (L.days === 1 ? "" : "s") + ", " + dayRange(L.from, L.to) : "");
     return card(khead("spend", "No-spend days", num(String(n.count))) + '<div class="days k-spend" aria-hidden="true">' + marks + '</div><p class="small muted" style="margin:8px 0 0">' + esc(line) + "</p>");
   }
   // what's saved out of new money in, month by month (the month still going is the lighter bar)
