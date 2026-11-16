@@ -1,7 +1,7 @@
 /* Budgie app: screens, syncing and offline queue. The maths lives in engine.js. */
 (function () {
   "use strict";
-  var B = window.Budgie, TH = window.BudgieThemes, APP_VERSION = "1.7.9";
+  var B = window.Budgie, TH = window.BudgieThemes, APP_VERSION = "1.7.10";
   var $ = function (s) { return document.querySelector(s); };
   var esc = function (s) { return String(s === undefined || s === null ? "" : s).replace(/[&<>"']/g, function (c) { return {"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]; }); };
   // wiped: Budgie's copy at the old address has been wiped (it's moving across), so nothing is saved here again
@@ -897,6 +897,7 @@
     var b = m.bill, payer = b.person === me(), qn = shortName(person(payer ? m.partner : b.person).name);
     if (!m.partner) return m.left < -0.004 ? M(-m.left) + " over" : M(m.left) + " left";
     if (m.back > 0.004) return M(m.back) + " back to " + (payer ? esc(qn) : "you");
+    if (m.bill.leftover === "keep" && m.left > 0.004) return M(m.left) + " left, stays in the pot";
     if (m.owes > 0.004) return payer ? esc(qn) + " pays " + M(m.owes) + " more" : "you pay " + M(m.owes) + " more";
     return "spot on";
   }
@@ -1577,6 +1578,8 @@
         for (var di = 1; di <= 28; di++) dopts += '<option value="' + di + '"' + (pday === di ? " selected" : "") + ">The " + ordinal(di) + "</option>";
         return '<label class="check"><input type="checkbox" data-f="poolOn"' + (pon ? " checked" : "") + ">It's an estimate: the real bills count against it</label>" +
           (pon ? '<label class="f">Bills months start on<select data-f="poolDay">' + dopts + "</select></label>" : "") +
+          // (shared: what's left of a month goes back between you, or stays in the pot, for a holiday say)
+          (pon && r.split ? '<label class="f">What\'s left each month<select data-f="leftover"><option value=""' + (r.leftover === "keep" ? "" : " selected") + '>Shared back between you</option><option value="keep"' + (r.leftover === "keep" ? " selected" : "") + ">Stays in the pot</option></select></label>" : "") +
           (pend ? '<p class="small muted" style="margin:6px 0 0">' + (pend.off ? "Stops" : "Changes") + " from " + esc(B.nice(pend.from)) + ".</p>" : "");
       case "setaside":
         // only for bills that come round once a year or every few months

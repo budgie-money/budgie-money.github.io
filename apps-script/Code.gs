@@ -24,13 +24,13 @@ var NO_URL_ = "Add a Script Property WEB_APP_URL (Project Settings > Script Prop
 var APP_URL = "https://budgie-money.github.io/";
 // 4: credit funding, daily saving transfers and move-confirmation batches. Raised whenever a table or column is added: the sheet gets it by itself (ensureSchema_)
 // 6: cooldown (things parked before buying)
-var SCHEMA_VERSION = 7;
+var SCHEMA_VERSION = 8;
 var COMMON = ["deleted", "updated", "by"];
 var SCHEMA = {
   people: ["id", "name", "bank", "potWord", "partner", "colour"],
   accounts: ["id", "owner", "name", "kind", "purpose", "fallback", "order"],
   income: ["id", "person", "name", "amount", "account", "isPay", "unit", "every", "on", "shift", "start", "end", "dates", "notes"],
-  bills: ["id", "person", "name", "category", "amount", "account", "split", "variable", "setAside", "unit", "every", "on", "shift", "start", "end", "dates", "pool", "notes", "creditAccount", "toAccount", "dailyIncrease"],
+  bills: ["id", "person", "name", "category", "amount", "account", "split", "variable", "setAside", "unit", "every", "on", "shift", "start", "end", "dates", "pool", "notes", "creditAccount", "toAccount", "dailyIncrease", "leftover"],
   budgets: ["id", "person", "name", "amount", "mode", "account", "carry", "start", "end", "notes"],
   splits: ["id", "name", "shares", "notes"],
   transfers: ["id", "from", "to", "name", "amount", "fromAccount", "toAccount", "purpose", "unit", "every", "on", "shift", "start", "end", "dates", "notes", "towards"],
