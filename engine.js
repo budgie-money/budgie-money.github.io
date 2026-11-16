@@ -6,7 +6,7 @@
   else root.Budgie = factory();
 })(this, function () {
   "use strict";
-  var VERSION = "1.7.9";
+  var VERSION = "1.7.10";
 
   // ---------- dates ----------
   function D(s) { var p = String(s).split("-"); return new Date(Date.UTC(+p[0], +p[1] - 1, +p[2])); }
@@ -762,6 +762,7 @@
   // actual, payments, late (late from recorded months, counted in it), left (below 0: gone over), partner, back (to your
   // partner), owes (your partner's share of going over), keep (your share of what's left), mineOver (your share of going
   // over), closed, frozen, key, account}. A recorded month lists what it had then: its payments, and the late it took.
+  function poolKeeps(b) { return String(b && b.leftover || "") === "keep"; }
   function poolMonth(db, b, s) {
     return memo(db, "pm|" + b.id + "|" + s, function () {
       var fz = poolFrozen(db, b).filter(function (x) { return x.start === s; })[0];
@@ -788,6 +789,8 @@
       // a frozen month is what was recorded when it ended
       if (fz) ["estimate", "actual", "back", "owes", "keep", "mineOver"].forEach(function (k) { if (fz.v[k] !== undefined && !isNaN(+fz.v[k])) m[k] = round(+fz.v[k]); });
       if (fz) m.left = round(m.estimate - m.actual);
+      // (a bill set so what's left stays in its pot, for something you share like a holiday: nothing goes back, it's all kept)
+      if (poolKeeps(b) && m.back > 0.004) { m.keep = round(m.keep + m.back); m.back = 0; }
       return m;
     });
   }

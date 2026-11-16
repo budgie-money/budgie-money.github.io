@@ -919,6 +919,10 @@ const phone = (F, k) => { const P = {T: {}, since: 0}; P.sync = (ops) => { const
   c2.CACHE_ = {};
   const db2 = c2.Budgie.load(c2.allTables_(), "2026-11-20");
   ok("POOL: a recorded month keeps what was recorded", c2.Budgie.poolMonth(db2, db2.byId["e-flat"], "2026-10-16").back === 100 && c2.Budgie.poolMonth(db2, db2.byId["e-flat"], "2026-10-16").frozen === true);
+  // 1.7.9: set so what's left stays in the pot (a shared holiday pot, say): nothing goes back, even for a recorded month
+  const t3 = c2.allTables_(); t3.bills = t3.bills.map(b => b.id === "e-flat" ? Object.assign({}, b, {leftover: "keep"}) : b);
+  const db3 = c2.Budgie.load(t3, "2026-11-20"), pm3 = c2.Budgie.poolMonth(db3, db3.byId["e-flat"], "2026-10-16");
+  ok("POOL: leftover kept: nothing back, it's all kept, and nobody owes for it", pm3.back === 0 && pm3.keep >= 100 && c2.Budgie.between(db3, "ethan", "2026-11-20").pools.every(x => x.bill.id !== "e-flat" || x.amount >= 0), pm3);
 }
 
 // ================= itemised IOUs (loanItems) =================
